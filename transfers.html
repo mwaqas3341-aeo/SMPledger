@@ -15,8 +15,8 @@
     <h1>SMP Transfers &amp; Loans</h1>
     <div id="loginError" class="err hidden"></div>
     <form id="loginForm">
-      <label for="loginEmail">Email</label>
-      <input id="loginEmail" type="email" autocomplete="username" required />
+      <label for="loginEmail">Email or CNIC / Personnel Number</label>
+      <input id="loginEmail" type="text" autocomplete="username" required />
       <label for="loginPassword">Password</label>
       <input id="loginPassword" type="password" autocomplete="current-password" required />
       <button class="btn-primary btn-block" type="submit">Sign in</button>
@@ -78,7 +78,8 @@ function todayStr(){ return new Date().toISOString().slice(0,10); }
 /* ===================== AUTH ===================== */
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const email = document.getElementById("loginEmail").value.trim();
+  let email = document.getElementById("loginEmail").value.trim();
+  if(email && !email.includes("@")) email = email + "@smp.local";
   const password = document.getElementById("loginPassword").value;
   const errBox = document.getElementById("loginError");
   errBox.classList.add("hidden");

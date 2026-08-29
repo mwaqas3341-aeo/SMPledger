@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SMP Reports — School Meal Program</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
+<style>
+  @media print{
+    #sidebar, #topbar, #reportFilterCard, #exportBar, #menuToggle{ display:none !important; }
+    #content{ padding:0; max-width:none; }
+    body{ background:#fff; }
+    .card{ border:none; box-shadow:none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="eyebrow">School Education Department · Punjab</div>
+    <h1>SMP Reports</h1>
+    <div id="loginError" class="err hidden"></div>
+    <form id="loginForm">
+      <label for="loginEmail">Email or CNIC / Personnel Number</label>
+      <input id="loginEmail" type="text" autocomplete="username" required />
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required />
+      <button class="btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:18px;text-align:center;">
+      Accounts are created by an administrator.
+    </p>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="eyebrow">SMP · Punjab SED</div>
+      <h2>Reports</h2>
+    </div>
+    <nav id="navList"></nav>
+    <div class="footer">
+      <div id="whoBox">—</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </aside>
+  <div id="main">
+    <div id="topbar">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <button id="menuToggle" type="button">☰</button>
+        <h1 id="pageTitle">Reports</h1>
+      </div>
+      <div class="who" id="topWho"></div>
+    </div>
+    <div id="content"></div>
+  </div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const SUPABASE_URL = "https://gsswgpqrphqfomvsdooz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdzc3dncHFycGhxZm9tdnNkb296Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5NjE3OTUsImV4cCI6MjEwMjUzNzc5NX0.8NPY8wXzb99eopHpn-lMjSGPfayGAccz-g9f-Ob6gjQ";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null;
+let cache = { markaz:[], schools:[], products:[] };
+let lastReport = { title:"Report", columns:[], rows:[] };
+
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
+
+/* ===================== AUTH ===================== */
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let email = document.getElementById("loginEmail").value.trim();
+  if(email && !email.includes("@")) email = email + "@smp.local";
+  const password = document.getElementById("loginPassword").value;
+  const errBox = document.getElementById("loginError");
+  errBox.classList.add("hidden");
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if(error){ errBox.textContent = error.message; errBox.classList.remove("hidden"); return; }
+  await afterLogin();
+});
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
+
+async function afterLogin(){
+  const { data: { user } } = await sb.auth.getUser();
+  if(!user) return showLogin();
+  currentUser = user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", user.id).single();
+  const errBox = document.getElementById("loginError");
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    errBox.textContent = "This account is not active. Contact your administrator.";
+    errBox.classList.remove("hidden");
+    return showLogin();
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+function showLogin(){ document.getElementById("loginScreen").classList.remove("hidden"); document.getElementById("app").classList.add("hidden"); }
+function showApp(){
+  document.getElementById("loginScreen").classList.add("hidden");
+  document.getElementById("app").classList.remove("hidden");
+  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
+  document.getElementById("topWho").textContent = currentUser.email;
+  buildNav();
+  loadReportShell();
+}
+
+async function loadRefData(){
+  const [{ data: markaz }, { data: products }] = await Promise.all([
+    sb.from("markaz").select("id,name").eq("active", true).order("name"),
+    sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
+  ]);
+  cache.markaz = markaz || [];
+  cache.products = products || [];
+
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
+  const { data: schools } = await schoolsQuery;
+  cache.schools = schools || [];
+}
+
+/* ===================== NAV (single page, report picker inside) ===================== */
+function buildNav(){
+  const nav = document.getElementById("navList");
+  nav.innerHTML = `<a class="nav-item active">All Reports</a>`;
+}
+document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
+
+/* ===================== REPORT DEFINITIONS ===================== */
+const REPORTS = [
+  { id:"company_delivery", label:"1. Company Delivery Report" },
+  { id:"aeo_receipt", label:"2. AEO Receipt Report" },
+  { id:"comparison", label:"3. Company vs AEO Comparison" },
+  { id:"milk_consumption", label:"4. Milk Consumption Report" },
+  { id:"biscuit_consumption", label:"5. Biscuit Consumption Report" },
+  { id:"school_inventory", label:"9. School-wise Inventory (current)" },
+  { id:"transfers", label:"10. School-to-School Transfer Report" },
+  { id:"loans_outstanding", label:"11. Outstanding Loan Report" },
+  { id:"loans_history", label:"12. Loan History" },
+  { id:"consolidated", label:"13. Consolidated Meal Program Report" },
+];
+
+async function loadReportShell(){
+  const content = document.getElementById("content");
+  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+  const schoolOpts = cache.schools.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
+  const reportOpts = REPORTS.map(r => `<option value="${r.id}">${esc(r.label)}</option>`).join("");
+
+  content.innerHTML = `
+    <div class="card" id="reportFilterCard">
+      <h3>Report filters</h3>
+      <form id="reportForm" class="form-row">
+        <div><label>Report</label><select name="report_id" id="reportSelect">${reportOpts}</select></div>
+        <div><label>From</label><input type="date" name="from" value="${daysAgoStr(30)}"/></div>
+        <div><label>To</label><input type="date" name="to" value="${todayStr()}"/></div>
+        <div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${markazOpts}</select></div>
+        <div><label>School</label><select name="school_id"><option value="">All</option>${schoolOpts}</select></div>
+        <div><label>Product</label><select name="product_id"><option value="">All</option>${productOpts}</select></div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Run report</button></div>
+      </form>
+    </div>
+    <div id="exportBar" class="card hidden" style="display:flex; align-items:center; gap:10px;">
+      <strong id="reportTitle" style="color:var(--navy); flex:1;"></strong>
+      <button class="btn-secondary" id="exportCsvBtn">Export CSV</button>
+      <button class="btn-secondary" id="exportXlsxBtn">Export Excel</button>
+      <button class="btn-secondary" id="printBtn">Print / PDF</button>
+    </div>
+    <div id="reportResults"></div>`;
+
+  document.getElementById("reportForm").addEventListener("submit", (e) => { e.preventDefault(); runSelectedReport(); });
+  document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
+  document.getElementById("exportXlsxBtn").addEventListener("click", exportXlsx);
+  document.getElementById("printBtn").addEventListener("click", () => window.print());
+
+  await runSelectedReport();
+}
+
+function currentFilters(){
+  const fd = new FormData(document.getElementById("reportForm"));
+  return {
+    reportId: fd.get("report_id"),
+    from: fd.get("from"), to: fd.get("to"),
+    markazId: fd.get("markaz_id") || null,
+    schoolId: fd.get("school_id") || null,
+    productId: fd.get("product_id") || null,
+  };
+}
+function scopedSchoolIds(f){
+  let list = cache.schools;
+  if(f.markazId) list = list.filter(s => s.markaz_id === f.markazId);
+  if(f.schoolId) list = list.filter(s => s.id === f.schoolId);
+  return list.map(s => s.id);
+}
+function schoolMeta(id){ return cache.schools.find(s => s.id === id); }
+function markazName(id){ return cache.markaz.find(m => m.id === id)?.name || "—"; }
+function productName(id){ return cache.products.find(p => p.id === id)?.product_name || "—"; }
+
+async function runSelectedReport(){
+  const f = currentFilters();
+  const box = document.getElementById("reportResults");
+  box.innerHTML = `<p style="color:var(--ink-soft)">Running…</p>`;
+  document.getElementById("exportBar").classList.add("hidden");
+  try{
+    let result;
+    switch(f.reportId){
+      case "company_delivery": result = await reportCompanyDelivery(f); break;
+      case "aeo_receipt": result = await reportAeoReceipt(f); break;
+      case "comparison": result = await reportComparison(f); break;
+      case "milk_consumption": result = await reportConsumption(f, "Milk"); break;
+      case "biscuit_consumption": result = await reportConsumption(f, "Biscuits"); break;
+      case "school_inventory": result = await reportSchoolInventory(f); break;
+      case "transfers": result = await reportTransfers(f); break;
+      case "loans_outstanding": result = await reportLoansOutstanding(f); break;
+      case "loans_history": result = await reportLoansHistory(f); break;
+      case "consolidated": result = await reportConsolidated(f); break;
+      default: result = { title:"Unknown report", columns:[], rows:[] };
+    }
+    lastReport = result;
+    renderReportTable(box, result);
+    document.getElementById("reportTitle").textContent = result.title + ` (${result.rows.length} rows)`;
+    document.getElementById("exportBar").classList.remove("hidden");
+  }catch(err){
+    box.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
+  }
+}
+
+function renderReportTable(box, result){
+  const { columns, rows } = result;
+  box.innerHTML = `
+    <div class="card">
+      <div class="table-wrap"><table>
+        <thead><tr>${columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+        <tbody>${rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${columns.length}" style="color:var(--ink-soft)">No data for these filters.</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+}
+
+/* ===================== INDIVIDUAL REPORTS ===================== */
+async function reportCompanyDelivery(f){
+  let q = sb.from("company_invoice_items")
+    .select("quantity, unit, remarks, schools(school_name,emis_code,markaz_id), products(product_name), company_invoices!inner(invoice_number,invoice_date,delivery_date,status)")
+    .gte("company_invoices.invoice_date", f.from).lte("company_invoices.invoice_date", f.to)
+    .limit(1000);
+  if(f.schoolId) q = q.eq("school_id", f.schoolId);
+  if(f.productId) q = q.eq("product_id", f.productId);
+  const { data, error } = await q;
+  if(error) throw error;
+  const scoped = f.markazId ? (data||[]).filter(r => r.schools?.markaz_id === f.markazId) : (data||[]);
+  return {
+    title:"Company Delivery Report",
+    columns:["Invoice #","Invoice Date","Delivery Date","School","EMIS","Product","Qty","Unit","Status","Remarks"],
+    rows: scoped.map(r => [r.company_invoices.invoice_number, fmtDate(r.company_invoices.invoice_date), fmtDate(r.company_invoices.delivery_date), r.schools?.school_name, r.schools?.emis_code, r.products?.product_name, r.quantity, r.unit, r.company_invoices.status, r.remarks || ""]),
+  };
+}
+
+async function reportAeoReceipt(f){
+  let q = sb.from("school_receipts")
+    .select("receipt_date, quantity_received, collected_by, status, schools(school_name,emis_code,markaz_id), products(product_name), company_invoices(invoice_number)")
+    .gte("receipt_date", f.from).lte("receipt_date", f.to).limit(1000);
+  if(f.schoolId) q = q.eq("school_id", f.schoolId);
+  if(f.productId) q = q.eq("product_id", f.productId);
+  const { data, error } = await q;
+  if(error) throw error;
+  const scoped = f.markazId ? (data||[]).filter(r => r.schools?.markaz_id === f.markazId) : (data||[]);
+  return {
+    title:"AEO Receipt Report",
+    columns:["Date","School","EMIS","Product","Qty Received","Invoice #","Collected By","Status"],
+    rows: scoped.map(r => [fmtDate(r.receipt_date), r.schools?.school_name, r.schools?.emis_code, r.products?.product_name, r.quantity_received, r.company_invoices?.invoice_number || "—", r.collected_by || "—", r.status]),
+  };
+}
+
+async function reportComparison(f){
+  let q = sb.from("v_company_vs_aeo_comparison")
+    .select("*, schools(school_name,emis_code,markaz_id), products(product_name)")
+    .gte("invoice_date", f.from).lte("invoice_date", f.to).limit(1000);
+  if(f.schoolId) q = q.eq("school_id", f.schoolId);
+  if(f.productId) q = q.eq("product_id", f.productId);
+  const { data, error } = await q;
+  if(error) throw error;
+  const scoped = f.markazId ? (data||[]).filter(r => r.schools?.markaz_id === f.markazId) : (data||[]);
+  return {
+    title:"Company vs AEO Comparison",
+    columns:["Invoice #","Date","School","EMIS","Product","Company Qty","AEO Qty","Difference","Status"],
+    rows: scoped.map(r => [r.invoice_number || "—", fmtDate(r.invoice_date), r.schools?.school_name, r.schools?.emis_code, r.products?.product_name, r.company_qty, r.aeo_qty, r.difference, r.status]),
+  };
+}
+
+async function reportConsumption(f, productName_){
+  const product = cache.products.find(p => p.product_name === productName_);
+  let q = sb.from("consumption")
+    .select("consumption_date, quantity, students_served, remarks, schedule_override, status, schools(school_name,emis_code,markaz_id)")
+    .gte("consumption_date", f.from).lte("consumption_date", f.to).limit(2000);
+  if(product) q = q.eq("product_id", product.id);
+  if(f.schoolId) q = q.eq("school_id", f.schoolId);
+  const { data, error } = await q;
+  if(error) throw error;
+  const scoped = f.markazId ? (data||[]).filter(r => r.schools?.markaz_id === f.markazId) : (data||[]);
+  return {
+    title:`${productName_} Consumption Report`,
+    columns:["Date","School","EMIS","Qty","Students Served","Override","Status","Remarks"],
+    rows: scoped.map(r => [fmtDate(r.consumption_date), r.schools?.school_name, r.schools?.emis_code, r.quantity, r.students_served ?? "—", r.schedule_override ? "Yes" : "No", r.status, r.remarks || ""]),
+  };
+}
+
+async function reportSchoolInventory(f){
+  const ids = scopedSchoolIds(f);
+  if(ids.length === 0) return { title:"School-wise Inventory", columns:["School"], rows:[] };
+  const { data, error } = await sb.from("v_school_balances").select("*").in("school_id", ids);
+  if(error) throw error;
+  const bySchool = {};
+  (data||[]).forEach(r => {
+    bySchool[r.school_id] ||= { school_name:r.school_name, emis_code:r.emis_code, markaz_id:r.markaz_id, balances:{} };
+    bySchool[r.school_id].balances[r.product_name] = r.balance;
+  });
+  const rows = Object.values(bySchool).map(s => [
+    s.school_name, s.emis_code, markazName(s.markaz_id),
+    fmt(s.balances["Milk"] ?? 0), fmt(s.balances["Biscuits"] ?? 0),
+  ]);
+  return { title:"School-wise Inventory (as of today)", columns:["School","EMIS","Markaz","Milk Remaining","Biscuits Remaining"], rows };
+}
+
+async function reportTransfers(f){
+  let q = sb.from("school_transfers")
+    .select("transfer_date, quantity, reason, status, markaz_id, from:schools!school_transfers_from_school_id_fkey(school_name), to:schools!school_transfers_to_school_id_fkey(school_name), products(product_name,unit_name)")
+    .gte("transfer_date", f.from).lte("transfer_date", f.to).limit(1000);
+  if(f.markazId) q = q.eq("markaz_id", f.markazId);
+  if(f.productId) q = q.eq("product_id", f.productId);
+  const { data, error } = await q;
+  if(error) throw error;
+  return {
+    title:"School-to-School Transfer Report",
+    columns:["Date","Markaz","Product","From","To","Qty","Status","Reason"],
+    rows: (data||[]).map(r => [fmtDate(r.transfer_date), markazName(r.markaz_id), r.products?.product_name, r.from?.school_name, r.to?.school_name, `${r.quantity} ${r.products?.unit_name||""}`, r.status, r.reason || ""]),
+  };
+}
+
+async function reportLoansOutstanding(f){
+  let q = sb.from("v_outstanding_loans").select("*").limit(1000);
+  if(f.markazId) q = q.eq("markaz_id", f.markazId);
+  if(f.productId) q = q.eq("product_id", f.productId);
+  const { data, error } = await q;
+  if(error) throw error;
+  return {
+    title:"Outstanding Loan Report",
+    columns:["Loan Date","Product","From","To","Loaned","Returned","Outstanding","Expected Return","Status"],
+    rows: (data||[]).map(r => [fmtDate(r.loan_date), productName(r.product_id), schoolMeta(r.from_school_id)?.school_name || "—", schoolMeta(r.to_school_id)?.school_name || "—", r.quantity, r.returned_quantity, Number(r.outstanding_quantity).toFixed(2), fmtDate(r.expected_return_date), r.status]),
+  };
+}
+
+async function reportLoansHistory(f){
+  let q = sb.from("inventory_loans")
+    .select("loan_date, quantity, returned_quantity, status, expected_return_date, markaz_id, from:schools!inventory_loans_from_school_id_fkey(school_name), to:schools!inventory_loans_to_school_id_fkey(school_name), products(product_name,unit_name)")
+    .gte("loan_date", f.from).lte("loan_date", f.to).limit(1000);
+  if(f.markazId) q = q.eq("markaz_id", f.markazId);
+  if(f.productId) q = q.eq("product_id", f.productId);
+  const { data, error } = await q;
+  if(error) throw error;
+  return {
+    title:"Loan History",
+    columns:["Loan Date","Product","From","To","Loaned","Returned","Status","Expected Return"],
+    rows: (data||[]).map(r => [fmtDate(r.loan_date), r.products?.product_name, r.from?.school_name, r.to?.school_name, r.quantity, r.returned_quantity, r.status, fmtDate(r.expected_return_date)]),
+  };
+}
+
+async function reportConsolidated(f){
+  const ids = scopedSchoolIds(f);
+  if(ids.length === 0) return { title:"Consolidated Meal Program Report", columns:["School"], rows:[] };
+  const milk = cache.products.find(p => p.product_name === "Milk");
+  const biscuits = cache.products.find(p => p.product_name === "Biscuits");
+
+  const [{ data: balances }, { data: receipts }, { data: consumed }, { data: cmpRows }, { data: loanRows }] = await Promise.all([
+    sb.from("v_school_balances").select("*").in("school_id", ids),
+    sb.from("school_receipts").select("school_id, product_id, quantity_received").in("school_id", ids).gte("receipt_date", f.from).lte("receipt_date", f.to),
+    sb.from("consumption").select("school_id, product_id, quantity").in("school_id", ids).gte("consumption_date", f.from).lte("consumption_date", f.to),
+    sb.from("v_company_vs_aeo_comparison").select("school_id, status").in("school_id", ids),
+    sb.from("inventory_loans").select("from_school_id, to_school_id, status").or(`from_school_id.in.(${ids.join(",")}),to_school_id.in.(${ids.join(",")})`),
+  ]);
+
+  function sumFor(rows, schoolId, productId, field){
+    return (rows||[]).filter(r => r.school_id === schoolId && r.product_id === productId).reduce((a,r) => a + Number(r[field]), 0);
+  }
+  function balanceFor(schoolId, productId){
+    return (balances||[]).find(b => b.school_id === schoolId && b.product_id === productId)?.balance ?? 0;
+  }
+  function cmpStatusFor(schoolId){
+    const rows = (cmpRows||[]).filter(r => r.school_id === schoolId);
+    if(rows.length === 0) return "No Data";
+    if(rows.some(r => r.status === "Short Received" || r.status === "AEO Record Missing")) return "Short/Missing";
+    if(rows.some(r => r.status === "Excess Received")) return "Excess";
+    if(rows.some(r => r.status === "Company Record Missing")) return "Company Missing";
+    return "Matched";
+  }
+  function loanCountFor(schoolId){
+    return (loanRows||[]).filter(r => (r.from_school_id === schoolId || r.to_school_id === schoolId) && ["pending","approved","partially_returned"].includes(r.status)).length;
+  }
+
+  const rows = cache.schools.filter(s => ids.includes(s.id)).map(s => [
+    s.emis_code, s.school_name, markazName(s.markaz_id),
+    milk ? fmt(sumFor(receipts, s.id, milk.id, "quantity_received")) : "—",
+    milk ? fmt(sumFor(consumed, s.id, milk.id, "quantity")) : "—",
+    milk ? fmt(balanceFor(s.id, milk.id)) : "—",
+    biscuits ? fmt(sumFor(receipts, s.id, biscuits.id, "quantity_received")) : "—",
+    biscuits ? fmt(sumFor(consumed, s.id, biscuits.id, "quantity")) : "—",
+    biscuits ? fmt(balanceFor(s.id, biscuits.id)) : "—",
+    cmpStatusFor(s.id),
+    loanCountFor(s.id),
+  ]);
+
+  return {
+    title:"Consolidated Meal Program Report",
+    columns:["EMIS","School","Markaz","Milk Received","Milk Consumed","Milk Remaining","Biscuits Received","Biscuits Consumed","Biscuits Remaining","Company/AEO Status","Open Loans"],
+    rows,
+  };
+}
+
+/* ===================== EXPORTS ===================== */
+function exportCsv(){
+  const { title, columns, rows } = lastReport;
+  const escCsv = (v) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const lines = [columns.map(escCsv).join(","), ...rows.map(r => r.map(escCsv).join(","))];
+  const blob = new Blob([lines.join("\n")], { type:"text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${title.replace(/[^a-z0-9]+/gi,"_")}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+function exportXlsx(){
+  const { title, columns, rows } = lastReport;
+  const ws = XLSX.utils.aoa_to_sheet([columns, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, title.slice(0,31) || "Report");
+  XLSX.writeFile(wb, `${title.replace(/[^a-z0-9]+/gi,"_")}.xlsx`);
+}
+
+/* ===================== BOOTSTRAP ===================== */
+(async function init(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(session){ await afterLogin(); } else { showLogin(); }
+})();
+</script>
+</body>
+</html>
