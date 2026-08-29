@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SMP Transfers &amp; Loans — School Meal Program</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="eyebrow">School Education Department · Punjab</div>
+    <h1>SMP Transfers &amp; Loans</h1>
+    <div id="loginError" class="err hidden"></div>
+    <form id="loginForm">
+      <label for="loginEmail">Email</label>
+      <input id="loginEmail" type="email" autocomplete="username" required />
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required />
+      <button class="btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:18px;text-align:center;">
+      Accounts are created by an administrator.
+    </p>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="eyebrow">SMP · Punjab SED</div>
+      <h2>Transfers &amp; Loans</h2>
+    </div>
+    <nav id="navList"></nav>
+    <div class="footer">
+      <div id="whoBox">—</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </aside>
+  <div id="main">
+    <div id="topbar">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <button id="menuToggle" type="button">☰</button>
+        <h1 id="pageTitle">Transfers</h1>
+      </div>
+      <div class="who" id="topWho"></div>
+    </div>
+    <div id="content"></div>
+  </div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const SUPABASE_URL = "https://gsswgpqrphqfomvsdooz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdzc3dncHFycGhxZm9tdnNkb296Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5NjE3OTUsImV4cCI6MjEwMjUzNzc5NX0.8NPY8wXzb99eopHpn-lMjSGPfayGAccz-g9f-Ob6gjQ";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null, currentSection = "transfers";
+let cache = { markaz:[], schools:[], products:[] };
+
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+/* ===================== AUTH ===================== */
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const errBox = document.getElementById("loginError");
+  errBox.classList.add("hidden");
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if(error){ errBox.textContent = error.message; errBox.classList.remove("hidden"); return; }
+  await afterLogin();
+});
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
+
+async function afterLogin(){
+  const { data: { user } } = await sb.auth.getUser();
+  if(!user) return showLogin();
+  currentUser = user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", user.id).single();
+  const errBox = document.getElementById("loginError");
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    errBox.textContent = "This account is not active. Contact your administrator.";
+    errBox.classList.remove("hidden");
+    return showLogin();
+  }
+  if(!["admin","super_admin","aeo"].includes(profile.role)){
+    await sb.auth.signOut();
+    errBox.textContent = "Transfers and loans are managed by AEOs and administrators.";
+    errBox.classList.remove("hidden");
+    return showLogin();
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+function showLogin(){ document.getElementById("loginScreen").classList.remove("hidden"); document.getElementById("app").classList.add("hidden"); }
+function showApp(){
+  document.getElementById("loginScreen").classList.add("hidden");
+  document.getElementById("app").classList.remove("hidden");
+  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
+  document.getElementById("topWho").textContent = currentUser.email;
+  buildNav();
+  navigate("transfers");
+}
+
+async function loadRefData(){
+  const [{ data: markaz }, { data: products }] = await Promise.all([
+    sb.from("markaz").select("id,name,tehsil").eq("active", true).order("name"),
+    sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
+  ]);
+  cache.markaz = markaz || [];
+  cache.products = products || [];
+
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  const { data: schools } = await schoolsQuery;
+  cache.schools = schools || [];
+}
+
+/* ===================== NAV ===================== */
+const SECTIONS = [
+  { id:"transfers", label:"Transfers" },
+  { id:"loans", label:"Loans" },
+  { id:"outstanding", label:"Outstanding Loans" },
+];
+function buildNav(){
+  const nav = document.getElementById("navList");
+  nav.innerHTML = "";
+  SECTIONS.forEach(s => {
+    const a = document.createElement("a");
+    a.className = "nav-item" + (s.id === currentSection ? " active" : "");
+    a.textContent = s.label;
+    a.dataset.id = s.id;
+    a.onclick = () => navigate(s.id);
+    nav.appendChild(a);
+  });
+}
+document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
+
+async function navigate(id){
+  currentSection = id;
+  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
+  document.getElementById("sidebar").classList.remove("open");
+  const titleMap = Object.fromEntries(SECTIONS.map(s => [s.id, s.label]));
+  document.getElementById("pageTitle").textContent = titleMap[id] || "";
+  const content = document.getElementById("content");
+  content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
+  try{
+    if(id === "transfers") await renderTransfers(content);
+    else if(id === "loans") await renderLoans(content);
+    else if(id === "outstanding") await renderOutstanding(content);
+  }catch(err){
+    content.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
+  }
+}
+
+/* ===================== Shared: Markaz / School / Product pickers ===================== */
+function markazOptions(){ return cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join(""); }
+function productOptions(){ return cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join(""); }
+function schoolOptionsFor(markazId){
+  const list = markazId ? cache.schools.filter(s => s.markaz_id === markazId) : cache.schools;
+  return list.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
+}
+function wireMarkazSchoolFilters(form){
+  const markazSel = form.querySelector('select[name="markaz_id"]');
+  const fromSel = form.querySelector('select[name="from_school_id"]');
+  const toSel = form.querySelector('select[name="to_school_id"]');
+  function refresh(){
+    const opts = `<option value="">Select…</option>${schoolOptionsFor(markazSel.value)}`;
+    fromSel.innerHTML = opts;
+    toSel.innerHTML = opts;
+  }
+  markazSel.addEventListener("change", refresh);
+  refresh();
+}
+
+/* ===================== TRANSFERS ===================== */
+async function renderTransfers(content){
+  const { data: transfers, error } = await sb.from("school_transfers")
+    .select("*, from:schools!school_transfers_from_school_id_fkey(school_name), to:schools!school_transfers_to_school_id_fkey(school_name), products(product_name,unit_name), markaz(name)")
+    .order("transfer_date", { ascending:false }).limit(50);
+  if(error) throw error;
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Permanent transfer</h3>
+      <div class="sub">Stock permanently moves from one school to another — no return expected.</div>
+      <form id="transferForm">
+        <div class="form-row">
+          <div><label>Markaz</label><select name="markaz_id" required><option value="">Select…</option>${markazOptions()}</select></div>
+          <div><label>Product</label><select name="product_id" required>${productOptions()}</select></div>
+          <div><label>From School</label><select name="from_school_id" required></select></div>
+          <div><label>To School</label><select name="to_school_id" required></select></div>
+          <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
+          <div><label>Date</label><input type="date" name="transfer_date" required value="${todayStr()}"/></div>
+          <div><label>Reason</label><input name="reason" /></div>
+        </div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Create transfer</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Recent transfers</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>From</th><th>To</th><th>Qty</th><th>Status</th></tr></thead>
+        <tbody>${(transfers||[]).map(t => `
+          <tr>
+            <td>${fmtDate(t.transfer_date)}</td>
+            <td>${esc(t.markaz?.name || "—")}</td>
+            <td>${esc(t.products?.product_name || "—")}</td>
+            <td>${esc(t.from?.school_name || "—")}</td>
+            <td>${esc(t.to?.school_name || "—")}</td>
+            <td>${t.quantity} ${esc(t.products?.unit_name || "")}</td>
+            <td><span class="pill pill-ok">${esc(t.status)}</span></td>
+          </tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">No transfers yet.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+
+  const form = document.getElementById("transferForm");
+  wireMarkazSchoolFilters(form);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    try{
+      const { error } = await sb.rpc("fn_create_transfer", {
+        p_markaz_id: fd.get("markaz_id"),
+        p_product_id: fd.get("product_id"),
+        p_from_school_id: fd.get("from_school_id"),
+        p_to_school_id: fd.get("to_school_id"),
+        p_quantity: Number(fd.get("quantity")),
+        p_transfer_date: fd.get("transfer_date"),
+        p_reason: fd.get("reason") || null,
+      });
+      if(error) throw error;
+      toast("Transfer created");
+      navigate("transfers");
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+
+/* ===================== LOANS ===================== */
+async function renderLoans(content){
+  const { data: loans, error } = await sb.from("inventory_loans")
+    .select("*, from:schools!inventory_loans_from_school_id_fkey(school_name), to:schools!inventory_loans_to_school_id_fkey(school_name), products(product_name,unit_name)")
+    .order("loan_date", { ascending:false }).limit(50);
+  if(error) throw error;
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>New loan</h3>
+      <div class="sub">Stock moves temporarily and is expected back — track it here through to return.</div>
+      <form id="loanForm">
+        <div class="form-row">
+          <div><label>Markaz</label><select name="markaz_id" required><option value="">Select…</option>${markazOptions()}</select></div>
+          <div><label>Product</label><select name="product_id" required>${productOptions()}</select></div>
+          <div><label>From School (lender)</label><select name="from_school_id" required></select></div>
+          <div><label>To School (borrower)</label><select name="to_school_id" required></select></div>
+          <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
+          <div><label>Loan Date</label><input type="date" name="loan_date" required value="${todayStr()}"/></div>
+          <div><label>Expected Return Date</label><input type="date" name="expected_return_date" /></div>
+          <div><label>Reason</label><input name="reason" /></div>
+        </div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Create loan</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Recent loans</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Product</th><th>From</th><th>To</th><th>Qty</th><th>Returned</th><th>Status</th><th></th></tr></thead>
+        <tbody>${(loans||[]).map(l => loanRow(l)).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No loans yet.</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+
+  const form = document.getElementById("loanForm");
+  wireMarkazSchoolFilters(form);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    try{
+      const { error } = await sb.rpc("fn_create_loan", {
+        p_markaz_id: fd.get("markaz_id"),
+        p_product_id: fd.get("product_id"),
+        p_from_school_id: fd.get("from_school_id"),
+        p_to_school_id: fd.get("to_school_id"),
+        p_quantity: Number(fd.get("quantity")),
+        p_loan_date: fd.get("loan_date"),
+        p_reason: fd.get("reason") || null,
+        p_expected_return_date: fd.get("expected_return_date") || null,
+      });
+      if(error) throw error;
+      toast("Loan created");
+      navigate("loans");
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+function loanStatusPill(status){
+  const map = { pending:"pill-warn", approved:"pill-ok", partially_returned:"pill-warn", returned:"pill-ok", cancelled:"pill-bad" };
+  return `<span class="pill ${map[status]||'pill-role'}">${esc(status.replace('_',' '))}</span>`;
+}
+function loanRow(l){
+  const outstanding = Number(l.quantity) - Number(l.returned_quantity);
+  return `<tr>
+    <td>${fmtDate(l.loan_date)}</td>
+    <td>${esc(l.products?.product_name || "—")}</td>
+    <td>${esc(l.from?.school_name || "—")}</td>
+    <td>${esc(l.to?.school_name || "—")}</td>
+    <td>${l.quantity} ${esc(l.products?.unit_name || "")}</td>
+    <td>${l.returned_quantity}</td>
+    <td>${loanStatusPill(l.status)}</td>
+    <td>${outstanding > 0 && l.status !== "cancelled" ? `<button class="link-btn" onclick="openReturnLoan('${l.id}', ${outstanding}, '${esc(l.products?.unit_name||'').replace(/'/g,"\\'")}')">Record return</button>` : ""}</td>
+  </tr>`;
+}
+async function openReturnLoan(loanId, outstanding, unit){
+  const qtyStr = prompt(`Quantity being returned now (outstanding: ${outstanding} ${unit}):`, outstanding);
+  if(!qtyStr) return;
+  const qty = Number(qtyStr);
+  if(!qty || qty <= 0){ toast("Enter a valid quantity", "bad"); return; }
+  try{
+    const { error } = await sb.rpc("fn_return_loan", {
+      p_loan_id: loanId,
+      p_quantity_returned: qty,
+      p_return_date: todayStr(),
+    });
+    if(error) throw error;
+    toast("Return recorded");
+    navigate("loans");
+  }catch(err){ toast(err.message, "bad"); }
+}
+
+/* ===================== OUTSTANDING LOANS ===================== */
+async function renderOutstanding(content){
+  const { data, error } = await sb.from("v_outstanding_loans").select("*").order("loan_date", { ascending:false }).limit(200);
+  if(error) throw error;
+
+  const schoolById = Object.fromEntries(cache.schools.map(s => [s.id, s]));
+  const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Outstanding loans</h3>
+      <div class="sub">Loans not yet fully returned.</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Loan Date</th><th>Product</th><th>From</th><th>To</th><th>Loaned</th><th>Returned</th><th>Outstanding</th><th>Expected Return</th><th>Status</th></tr></thead>
+        <tbody>${(data||[]).map(l => `
+          <tr>
+            <td>${fmtDate(l.loan_date)}</td>
+            <td>${esc(productById[l.product_id]?.product_name || "—")}</td>
+            <td>${esc(schoolById[l.from_school_id]?.school_name || "—")}</td>
+            <td>${esc(schoolById[l.to_school_id]?.school_name || "—")}</td>
+            <td>${l.quantity}</td>
+            <td>${l.returned_quantity}</td>
+            <td><strong>${Number(l.outstanding_quantity).toFixed(2)}</strong></td>
+            <td>${fmtDate(l.expected_return_date)}</td>
+            <td>${loanStatusPill(l.status)}</td>
+          </tr>`).join("") || `<tr><td colspan="9" style="color:var(--ink-soft)">No outstanding loans.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+/* ===================== BOOTSTRAP ===================== */
+(async function init(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(session){ await afterLogin(); } else { showLogin(); }
+})();
+</script>
+</body>
+</html>
