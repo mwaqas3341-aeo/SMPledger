@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SMP Operations — School Meal Program</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  :root{
+    --navy:#1c2b4a; --navy-dark:#12203a; --slate:#4a5872;
+    --paper:#f4f6f9; --card:#ffffff; --line:#dfe4ec; --ink:#1c2330; --ink-soft:#5b6577;
+    --gold:#b8862c;
+    --ok-bg:#e8f5ea; --ok-fg:#1e6b34;
+    --warn-bg:#fdf1dc; --warn-fg:#8a5a06;
+    --bad-bg:#fbe7e7; --bad-fg:#a32626;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background:var(--paper); color:var(--ink); font-size:14px; }
+  .hidden{display:none !important;}
+
+  #loginScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(160deg, var(--navy) 0%, var(--navy-dark) 100%); padding:20px; }
+  .login-card{ background:var(--card); border-radius:var(--radius); padding:36px 32px; width:100%; max-width:380px; box-shadow:0 20px 50px rgba(0,0,0,.35); }
+  .login-card .eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--gold); font-weight:700; margin-bottom:6px; }
+  .login-card h1{ font-size:20px; margin:0 0 22px; color:var(--navy); }
+  label{ display:block; font-size:12px; font-weight:600; color:var(--ink-soft); margin:14px 0 6px; }
+  input, select, textarea{ width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px; background:#fff; color:var(--ink); }
+  input:focus, select:focus, textarea:focus{ outline:2px solid var(--navy); outline-offset:1px; }
+  button{ cursor:pointer; border:none; border-radius:8px; font-weight:600; font-size:13px; padding:10px 16px; transition:filter .12s ease; }
+  button:hover{ filter:brightness(1.07); } button:active{ filter:brightness(.95); }
+  .btn-primary{ background:var(--navy); color:#fff; }
+  .btn-secondary{ background:#eef1f6; color:var(--navy); }
+  .btn-block{ width:100%; margin-top:20px; }
+  .err{ background:var(--bad-bg); color:var(--bad-fg); padding:10px 12px; border-radius:8px; font-size:13px; margin-top:14px; }
+
+  #app{ display:flex; min-height:100vh; }
+  #sidebar{ width:230px; background:var(--navy); color:#dce3f0; flex-shrink:0; display:flex; flex-direction:column; position:sticky; top:0; height:100vh; }
+  #sidebar .brand{ padding:22px 20px 16px; border-bottom:1px solid rgba(255,255,255,.12); }
+  #sidebar .brand .eyebrow{ font-size:10px; letter-spacing:.14em; color:var(--gold); font-weight:700; text-transform:uppercase; }
+  #sidebar .brand h2{ margin:4px 0 0; font-size:16px; color:#fff; }
+  #sidebar nav{ flex:1; overflow-y:auto; padding:12px 0; }
+  #sidebar .nav-item{ display:block; padding:11px 20px; color:#c4cde0; text-decoration:none; font-size:13.5px; cursor:pointer; border-left:3px solid transparent; }
+  #sidebar .nav-item:hover{ background:rgba(255,255,255,.06); color:#fff; }
+  #sidebar .nav-item.active{ background:rgba(255,255,255,.1); color:#fff; border-left-color:var(--gold); font-weight:600; }
+  #sidebar .footer{ padding:16px 20px; border-top:1px solid rgba(255,255,255,.12); font-size:12px; color:#9fabc4; }
+  #sidebar .footer button{ margin-top:8px; width:100%; }
+
+  #main{ flex:1; min-width:0; } 
+  #topbar{ background:#fff; border-bottom:1px solid var(--line); padding:16px 28px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:5; }
+  #topbar h1{ font-size:18px; margin:0; color:var(--navy); }
+  #topbar .who{ font-size:12.5px; color:var(--ink-soft); }
+  #content{ padding:24px 28px 60px; max-width:1240px; }
+
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:20px 22px; margin-bottom:20px; }
+  .card h3{ margin:0 0 4px; font-size:15px; color:var(--navy); }
+  .card .sub{ font-size:12.5px; color:var(--ink-soft); margin-bottom:16px; }
+
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  thead th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); border-bottom:2px solid var(--line); padding:8px 10px; }
+  tbody td{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  tbody tr:hover{ background:#fafbfd; }
+  .table-wrap{ overflow-x:auto; }
+
+  .pill{ display:inline-block; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .pill-ok{ background:var(--ok-bg); color:var(--ok-fg); }
+  .pill-warn{ background:var(--warn-bg); color:var(--warn-fg); }
+  .pill-bad{ background:var(--bad-bg); color:var(--bad-fg); }
+  .pill-role{ background:#e9edf5; color:var(--navy); }
+
+  .form-row{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; }
+  .actions-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; align-items:center; }
+  .link-btn{ background:none; border:none; color:var(--navy); font-weight:600; padding:4px 6px; font-size:12.5px; text-decoration:underline; cursor:pointer; }
+  .link-btn.danger{ color:var(--bad-fg); }
+  .toast-area{ position:fixed; bottom:20px; right:20px; z-index:50; display:flex; flex-direction:column; gap:8px; }
+  .toast{ padding:10px 16px; border-radius:8px; font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.15); }
+  .toast.ok{ background:var(--navy); color:#fff; } .toast.bad{ background:var(--bad-fg); color:#fff; }
+
+  .item-row{ display:grid; grid-template-columns:2fr 1fr 1fr 1fr auto; gap:8px; align-items:end; margin-bottom:8px; }
+  .item-row label{ margin:0 0 4px; }
+  .remove-item{ background:var(--bad-bg); color:var(--bad-fg); padding:9px 10px; }
+
+  .stat{ background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; }
+  .stat .n{ font-size:24px; font-weight:700; color:var(--navy); }
+  .stat .l{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
+  .grid-4{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin-bottom:20px; }
+
+  #menuToggle{ display:none; background:var(--navy); color:#fff; border:none; padding:8px 12px; border-radius:8px; }
+  @media (max-width: 860px){
+    #sidebar{ position:fixed; left:-240px; top:0; z-index:40; transition:left .2s ease; box-shadow:10px 0 30px rgba(0,0,0,.2); }
+    #sidebar.open{ left:0; }
+    #menuToggle{ display:inline-block; }
+    #content{ padding:18px 14px 60px; }
+    #topbar{ padding:14px 16px; }
+    .item-row{ grid-template-columns:1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="eyebrow">School Education Department · Punjab</div>
+    <h1>SMP Operations</h1>
+    <div id="loginError" class="err hidden"></div>
+    <form id="loginForm">
+      <label for="loginEmail">Email</label>
+      <input id="loginEmail" type="email" autocomplete="username" required />
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required />
+      <button class="btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:18px;text-align:center;">
+      Accounts are created by an administrator.
+    </p>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="eyebrow">SMP · Punjab SED</div>
+      <h2>Operations</h2>
+    </div>
+    <nav id="navList"></nav>
+    <div class="footer">
+      <div id="whoBox">—</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </aside>
+  <div id="main">
+    <div id="topbar">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <button id="menuToggle" type="button">☰</button>
+        <h1 id="pageTitle">Company Deliveries</h1>
+      </div>
+      <div class="who" id="topWho"></div>
+    </div>
+    <div id="content"></div>
+  </div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const SUPABASE_URL = "https://gsswgpqrphqfomvsdooz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdzc3dncHFycGhxZm9tdnNkb296Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5NjE3OTUsImV4cCI6MjEwMjUzNzc5NX0.8NPY8wXzb99eopHpn-lMjSGPfayGAccz-g9f-Ob6gjQ";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null, currentSection = "deliveries";
+let cache = { markaz:[], schools:[], products:[] };
+
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function monthAgoStr(){ const d = new Date(); d.setDate(d.getDate()-30); return d.toISOString().slice(0,10); }
+
+/* ===================== AUTH ===================== */
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const errBox = document.getElementById("loginError");
+  errBox.classList.add("hidden");
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if(error){ errBox.textContent = error.message; errBox.classList.remove("hidden"); return; }
+  await afterLogin();
+});
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
+
+async function afterLogin(){
+  const { data: { user } } = await sb.auth.getUser();
+  if(!user) return showLogin();
+  currentUser = user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", user.id).single();
+  const errBox = document.getElementById("loginError");
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    errBox.textContent = "This account is not active. Contact your administrator.";
+    errBox.classList.remove("hidden");
+    return showLogin();
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+function showLogin(){ document.getElementById("loginScreen").classList.remove("hidden"); document.getElementById("app").classList.add("hidden"); }
+function showApp(){
+  document.getElementById("loginScreen").classList.add("hidden");
+  document.getElementById("app").classList.remove("hidden");
+  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
+  document.getElementById("topWho").textContent = currentUser.email;
+  buildNav();
+  const first = SECTIONS.find(s => visibleTo(s)).id;
+  navigate(first);
+}
+
+async function loadRefData(){
+  const [{ data: markaz }, { data: products }] = await Promise.all([
+    sb.from("markaz").select("id,name,tehsil").eq("active", true).order("name"),
+    sb.from("products").select("id,product_name,unit_name,schedule_dow").eq("active", true).order("product_name"),
+  ]);
+  cache.markaz = markaz || [];
+  cache.products = products || [];
+
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
+  const { data: schools } = await schoolsQuery;
+  cache.schools = schools || [];
+}
+
+/* ===================== NAV ===================== */
+const SECTIONS = [
+  { id:"deliveries", label:"Company Deliveries", roles:["admin","super_admin"] },
+  { id:"receipts", label:"School Receipts", roles:["admin","super_admin","aeo","school_user"] },
+  { id:"comparison", label:"Comparison Dashboard", roles:["admin","super_admin","aeo","school_user"] },
+];
+function visibleTo(s){ return s.roles.includes(currentProfile.role); }
+
+function buildNav(){
+  const nav = document.getElementById("navList");
+  nav.innerHTML = "";
+  SECTIONS.filter(visibleTo).forEach(s => {
+    const a = document.createElement("a");
+    a.className = "nav-item" + (s.id === currentSection ? " active" : "");
+    a.textContent = s.label;
+    a.dataset.id = s.id;
+    a.onclick = () => navigate(s.id);
+    nav.appendChild(a);
+  });
+}
+document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
+
+async function navigate(id){
+  currentSection = id;
+  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
+  document.getElementById("sidebar").classList.remove("open");
+  const titleMap = Object.fromEntries(SECTIONS.map(s => [s.id, s.label]));
+  document.getElementById("pageTitle").textContent = titleMap[id] || "";
+  const content = document.getElementById("content");
+  content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
+  try{
+    if(id === "deliveries") await renderDeliveries(content);
+    else if(id === "receipts") await renderReceipts(content);
+    else if(id === "comparison") await renderComparison(content);
+  }catch(err){
+    content.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
+  }
+}
+
+/* ===================== COMPANY DELIVERIES ===================== */
+async function renderDeliveries(content){
+  const { data: invoices, error } = await sb.from("company_invoices")
+    .select("*, company_invoice_items(id, quantity, unit, school_id, product_id, schools(school_name,emis_code), products(product_name))")
+    .order("invoice_date", { ascending:false }).limit(50);
+  if(error) throw error;
+
+  const schoolOptions = cache.schools.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
+  const productOptions = cache.products.map(p => `<option value="${p.id}" data-unit="${esc(p.unit_name)}">${esc(p.product_name)}</option>`).join("");
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Record a new invoice / delivery</h3>
+      <div class="sub">One invoice can cover multiple schools and products.</div>
+      <form id="invoiceForm">
+        <div class="form-row">
+          <div><label>Invoice Number</label><input name="invoice_number" required /></div>
+          <div><label>Invoice Date</label><input type="date" name="invoice_date" required value="${todayStr()}"/></div>
+          <div><label>Delivery Date</label><input type="date" name="delivery_date" required value="${todayStr()}"/></div>
+          <div><label>Remarks</label><input name="remarks" /></div>
+        </div>
+        <div style="margin-top:18px;">
+          <label>Line items</label>
+          <div id="itemsList"></div>
+          <button type="button" class="btn-secondary" id="addItemBtn">+ Add line</button>
+        </div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Save invoice</button></div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h3>Recent invoices</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Invoice #</th><th>Invoice Date</th><th>Delivery Date</th><th>Lines</th><th>Status</th><th></th></tr></thead>
+        <tbody>${(invoices||[]).map(inv => invoiceRow(inv)).join("") || `<tr><td colspan="6" style="color:var(--ink-soft)">No invoices yet.</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+
+  const itemsList = document.getElementById("itemsList");
+  function addItemRow(){
+    const row = document.createElement("div");
+    row.className = "item-row";
+    row.innerHTML = `
+      <div><label>School</label><select class="item-school" required><option value="">Select…</option>${schoolOptions}</select></div>
+      <div><label>Product</label><select class="item-product" required>${productOptions}</select></div>
+      <div><label>Quantity</label><input class="item-qty" type="number" min="0" step="0.01" required /></div>
+      <div><label>Unit</label><input class="item-unit" readonly /></div>
+      <button type="button" class="remove-item">✕</button>`;
+    row.querySelector(".item-product").addEventListener("change", (e) => {
+      row.querySelector(".item-unit").value = e.target.selectedOptions[0]?.dataset.unit || "";
+    });
+    row.querySelector(".item-product").dispatchEvent(new Event("change"));
+    row.querySelector(".remove-item").addEventListener("click", () => row.remove());
+    itemsList.appendChild(row);
+  }
+  addItemRow();
+  document.getElementById("addItemBtn").addEventListener("click", addItemRow);
+
+  document.getElementById("invoiceForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const rows = Array.from(itemsList.querySelectorAll(".item-row"));
+    if(rows.length === 0){ toast("Add at least one line item", "bad"); return; }
+    const items = rows.map(r => ({
+      school_id: r.querySelector(".item-school").value,
+      product_id: r.querySelector(".item-product").value,
+      quantity: Number(r.querySelector(".item-qty").value),
+      unit: r.querySelector(".item-unit").value,
+    }));
+    if(items.some(i => !i.school_id || !i.product_id || !i.quantity)){
+      toast("Every line needs a school, product, and quantity", "bad"); return;
+    }
+    try{
+      const { data: inv, error: invErr } = await sb.from("company_invoices").insert({
+        invoice_number: fd.get("invoice_number"),
+        invoice_date: fd.get("invoice_date"),
+        delivery_date: fd.get("delivery_date"),
+        remarks: fd.get("remarks") || null,
+        entered_by: currentProfile.id,
+      }).select().single();
+      if(invErr) throw invErr;
+
+      const { error: itemsErr } = await sb.from("company_invoice_items").insert(
+        items.map(i => ({ ...i, invoice_id: inv.id }))
+      );
+      if(itemsErr) throw itemsErr;
+
+      toast("Invoice saved");
+      navigate("deliveries");
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+function invoiceRow(inv){
+  const lines = inv.company_invoice_items || [];
+  const summary = lines.map(l => `${esc(l.products?.product_name)}: ${l.quantity} → ${esc(l.schools?.school_name)}`).join("<br/>");
+  const statusPill = inv.status === "void" ? '<span class="pill pill-bad">Void</span>' : '<span class="pill pill-ok">Active</span>';
+  return `<tr>
+    <td>${esc(inv.invoice_number)}</td><td>${fmtDate(inv.invoice_date)}</td><td>${fmtDate(inv.delivery_date)}</td>
+    <td style="font-size:12px;">${summary || "—"}</td>
+    <td>${statusPill}</td>
+    <td>${inv.status !== "void" ? `<button class="link-btn danger" onclick="voidInvoice('${inv.id}')">Void</button>` : ""}</td>
+  </tr>`;
+}
+async function voidInvoice(id){
+  const reason = prompt("Reason for voiding this invoice:");
+  if(reason === null) return;
+  const { error } = await sb.from("company_invoices").update({ status:"void", void_reason: reason || null }).eq("id", id);
+  if(error){ toast(error.message, "bad"); return; }
+  toast("Invoice voided");
+  navigate("deliveries");
+}
+
+/* ===================== SCHOOL RECEIPTS ===================== */
+async function renderReceipts(content){
+  let schoolFilter = cache.schools.map(s => s.id);
+  const { data: receipts, error } = await sb.from("school_receipts")
+    .select("*, schools(school_name,emis_code), products(product_name,unit_name), company_invoices(invoice_number)")
+    .order("receipt_date", { ascending:false }).limit(50);
+  if(error) throw error;
+
+  const schoolOptions = cache.schools.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
+  const productOptions = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join("");
+  const fixedSchool = currentProfile.role === "school_user";
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Record actual receipt</h3>
+      <div class="sub">What the school actually received — this is compared against the company's claimed delivery.</div>
+      <form id="receiptForm">
+        <div class="form-row">
+          <div><label>School</label>
+            ${fixedSchool
+              ? `<input value="${esc(cache.schools[0]?.school_name || '')}" readonly />`
+              : `<select name="school_id" required><option value="">Select…</option>${schoolOptions}</select>`}
+          </div>
+          <div><label>Product</label><select name="product_id" required><option value="">Select…</option>${productOptions}</select></div>
+          <div><label>Receipt Date</label><input type="date" name="receipt_date" required value="${todayStr()}"/></div>
+          <div><label>Quantity Received</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
+          <div><label>Invoice Number (if known)</label><input name="invoice_number_text" placeholder="optional" /></div>
+          <div><label>Collected / verified by</label><input name="collected_by" /></div>
+          <div><label>Remarks</label><input name="remarks" /></div>
+        </div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Save receipt</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Recent receipts</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice</th><th>Status</th></tr></thead>
+        <tbody>${(receipts||[]).map(r => `
+          <tr>
+            <td>${fmtDate(r.receipt_date)}</td>
+            <td>${esc(r.schools?.school_name || "—")}</td>
+            <td>${esc(r.products?.product_name || "—")}</td>
+            <td>${r.quantity_received} ${esc(r.products?.unit_name || "")}</td>
+            <td>${esc(r.company_invoices?.invoice_number || "—")}</td>
+            <td>${r.status === "void" ? '<span class="pill pill-bad">Void</span>' : '<span class="pill pill-ok">Active</span>'}</td>
+          </tr>`).join("") || `<tr><td colspan="6" style="color:var(--ink-soft)">No receipts recorded yet.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+
+  document.getElementById("receiptForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const schoolId = fixedSchool ? cache.schools[0]?.id : fd.get("school_id");
+    if(!schoolId){ toast("Select a school", "bad"); return; }
+
+    let invoiceId = null;
+    const invNum = (fd.get("invoice_number_text") || "").trim();
+    if(invNum){
+      const { data: match } = await sb.from("company_invoices").select("id").eq("invoice_number", invNum).maybeSingle();
+      invoiceId = match?.id || null;
+    }
+    try{
+      const { error } = await sb.rpc("fn_record_school_receipt", {
+        p_school_id: schoolId,
+        p_product_id: fd.get("product_id"),
+        p_receipt_date: fd.get("receipt_date"),
+        p_quantity: Number(fd.get("quantity")),
+        p_invoice_id: invoiceId,
+        p_collected_by: fd.get("collected_by") || null,
+        p_remarks: fd.get("remarks") || null,
+      });
+      if(error) throw error;
+      toast("Receipt recorded");
+      navigate("receipts");
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+
+/* ===================== COMPARISON DASHBOARD ===================== */
+async function renderComparison(content){
+  content.innerHTML = `
+    <div class="card">
+      <h3>Filters</h3>
+      <form id="filterForm" class="form-row">
+        <div><label>From</label><input type="date" name="from" value="${monthAgoStr()}"/></div>
+        <div><label>To</label><input type="date" name="to" value="${todayStr()}"/></div>
+        <div><label>Product</label><select name="product_id"><option value="">All</option>${cache.products.map(p=>`<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+        <div><label>Status</label>
+          <select name="status">
+            <option value="">All</option>
+            <option>Matched</option><option>Short Received</option><option>Excess Received</option>
+            <option>Company Record Missing</option><option>AEO Record Missing</option>
+          </select>
+        </div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
+      </form>
+    </div>
+    <div id="comparisonResults"><p style="color:var(--ink-soft)">Loading…</p></div>`;
+
+  document.getElementById("filterForm").addEventListener("submit", (e) => { e.preventDefault(); loadComparison(); });
+  await loadComparison();
+}
+async function loadComparison(){
+  const fd = new FormData(document.getElementById("filterForm"));
+  let q = sb.from("v_company_vs_aeo_comparison")
+    .select("*, schools(school_name,emis_code), products(product_name,unit_name)")
+    .order("invoice_date", { ascending:false }).limit(300);
+  if(fd.get("from")) q = q.gte("invoice_date", fd.get("from"));
+  if(fd.get("to")) q = q.lte("invoice_date", fd.get("to"));
+  if(fd.get("product_id")) q = q.eq("product_id", fd.get("product_id"));
+  if(fd.get("status")) q = q.eq("status", fd.get("status"));
+
+  const { data: rows, error } = await q;
+  const box = document.getElementById("comparisonResults");
+  if(error){ box.innerHTML = `<div class="card"><div class="err">${esc(error.message)}</div></div>`; return; }
+
+  const counts = { "Matched":0, "Short Received":0, "Excess Received":0, "Company Record Missing":0, "AEO Record Missing":0 };
+  (rows||[]).forEach(r => { counts[r.status] = (counts[r.status]||0) + 1; });
+
+  box.innerHTML = `
+    <div class="grid-4">
+      <div class="stat"><div class="n">${counts["Matched"]}</div><div class="l">Matched</div></div>
+      <div class="stat"><div class="n">${counts["Short Received"]}</div><div class="l">Short</div></div>
+      <div class="stat"><div class="n">${counts["Excess Received"]}</div><div class="l">Excess</div></div>
+      <div class="stat"><div class="n">${counts["Company Record Missing"] + counts["AEO Record Missing"]}</div><div class="l">Missing a record</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap"><table>
+        <thead><tr><th>Invoice</th><th>Date</th><th>School</th><th>Product</th><th>Company Qty</th><th>AEO Qty</th><th>Difference</th><th>Status</th></tr></thead>
+        <tbody>${(rows||[]).map(r => `
+          <tr>
+            <td>${esc(r.invoice_number || "—")}</td>
+            <td>${fmtDate(r.invoice_date)}</td>
+            <td>${esc(r.schools?.school_name || "—")}</td>
+            <td>${esc(r.products?.product_name || "—")}</td>
+            <td>${r.company_qty}</td>
+            <td>${r.aeo_qty}</td>
+            <td>${r.difference > 0 ? "+" : ""}${r.difference}</td>
+            <td>${statusPill(r.status)}</td>
+          </tr>`).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No records match these filters.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+function statusPill(status){
+  const map = {
+    "Matched": "pill-ok",
+    "Short Received": "pill-warn",
+    "Excess Received": "pill-warn",
+    "Company Record Missing": "pill-bad",
+    "AEO Record Missing": "pill-bad",
+  };
+  return `<span class="pill ${map[status]||'pill-role'}">${esc(status)}</span>`;
+}
+
+/* ===================== BOOTSTRAP ===================== */
+(async function init(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(session){ await afterLogin(); } else { showLogin(); }
+})();
+</script>
+</body>
+</html>
