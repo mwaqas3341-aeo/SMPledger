@@ -1,114 +1,279 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dashboard — School Meal Program</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-  :root{ --navy:#122341; --wheat:#c99a3b; --paper:#f7f4ee; --ink:#1c2430; --slate:#5c6472; --line:#dcd4c2; }
-  *{box-sizing:border-box;}
-  body{margin:0;font-family:'Inter',system-ui,sans-serif;background:var(--paper);color:var(--ink);}
-  header{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:18px 28px;background:var(--navy);color:#fff;
-  }
-  header .brand{font-family:'Source Serif 4',serif;font-weight:600;font-size:18px;}
-  header .who{font-size:13px;color:#c9d0dd;text-align:right;}
-  header button{
-    margin-left:16px;background:transparent;border:1px solid rgba(255,255,255,.35);
-    color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;
-  }
-  header button:hover{background:rgba(255,255,255,.1);}
-  .wrap{max-width:760px;margin:60px auto;padding:0 24px;}
-  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:32px;}
-  .card h1{font-family:'Source Serif 4',serif;font-size:24px;margin:0 0 8px;}
-  .card p{color:var(--slate);line-height:1.6;margin:0 0 4px;}
-  .row{display:flex;gap:16px;flex-wrap:wrap;margin-top:24px;}
-  .pill{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:13px;}
-  .pill b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);margin-bottom:2px;font-weight:600;}
-  .warn{margin-top:20px;background:#fdf3dd;border:1px solid #ecd8a3;color:#7a5a12;padding:12px 14px;border-radius:8px;font-size:13.5px;}
-  .modules{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:24px;}
-  .modules a{
-    display:block;padding:16px;border:1px solid var(--line);border-radius:10px;
-    color:var(--ink);text-decoration:none;background:var(--paper);font-weight:600;font-size:14px;
-  }
-  .modules a small{display:block;font-weight:400;color:var(--slate);margin-top:4px;font-size:12px;}
-  .modules a:hover{border-color:var(--navy);}
-</style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SMP Dashboard — School Meal Program</title>
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
 </head>
 <body>
-<header>
-  <div class="brand">School Meal Program</div>
-  <div style="display:flex;align-items:center;">
-    <span class="who" id="whoBox">Loading…</span>
-    <button id="signOutBtn">Sign out</button>
-  </div>
-</header>
 
-<div class="wrap">
-  <div class="card">
-    <h1>Signed in</h1>
-    <p id="nameLine">Loading your account…</p>
-    <div class="row" id="pillRow"></div>
-    <div class="warn" id="warnBox" style="display:none;"></div>
-
-    <div class="modules">
-      <a href="#" onclick="return false;">Inventory<small>Coming next</small></a>
-      <a href="#" onclick="return false;">Consumption<small>Coming next</small></a>
-      <a href="#" onclick="return false;">Operations<small>Coming next</small></a>
-      <a href="#" onclick="return false;">Transfers &amp; Loans<small>Coming next</small></a>
-      <a href="#" onclick="return false;">Reports<small>Coming next</small></a>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="eyebrow">SMP · Punjab SED</div>
+      <h2>Dashboard</h2>
     </div>
+    <div class="top-nav"><a class="top-nav-item active" href="dashboard.html">Dashboard</a><a class="top-nav-item" href="inventory.html">Inventory</a><a class="top-nav-item" href="consumption.html">Consumption</a><a class="top-nav-item" href="operations.html">Operations</a><a class="top-nav-item" href="transfers.html">Transfers & Loans</a><a class="top-nav-item" href="reports.html">Reports</a></div>
+    <nav id="navList"></nav>
+    <div class="footer">
+      <div id="whoBox">—</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </aside>
+  <div id="main">
+    <div id="topbar">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <button id="menuToggle" type="button">☰</button>
+        <h1 id="pageTitle">Overview</h1>
+      </div>
+      <div class="who" id="topWho"></div>
+    </div>
+    <div id="content"></div>
   </div>
 </div>
 
-<script src="assets/config.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<div class="toast-area" id="toastArea"></div>
+
 <script>
-  const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+/* ===================== CONFIG ===================== */
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
 
-  (async () => {
-    const { data: { session } } = await sb.auth.getSession();
-    if (!session) { window.location.href = "index.html"; return; }
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null, currentSection = "overview";
+let cache = { markaz:[], schools:[], products:[] };
 
-    document.getElementById("whoBox").textContent = session.user.email;
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 
-    const { data: profile } = await sb
-      .from("profiles")
-      .select("full_name, role, markaz_id")
-      .eq("id", session.user.id)
-      .maybeSingle();
+/* ===================== AUTH ===================== */
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
 
-    document.getElementById("nameLine").textContent = profile?.full_name
-      ? `Welcome, ${profile.full_name}.`
-      : "Welcome.";
-
-    let markazName = "—";
-    if (profile?.markaz_id) {
-      const { data: markaz } = await sb.from("markaz").select("name").eq("id", profile.markaz_id).maybeSingle();
-      markazName = markaz?.name || "—";
-    }
-
-    document.getElementById("pillRow").innerHTML = `
-      <div class="pill"><b>Role</b>${profile?.role ?? "—"}</div>
-      <div class="pill"><b>Markaz</b>${markazName}</div>
-    `;
-
-    const warning = sessionStorage.getItem("smp_jurisdiction_warning");
-    if (warning) {
-      const box = document.getElementById("warnBox");
-      box.textContent = "⚠ " + warning + " Contact your admin to correct this in the Integrated Dashboard.";
-      box.style.display = "block";
-      sessionStorage.removeItem("smp_jurisdiction_warning");
-    }
-  })();
-
-  document.getElementById("signOutBtn").addEventListener("click", async () => {
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){
     await sb.auth.signOut();
     window.location.href = "index.html";
+    return;
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+boot();
+function showApp(){
+  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
+  document.getElementById("topWho").textContent = currentUser.email;
+  buildNav();
+  navigate("overview");
+}
+
+async function loadRefData(){
+  const [{ data: markaz }, { data: products }] = await Promise.all([
+    sb.from("markaz").select("id,name").eq("active", true).order("name"),
+    sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
+  ]);
+  cache.markaz = markaz || [];
+  cache.products = products || [];
+
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
+  const { data: schools } = await schoolsQuery;
+  cache.schools = schools || [];
+}
+
+/* ===================== NAV ===================== */
+const SECTIONS = [{ id:"overview", label:"Overview" }];
+function buildNav(){
+  const nav = document.getElementById("navList");
+  nav.innerHTML = "";
+  SECTIONS.forEach(s => {
+    const a = document.createElement("a");
+    a.className = "nav-item" + (s.id === currentSection ? " active" : "");
+    a.textContent = s.label;
+    a.dataset.id = s.id;
+    a.onclick = () => navigate(s.id);
+    nav.appendChild(a);
   });
+}
+document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
+
+async function navigate(id){
+  currentSection = id;
+  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
+  document.getElementById("sidebar").classList.remove("open");
+  const content = document.getElementById("content");
+  content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
+  try{
+    await renderOverview(content);
+  }catch(err){
+    content.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
+  }
+}
+
+/* ===================== OVERVIEW ===================== */
+async function renderOverview(content){
+  const defaultFrom = daysAgoStr(30);
+  const defaultTo = todayStr();
+  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Filters</h3>
+      <form id="dashFilterForm" class="form-row">
+        <div><label>From</label><input type="date" name="from" value="${defaultFrom}"/></div>
+        <div><label>To</label><input type="date" name="to" value="${defaultTo}"/></div>
+        <div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${markazOpts}</select></div>
+        <div><label>Product</label><select name="product_id"><option value="">All</option>${productOpts}</select></div>
+        <div><label>Low stock threshold</label><input type="number" name="low_threshold" value="20" min="0" step="1"/></div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
+      </form>
+    </div>
+    <div id="dashResults"><p style="color:var(--ink-soft)">Loading…</p></div>`;
+
+  document.getElementById("dashFilterForm").addEventListener("submit", (e) => { e.preventDefault(); loadOverview(); });
+  await loadOverview();
+}
+
+async function loadOverview(){
+  const fd = new FormData(document.getElementById("dashFilterForm"));
+  const from = fd.get("from"), to = fd.get("to");
+  const markazId = fd.get("markaz_id") || null;
+  const productId = fd.get("product_id") || null;
+  const lowThreshold = Number(fd.get("low_threshold")) || 0;
+  const box = document.getElementById("dashResults");
+  box.innerHTML = `<p style="color:var(--ink-soft)">Calculating…</p>`;
+
+  const scopedSchoolIds = (markazId ? cache.schools.filter(s => s.markaz_id === markazId) : cache.schools).map(s => s.id);
+  if(scopedSchoolIds.length === 0){
+    box.innerHTML = `<div class="card">No schools in scope.</div>`;
+    return;
+  }
+
+  // ---- Balances (as of now), scoped ----
+  let balQuery = sb.from("v_school_balances").select("*").in("school_id", scopedSchoolIds);
+  if(productId) balQuery = balQuery.eq("product_id", productId);
+  const { data: balances, error: balErr } = await balQuery;
+  if(balErr){ box.innerHTML = `<div class="card"><div class="err">${esc(balErr.message)}</div></div>`; return; }
+
+  // ---- Ledger movement within range, scoped ----
+  let txQuery = sb.from("inventory_transactions").select("school_id, product_id, quantity, transaction_type")
+    .in("school_id", scopedSchoolIds).gte("txn_date", from).lte("txn_date", to);
+  if(productId) txQuery = txQuery.eq("product_id", productId);
+  const { data: txns, error: txErr } = await txQuery;
+  if(txErr){ box.innerHTML = `<div class="card"><div class="err">${esc(txErr.message)}</div></div>`; return; }
+
+  const receivedByProduct = {}, consumedByProduct = {};
+  const schoolsReceiving = { }, schoolsConsuming = { };
+  (txns||[]).forEach(t => {
+    const pname = cache.products.find(p => p.id === t.product_id)?.product_name || t.product_id;
+    if(t.transaction_type === "SCHOOL_RECEIPT"){
+      receivedByProduct[pname] = (receivedByProduct[pname]||0) + Number(t.quantity);
+      (schoolsReceiving[pname] ||= new Set()).add(t.school_id);
+    }
+    if(t.transaction_type === "CONSUMPTION"){
+      consumedByProduct[pname] = (consumedByProduct[pname]||0) + Math.abs(Number(t.quantity));
+      (schoolsConsuming[pname] ||= new Set()).add(t.school_id);
+    }
+  });
+
+  // ---- Comparison summary (scoped by RLS automatically; filter product client-side) ----
+  let cmpQuery = sb.from("v_company_vs_aeo_comparison").select("status, product_id").limit(2000);
+  if(productId) cmpQuery = cmpQuery.eq("product_id", productId);
+  const { data: cmpRows } = await cmpQuery;
+  const cmpCounts = { "Matched":0, "Short Received":0, "Excess Received":0, "Company Record Missing":0, "AEO Record Missing":0 };
+  (cmpRows||[]).forEach(r => { cmpCounts[r.status] = (cmpCounts[r.status]||0) + 1; });
+
+  // ---- Inventory health ----
+  const zeroStock = (balances||[]).filter(b => Number(b.balance) === 0);
+  const lowStock = (balances||[]).filter(b => Number(b.balance) > 0 && Number(b.balance) <= lowThreshold);
+  const negative = (balances||[]).filter(b => Number(b.balance) < 0);
+
+  // ---- Loans & transfers in range, scoped ----
+  let loanQuery = sb.from("inventory_loans").select("id, status", { count:"exact" })
+    .or(`from_school_id.in.(${scopedSchoolIds.join(",")}),to_school_id.in.(${scopedSchoolIds.join(",")})`)
+    .gte("loan_date", from).lte("loan_date", to);
+  const { data: loanRows } = await loanQuery;
+  const outstandingLoans = (loanRows||[]).filter(l => ["pending","approved","partially_returned"].includes(l.status)).length;
+
+  let transferQuery = sb.from("school_transfers").select("id", { count:"exact" })
+    .or(`from_school_id.in.(${scopedSchoolIds.join(",")}),to_school_id.in.(${scopedSchoolIds.join(",")})`)
+    .gte("transfer_date", from).lte("transfer_date", to);
+  const { count: transferCount } = await transferQuery;
+
+  box.innerHTML = `
+    <div class="card">
+      <h3>Overall</h3>
+      <div class="grid-4">
+        <div class="stat"><div class="n">${scopedSchoolIds.length}</div><div class="l">Schools in scope</div></div>
+        ${Object.keys(receivedByProduct).length === 0 ? "" : Object.entries(receivedByProduct).map(([p,q]) => `
+          <div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} received</div></div>`).join("")}
+        ${Object.keys(consumedByProduct).length === 0 ? "" : Object.entries(consumedByProduct).map(([p,q]) => `
+          <div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} consumed</div></div>`).join("")}
+        ${(balances||[]).length === 0 ? "" : Object.entries(
+            (balances||[]).reduce((acc,b) => { acc[b.product_name] = (acc[b.product_name]||0) + Number(b.balance); return acc; }, {})
+          ).map(([p,q]) => `<div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} remaining</div></div>`).join("")}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Company vs AEO Comparison</h3>
+      <div class="grid-4">
+        <div class="stat"><div class="n">${cmpCounts["Matched"]}</div><div class="l">Matched</div></div>
+        <div class="stat"><div class="n">${cmpCounts["Short Received"]}</div><div class="l">Short</div></div>
+        <div class="stat"><div class="n">${cmpCounts["Excess Received"]}</div><div class="l">Excess</div></div>
+        <div class="stat"><div class="n">${cmpCounts["Company Record Missing"]+cmpCounts["AEO Record Missing"]}</div><div class="l">Missing a record</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Inventory Health</h3>
+      <div class="grid-4">
+        <div class="stat"><div class="n">${lowStock.length}</div><div class="l">Low stock (≤ ${lowThreshold})</div></div>
+        <div class="stat"><div class="n">${zeroStock.length}</div><div class="l">Zero stock</div></div>
+        <div class="stat"><div class="n" style="color:${negative.length ? 'var(--bad-fg)' : 'inherit'}">${negative.length}</div><div class="l">Negative balance (should be 0)</div></div>
+        <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Outstanding loans</div></div>
+        <div class="stat"><div class="n">${transferCount ?? 0}</div><div class="l">Transfers in period</div></div>
+      </div>
+      ${renderFlagTable("Low stock schools", lowStock)}
+      ${renderFlagTable("Zero stock schools", zeroStock)}
+      ${negative.length ? renderFlagTable("⚠ Negative balance schools (investigate)", negative) : ""}
+    </div>`;
+}
+
+function renderFlagTable(title, rows){
+  if(rows.length === 0) return "";
+  return `
+    <div style="margin-top:18px;">
+      <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">${esc(title)}</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>School</th><th>EMIS</th><th>Product</th><th>Balance</th></tr></thead>
+        <tbody>${rows.slice(0,100).map(r => `
+          <tr><td>${esc(r.school_name)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.product_name)}</td><td>${fmt(r.balance)}</td></tr>`).join("")}
+        </tbody>
+      </table></div>
+      ${rows.length > 100 ? `<div class="sub" style="margin-top:6px;">Showing first 100 of ${rows.length}.</div>` : ""}
+    </div>`;
+}
+
 </script>
 </body>
 </html>

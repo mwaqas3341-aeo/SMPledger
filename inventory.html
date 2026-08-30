@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SMP AEO Inventory — School Meal Program</title>
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="eyebrow">SMP · Punjab SED</div>
+      <h2>AEO Inventory</h2>
+    </div>
+    <div class="top-nav"><a class="top-nav-item" href="dashboard.html">Dashboard</a><a class="top-nav-item active" href="inventory.html">Inventory</a><a class="top-nav-item" href="consumption.html">Consumption</a><a class="top-nav-item" href="operations.html">Operations</a><a class="top-nav-item" href="transfers.html">Transfers & Loans</a><a class="top-nav-item" href="reports.html">Reports</a></div>
+    <nav id="navList"></nav>
+    <div class="footer">
+      <div id="whoBox">—</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </aside>
+  <div id="main">
+    <div id="topbar">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <button id="menuToggle" type="button">☰</button>
+        <h1 id="pageTitle">Markaz Inventory Receipts</h1>
+      </div>
+      <div class="who" id="topWho"></div>
+    </div>
+    <div id="content"></div>
+  </div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null, currentSection = "markaz_receipts";
+let cache = { markaz:[], schools:[], products:[] };
+
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+/* ===================== AUTH ===================== */
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
+
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    window.location.href = "index.html";
+    return;
+  }
+  if(!["admin","super_admin","aeo"].includes(profile.role)){
+    alert("This module is for AEOs and administrators.");
+    window.location.href = "dashboard.html";
+    return;
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+boot();
+function showApp(){
+  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
+  document.getElementById("topWho").textContent = currentUser.email;
+  buildNav();
+  navigate("markaz_receipts");
+}
+
+async function loadRefData(){
+  let markazQuery = sb.from("markaz").select("id,name,tehsil").eq("active", true).order("name");
+  if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
+  const [{ data: markaz }, { data: products }] = await Promise.all([
+    markazQuery,
+    sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
+  ]);
+  cache.markaz = markaz || [];
+  cache.products = products || [];
+
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  const { data: schools } = await schoolsQuery;
+  cache.schools = schools || [];
+}
+
+/* ===================== NAV ===================== */
+const isAdmin = () => ["admin","super_admin"].includes(currentProfile.role);
+function SECTIONS(){
+  const s = [{ id:"markaz_receipts", label:"Markaz Inventory Receipts" }];
+  if(isAdmin()) s.push({ id:"adjustments", label:"Inventory Adjustments" });
+  return s;
+}
+function buildNav(){
+  const nav = document.getElementById("navList");
+  nav.innerHTML = "";
+  SECTIONS().forEach(s => {
+    const a = document.createElement("a");
+    a.className = "nav-item" + (s.id === currentSection ? " active" : "");
+    a.textContent = s.label;
+    a.dataset.id = s.id;
+    a.onclick = () => navigate(s.id);
+    nav.appendChild(a);
+  });
+}
+document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
+
+async function navigate(id){
+  currentSection = id;
+  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
+  document.getElementById("sidebar").classList.remove("open");
+  const titleMap = Object.fromEntries(SECTIONS().map(s => [s.id, s.label]));
+  document.getElementById("pageTitle").textContent = titleMap[id] || "";
+  const content = document.getElementById("content");
+  content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
+  try{
+    if(id === "markaz_receipts") await renderMarkazReceipts(content);
+    else if(id === "adjustments") await renderAdjustments(content);
+  }catch(err){
+    content.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
+  }
+}
+
+/* ===================== MARKAZ / AEO INVENTORY RECEIPTS ===================== */
+async function renderMarkazReceipts(content){
+  const { data: receipts, error } = await sb.from("aeo_markaz_receipts")
+    .select("*, markaz(name), products(product_name,unit_name)")
+    .order("receipt_date", { ascending:false }).limit(50);
+  if(error) throw error;
+
+  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join("");
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Record Markaz-level receipt</h3>
+      <div class="sub">Stock received directly by the AEO/Markaz, before it's allocated or transferred to individual schools.</div>
+      <form id="receiptForm">
+        <div class="form-row">
+          <div><label>Markaz</label><select name="markaz_id" required><option value="">Select…</option>${markazOpts}</select></div>
+          <div><label>Product</label><select name="product_id" required>${productOpts}</select></div>
+          <div><label>Date</label><input type="date" name="receipt_date" required value="${todayStr()}"/></div>
+          <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
+          <div><label>Source</label><input name="source" placeholder="e.g. District store" /></div>
+          <div><label>Invoice Number</label><input name="invoice_number" /></div>
+          <div><label>Received From</label><input name="received_from" /></div>
+          <div><label>Remarks</label><input name="remarks" /></div>
+        </div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Save receipt</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Recent Markaz receipts</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>Qty</th><th>Source</th><th>Invoice #</th><th>Received From</th></tr></thead>
+        <tbody>${(receipts||[]).map(r => `
+          <tr>
+            <td>${fmtDate(r.receipt_date)}</td>
+            <td>${esc(r.markaz?.name || "—")}</td>
+            <td>${esc(r.products?.product_name || "—")}</td>
+            <td>${r.quantity} ${esc(r.products?.unit_name || "")}</td>
+            <td>${esc(r.source || "—")}</td>
+            <td>${esc(r.invoice_number || "—")}</td>
+            <td>${esc(r.received_from || "—")}</td>
+          </tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">No Markaz receipts yet.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+
+  document.getElementById("receiptForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try{
+      const { error } = await sb.rpc("fn_record_aeo_markaz_receipt", {
+        p_markaz_id: fd.get("markaz_id"),
+        p_product_id: fd.get("product_id"),
+        p_receipt_date: fd.get("receipt_date"),
+        p_quantity: Number(fd.get("quantity")),
+        p_source: fd.get("source") || null,
+        p_invoice_number: fd.get("invoice_number") || null,
+        p_received_from: fd.get("received_from") || null,
+        p_remarks: fd.get("remarks") || null,
+      });
+      if(error) throw error;
+      toast("Markaz receipt recorded");
+      navigate("markaz_receipts");
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+
+/* ===================== INVENTORY ADJUSTMENTS (admin only) ===================== */
+async function renderAdjustments(content){
+  const { data: adjustments, error } = await sb.from("inventory_adjustments")
+    .select("*, schools(school_name,emis_code), markaz(name), products(product_name,unit_name)")
+    .order("adjustment_date", { ascending:false }).limit(50);
+  if(error) throw error;
+
+  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const schoolOpts = cache.schools.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join("");
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Post a manual adjustment</h3>
+      <div class="sub">Use for missing, damaged, or expired stock (negative quantity), or a correction (positive quantity). Every adjustment is audit-logged.</div>
+      <form id="adjustForm">
+        <div class="form-row">
+          <div><label>Applies to</label>
+            <select name="entity_type" id="entityType" required>
+              <option value="school">A School</option>
+              <option value="markaz">A Markaz</option>
+            </select>
+          </div>
+          <div id="schoolField"><label>School</label><select name="school_id"><option value="">Select…</option>${schoolOpts}</select></div>
+          <div id="markazField" class="hidden"><label>Markaz</label><select name="markaz_id"><option value="">Select…</option>${markazOpts}</select></div>
+          <div><label>Product</label><select name="product_id" required>${productOpts}</select></div>
+          <div><label>Date</label><input type="date" name="adjustment_date" required value="${todayStr()}"/></div>
+          <div><label>Quantity (negative = loss/damage/expiry, positive = correction up)</label><input type="number" step="0.01" name="quantity" required /></div>
+          <div><label>Reason</label><input name="reason" required placeholder="e.g. Expired stock removed" /></div>
+        </div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Post adjustment</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Recent adjustments</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Applies To</th><th>Product</th><th>Qty</th><th>Reason</th></tr></thead>
+        <tbody>${(adjustments||[]).map(a => `
+          <tr>
+            <td>${fmtDate(a.adjustment_date)}</td>
+            <td>${a.entity_type === "school" ? esc(a.schools?.school_name || "—") : esc(a.markaz?.name || "—")}</td>
+            <td>${esc(a.products?.product_name || "—")}</td>
+            <td style="color:${a.quantity < 0 ? 'var(--bad-fg)' : 'var(--ok-fg)'}; font-weight:600;">${a.quantity > 0 ? "+" : ""}${a.quantity}</td>
+            <td>${esc(a.reason)}</td>
+          </tr>`).join("") || `<tr><td colspan="5" style="color:var(--ink-soft)">No adjustments recorded yet.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+
+  const entityType = document.getElementById("entityType");
+  const schoolField = document.getElementById("schoolField");
+  const markazField = document.getElementById("markazField");
+  entityType.addEventListener("change", () => {
+    schoolField.classList.toggle("hidden", entityType.value !== "school");
+    markazField.classList.toggle("hidden", entityType.value !== "markaz");
+  });
+
+  document.getElementById("adjustForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const entType = fd.get("entity_type");
+    try{
+      const { error } = await sb.rpc("fn_create_adjustment", {
+        p_entity_type: entType,
+        p_school_id: entType === "school" ? fd.get("school_id") : null,
+        p_markaz_id: entType === "markaz" ? fd.get("markaz_id") : null,
+        p_product_id: fd.get("product_id"),
+        p_quantity: Number(fd.get("quantity")),
+        p_adjustment_date: fd.get("adjustment_date"),
+        p_reason: fd.get("reason"),
+      });
+      if(error) throw error;
+      toast("Adjustment posted");
+      navigate("adjustments");
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+
+</script>
+</body>
+</html>
