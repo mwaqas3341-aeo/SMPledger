@@ -273,6 +273,14 @@ async function renderUsers(content){
           <div><label>Full name</label><input name="full_name" required /></div>
           <div><label>Email</label><input name="email" type="email" required /></div>
           <div><label>Temporary password</label><input name="password" type="text" minlength="8" required placeholder="min 8 characters"/></div>
+          <div>
+            <label>CNIC (Integrated Dashboard)</label>
+            <div style="display:flex;gap:6px;">
+              <input name="cnic" id="cnicInput" placeholder="for AEO / Admin — leave blank for School user" />
+              <button type="button" class="btn-secondary" id="resolveCnicBtn">Resolve</button>
+            </div>
+            <div class="sub" id="cnicStatus"></div>
+          </div>
           <div><label>Role</label>
             <select name="role" id="roleSelect" required>
               <option value="school_user">School user</option>
@@ -301,6 +309,8 @@ async function renderUsers(content){
   const roleSelect = document.getElementById("roleSelect");
   const markazField = document.getElementById("markazField");
   const schoolField = document.getElementById("schoolField");
+  const cnicInput = document.getElementById("cnicInput");
+  const cnicStatus = document.getElementById("cnicStatus");
   function toggleScopeFields(){
     const r = roleSelect.value;
     markazField.classList.toggle("hidden", r !== "aeo");
@@ -309,20 +319,54 @@ async function renderUsers(content){
   roleSelect.addEventListener("change", toggleScopeFields);
   toggleScopeFields();
 
+  // Resolve role + markaz from Integrated Dashboard (A-I-DB) by CNIC, instead of
+  // an admin picking them manually. Falls back to manual fields on any issue -
+  // this never blocks account creation, just pre-fills it when it can.
+  document.getElementById("resolveCnicBtn").addEventListener("click", async () => {
+    const cnic = cnicInput.value.trim();
+    if (!cnic) { cnicStatus.textContent = "Enter a CNIC first."; return; }
+    cnicStatus.textContent = "Looking up…";
+    try {
+      const result = await callEdge("lookup_cnic", { cnic });
+      if (!result.found) {
+        cnicStatus.textContent = "No A-I-DB record for this CNIC — set role/markaz manually.";
+        return;
+      }
+      roleSelect.value = result.role;
+      toggleScopeFields();
+      if (result.markaz_id) {
+        const markazSelect = markazField.querySelector("select[name=markaz_id]");
+        markazSelect.value = result.markaz_id;
+      }
+      cnicStatus.textContent = result.markaz_warning
+        ? `Resolved: ${result.full_name || "—"} (${result.role}). ⚠ ${result.markaz_warning}`
+        : `Resolved: ${result.full_name || "—"} — ${result.role}${result.markaz_id ? "" : ""}. Jurisdiction set from A-I-DB.`;
+    } catch (err) {
+      cnicStatus.textContent = "Lookup failed: " + err.message;
+    }
+  });
+
   document.getElementById("createUserForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    const role = fd.get("role");
+    // A-I-DB has no concept of school_user - never send a CNIC for that role,
+    // even if one was typed in before the role was switched.
+    const cnic = role !== "school_user" ? fd.get("cnic")?.trim() : "";
     const payload = {
       full_name: fd.get("full_name"),
       email: fd.get("email"),
       password: fd.get("password"),
+      cnic: cnic || undefined,
+      // Manual role/markaz are sent as a fallback - the edge function only
+      // falls back to these for whatever A-I-DB's lookup couldn't resolve.
       role: fd.get("role"),
       markaz_id: fd.get("role") === "aeo" ? (fd.get("markaz_id") || null) : null,
       school_id: fd.get("role") === "school_user" ? (fd.get("school_id") || null) : null,
     };
     try{
-      await callEdge("create_user", payload);
-      toast("Account created");
+      const res = await callEdge("create_user", payload);
+      toast(res.markaz_warning ? `Account created — ⚠ ${res.markaz_warning}` : "Account created");
       navigate("users");
     }catch(err){ toast(err.message, "bad"); }
   });
