@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>School Meal Program — Layyah</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --navy:#122341;
+    --navy-deep:#0b1830;
+    --wheat:#c99a3b;
+    --wheat-light:#e8c979;
+    --paper:#f7f4ee;
+    --paper-dim:#efe9dd;
+    --ink:#1c2430;
+    --slate:#5c6472;
+    --line:#dcd4c2;
+    --error:#b3432c;
+    --error-bg:#fbebe6;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    font-family:'Inter',system-ui,sans-serif;
+    color:var(--ink);
+    background:var(--paper);
+    display:flex;
+    min-height:100vh;
+  }
+  a{color:inherit;}
+
+  /* ---- left: identity panel ---- */
+  .brand-panel{
+    flex:1 1 46%;
+    background:linear-gradient(165deg, var(--navy) 0%, var(--navy-deep) 100%);
+    color:#f3efe3;
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+    padding:56px 56px 44px;
+    position:relative;
+    overflow:hidden;
+    min-height:100vh;
+  }
+  .grain-motif{
+    position:absolute;
+    inset:auto -10% -18% auto;
+    width:520px;
+    opacity:.14;
+    pointer-events:none;
+  }
+  .brand-top .eyebrow{
+    font-size:12.5px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--wheat-light);
+    font-weight:600;
+    margin:0 0 18px;
+  }
+  .brand-top h1{
+    font-family:'Source Serif 4',serif;
+    font-weight:600;
+    font-size:clamp(32px,4vw,44px);
+    line-height:1.12;
+    margin:0 0 20px;
+  }
+  .brand-top p{
+    font-size:15.5px;
+    line-height:1.6;
+    color:#c9d0dd;
+    max-width:36ch;
+    margin:0;
+  }
+  .brand-stats{
+    display:flex;
+    gap:36px;
+    margin-top:48px;
+    position:relative;
+    z-index:1;
+  }
+  .brand-stats div b{
+    display:block;
+    font-family:'Source Serif 4',serif;
+    font-size:26px;
+    color:#fff;
+  }
+  .brand-stats div span{
+    font-size:12.5px;
+    color:#9aa5b8;
+  }
+  .brand-foot{
+    font-size:12.5px;
+    color:#8b96a9;
+    position:relative;
+    z-index:1;
+  }
+
+  /* ---- right: login form ---- */
+  .form-panel{
+    flex:1 1 54%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:32px;
+  }
+  .form-card{
+    width:100%;
+    max-width:392px;
+  }
+  .form-card .kicker{
+    font-size:12.5px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--wheat);
+    font-weight:700;
+    margin:0 0 8px;
+  }
+  .form-card h2{
+    font-family:'Source Serif 4',serif;
+    font-size:26px;
+    font-weight:600;
+    margin:0 0 6px;
+    color:var(--navy-deep);
+  }
+  .form-card .sub{
+    font-size:14px;
+    color:var(--slate);
+    margin:0 0 32px;
+    line-height:1.5;
+  }
+  label{
+    display:block;
+    font-size:13px;
+    font-weight:600;
+    color:var(--ink);
+    margin:0 0 6px;
+  }
+  .field{margin-bottom:18px;}
+  input{
+    width:100%;
+    padding:12px 14px;
+    font-size:15px;
+    font-family:inherit;
+    border:1.5px solid var(--line);
+    border-radius:var(--radius);
+    background:#fff;
+    color:var(--ink);
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input::placeholder{color:#a8a196;}
+  input:focus{
+    outline:none;
+    border-color:var(--navy);
+    box-shadow:0 0 0 3px rgba(18,35,65,.12);
+  }
+  .pw-row{position:relative;}
+  .pw-toggle{
+    position:absolute;
+    right:10px; top:50%; transform:translateY(-50%);
+    background:none; border:none;
+    font-size:12.5px; font-weight:600;
+    color:var(--slate);
+    cursor:pointer;
+    padding:6px;
+  }
+  .pw-toggle:hover{color:var(--navy);}
+
+  button[type=submit]{
+    width:100%;
+    padding:13px 16px;
+    font-size:15px;
+    font-weight:600;
+    font-family:inherit;
+    color:#fff;
+    background:var(--navy);
+    border:none;
+    border-radius:var(--radius);
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    transition:background .15s;
+    margin-top:6px;
+  }
+  button[type=submit]:hover{background:var(--navy-deep);}
+  button[type=submit]:disabled{background:#9aa5b8;cursor:default;}
+
+  .spinner{
+    width:15px; height:15px;
+    border:2px solid rgba(255,255,255,.4);
+    border-top-color:#fff;
+    border-radius:50%;
+    animation:spin .7s linear infinite;
+    display:none;
+  }
+  button[type=submit].loading .spinner{display:inline-block;}
+  button[type=submit].loading .btn-label{display:none;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .error-box{
+    display:none;
+    background:var(--error-bg);
+    border:1px solid #eecdc2;
+    color:var(--error);
+    font-size:13.5px;
+    padding:11px 14px;
+    border-radius:var(--radius);
+    margin-bottom:18px;
+    line-height:1.5;
+  }
+  .error-box.show{display:block;}
+
+  .warn-box{
+    display:none;
+    background:#fdf3dd;
+    border:1px solid #ecd8a3;
+    color:#7a5a12;
+    font-size:13px;
+    padding:10px 14px;
+    border-radius:var(--radius);
+    margin-top:16px;
+    line-height:1.5;
+  }
+  .warn-box.show{display:block;}
+
+  .foot-note{
+    margin-top:28px;
+    font-size:12.5px;
+    color:var(--slate);
+    line-height:1.6;
+    border-top:1px solid var(--line);
+    padding-top:18px;
+  }
+
+  @media (max-width:860px){
+    body{flex-direction:column;}
+    .brand-panel{min-height:auto;padding:40px 28px 32px;}
+    .brand-stats{display:none;}
+    .grain-motif{display:none;}
+    .form-panel{padding:32px 24px 56px;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="brand-panel">
+    <svg class="grain-motif" viewBox="0 0 400 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="#e8c979" stroke-width="2">
+        <path d="M200 400 V80"/>
+        <path d="M200 100 C170 80 150 90 140 60 M200 100 C230 80 250 90 260 60"/>
+        <path d="M200 140 C170 120 150 130 140 100 M200 140 C230 120 250 130 260 100"/>
+        <path d="M200 180 C170 160 150 170 140 140 M200 180 C230 160 250 170 260 140"/>
+        <path d="M200 220 C170 200 150 210 140 180 M200 220 C230 200 250 210 260 180"/>
+        <path d="M200 260 C170 240 150 250 140 220 M200 260 C230 240 250 250 260 220"/>
+      </g>
+    </svg>
+    <div class="brand-top">
+      <p class="eyebrow">Layyah · School Education Department</p>
+      <h1>School Meal Program</h1>
+      <p>Milk and biscuit inventory, consumption records, and vendor reconciliation for every markaz — one ledger for the whole district.</p>
+    </div>
+    <div class="brand-stats">
+      <div><b>741</b><span>Schools</span></div>
+      <div><b>100</b><span>Markaz</span></div>
+      <div><b>52</b><span>AEO &amp; admin accounts</span></div>
+    </div>
+    <div class="brand-foot">Part of the Integrated Dashboard system · Layyah</div>
+  </div>
+
+  <div class="form-panel">
+    <div class="form-card">
+      <p class="kicker">Sign in</p>
+      <h2>Welcome back</h2>
+      <p class="sub">Use the same CNIC and password you use for the Integrated Dashboard — there's no separate SMP account.</p>
+
+      <div class="error-box" id="errorBox"></div>
+
+      <form id="loginForm" autocomplete="on">
+        <div class="field">
+          <label for="cnic">CNIC</label>
+          <input id="cnic" name="cnic" inputmode="numeric" placeholder="3220112345678" autocomplete="username" required />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="pw-row">
+            <input id="password" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" required />
+            <button type="button" class="pw-toggle" id="pwToggle">Show</button>
+          </div>
+        </div>
+        <button type="submit" id="submitBtn">
+          <span class="spinner"></span>
+          <span class="btn-label">Sign in</span>
+        </button>
+      </form>
+
+      <div class="warn-box" id="warnBox"></div>
+
+      <p class="foot-note">
+        Trouble signing in? Your CNIC and password are managed in the Integrated Dashboard —
+        contact your district admin if either has changed recently.
+      </p>
+    </div>
+  </div>
+
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+  const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+  const LOGIN_URL = SMP_CONFIG.SUPABASE_URL + "/functions/v1/login";
+
+  const form = document.getElementById("loginForm");
+  const submitBtn = document.getElementById("submitBtn");
+  const errorBox = document.getElementById("errorBox");
+  const warnBox = document.getElementById("warnBox");
+  const pwInput = document.getElementById("password");
+  const pwToggle = document.getElementById("pwToggle");
+
+  pwToggle.addEventListener("click", () => {
+    const showing = pwInput.type === "text";
+    pwInput.type = showing ? "password" : "text";
+    pwToggle.textContent = showing ? "Show" : "Hide";
+  });
+
+  function setLoading(loading) {
+    submitBtn.disabled = loading;
+    submitBtn.classList.toggle("loading", loading);
+  }
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.add("show");
+  }
+  function clearError() {
+    errorBox.classList.remove("show");
+  }
+
+  // Already signed in? Skip straight past the login screen.
+  (async () => {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) window.location.href = "dashboard.html";
+  })();
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    warnBox.classList.remove("show");
+    setLoading(true);
+
+    const cnic = document.getElementById("cnic").value.trim();
+    const password = pwInput.value;
+
+    try {
+      const res = await fetch(LOGIN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cnic, password }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showError(data.error || "Sign-in failed. Please try again.");
+        setLoading(false);
+        return;
+      }
+
+      const { error: setErr } = await sb.auth.setSession({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+      });
+      if (setErr) {
+        showError("Signed in, but could not start a session: " + setErr.message);
+        setLoading(false);
+        return;
+      }
+
+      if (data.markaz_warning) {
+        sessionStorage.setItem("smp_jurisdiction_warning", data.markaz_warning);
+      }
+
+      window.location.href = "dashboard.html";
+    } catch (err) {
+      showError("Could not reach the server. Check your connection and try again.");
+      setLoading(false);
+    }
+  });
+</script>
+</body>
+</html>

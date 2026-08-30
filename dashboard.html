@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard — School Meal Program</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --navy:#122341; --wheat:#c99a3b; --paper:#f7f4ee; --ink:#1c2430; --slate:#5c6472; --line:#dcd4c2; }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:'Inter',system-ui,sans-serif;background:var(--paper);color:var(--ink);}
+  header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:18px 28px;background:var(--navy);color:#fff;
+  }
+  header .brand{font-family:'Source Serif 4',serif;font-weight:600;font-size:18px;}
+  header .who{font-size:13px;color:#c9d0dd;text-align:right;}
+  header button{
+    margin-left:16px;background:transparent;border:1px solid rgba(255,255,255,.35);
+    color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;
+  }
+  header button:hover{background:rgba(255,255,255,.1);}
+  .wrap{max-width:760px;margin:60px auto;padding:0 24px;}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:32px;}
+  .card h1{font-family:'Source Serif 4',serif;font-size:24px;margin:0 0 8px;}
+  .card p{color:var(--slate);line-height:1.6;margin:0 0 4px;}
+  .row{display:flex;gap:16px;flex-wrap:wrap;margin-top:24px;}
+  .pill{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:13px;}
+  .pill b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate);margin-bottom:2px;font-weight:600;}
+  .warn{margin-top:20px;background:#fdf3dd;border:1px solid #ecd8a3;color:#7a5a12;padding:12px 14px;border-radius:8px;font-size:13.5px;}
+  .modules{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:24px;}
+  .modules a{
+    display:block;padding:16px;border:1px solid var(--line);border-radius:10px;
+    color:var(--ink);text-decoration:none;background:var(--paper);font-weight:600;font-size:14px;
+  }
+  .modules a small{display:block;font-weight:400;color:var(--slate);margin-top:4px;font-size:12px;}
+  .modules a:hover{border-color:var(--navy);}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">School Meal Program</div>
+  <div style="display:flex;align-items:center;">
+    <span class="who" id="whoBox">Loading…</span>
+    <button id="signOutBtn">Sign out</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h1>Signed in</h1>
+    <p id="nameLine">Loading your account…</p>
+    <div class="row" id="pillRow"></div>
+    <div class="warn" id="warnBox" style="display:none;"></div>
+
+    <div class="modules">
+      <a href="#" onclick="return false;">Inventory<small>Coming next</small></a>
+      <a href="#" onclick="return false;">Consumption<small>Coming next</small></a>
+      <a href="#" onclick="return false;">Operations<small>Coming next</small></a>
+      <a href="#" onclick="return false;">Transfers &amp; Loans<small>Coming next</small></a>
+      <a href="#" onclick="return false;">Reports<small>Coming next</small></a>
+    </div>
+  </div>
+</div>
+
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+  const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+
+  (async () => {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) { window.location.href = "index.html"; return; }
+
+    document.getElementById("whoBox").textContent = session.user.email;
+
+    const { data: profile } = await sb
+      .from("profiles")
+      .select("full_name, role, markaz_id")
+      .eq("id", session.user.id)
+      .maybeSingle();
+
+    document.getElementById("nameLine").textContent = profile?.full_name
+      ? `Welcome, ${profile.full_name}.`
+      : "Welcome.";
+
+    let markazName = "—";
+    if (profile?.markaz_id) {
+      const { data: markaz } = await sb.from("markaz").select("name").eq("id", profile.markaz_id).maybeSingle();
+      markazName = markaz?.name || "—";
+    }
+
+    document.getElementById("pillRow").innerHTML = `
+      <div class="pill"><b>Role</b>${profile?.role ?? "—"}</div>
+      <div class="pill"><b>Markaz</b>${markazName}</div>
+    `;
+
+    const warning = sessionStorage.getItem("smp_jurisdiction_warning");
+    if (warning) {
+      const box = document.getElementById("warnBox");
+      box.textContent = "⚠ " + warning + " Contact your admin to correct this in the Integrated Dashboard.";
+      box.style.display = "block";
+      sessionStorage.removeItem("smp_jurisdiction_warning");
+    }
+  })();
+
+  document.getElementById("signOutBtn").addEventListener("click", async () => {
+    await sb.auth.signOut();
+    window.location.href = "index.html";
+  });
+</script>
+</body>
+</html>
