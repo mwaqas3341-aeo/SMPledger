@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Report Generation — School Meal Program</title>
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div class="brand">
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Report Generation</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
+    </div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </div>
+  <div id="content"></div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null;
+let cache = { schools:[], products:[] };
+
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function dateRange(from, to){
+  const dates = []; let d = new Date(from); const end = new Date(to);
+  while(d <= end){ dates.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  return dates;
+}
+function shortDate(d){ const dt = new Date(d); return `${dt.getDate()}/${dt.getMonth()+1}`; }
+
+/* ===================== AUTH ===================== */
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
+
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    window.location.href = "index.html";
+    return;
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+boot();
+function showApp(){
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+  renderPage();
+}
+
+async function loadRefData(){
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("emis_code");
+  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  const [{ data: schools }, { data: products }] = await Promise.all([
+    schoolsQuery,
+    sb.from("products").select("id,product_name,unit_name").eq("active", true),
+  ]);
+  cache.schools = schools || [];
+  cache.products = (products || []).sort((a, b) => {
+    const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    return am - bm;
+  });
+}
+
+/* ===================== PAGE ===================== */
+async function renderPage(){
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="card">
+      <h3>Select period</h3>
+      <p class="sub">Opening balance, receipts, daily consumption, remaining balance, and loan movement for every school in your jurisdiction over the chosen period.</p>
+      <form id="periodForm" class="form-row">
+        <div><label>From</label><input type="date" name="from" value="${daysAgoStr(6)}" required/></div>
+        <div><label>To</label><input type="date" name="to" value="${todayStr()}" required/></div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Generate report</button></div>
+      </form>
+      <div id="rangeWarning"></div>
+    </div>
+    <div class="card" id="reportCard" style="display:none;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0;">Period report</h3>
+        <button class="btn-secondary" id="exportBtn" type="button">Export CSV</button>
+      </div>
+      <div class="table-wrap"><table id="reportTable"><thead></thead><tbody></tbody></table></div>
+    </div>
+  `;
+
+  document.getElementById("periodForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    generateReport(new FormData(e.target));
+  });
+}
+
+async function generateReport(fd){
+  const from = fd.get("from"), to = fd.get("to");
+  const warnBox = document.getElementById("rangeWarning");
+  const dates = dateRange(from, to);
+  warnBox.innerHTML = dates.length > 31
+    ? `<div class="warn" style="margin-top:12px;background:var(--warn-bg);color:var(--warn-fg);padding:10px 12px;border-radius:8px;font-size:12.5px;">This is a ${dates.length}-day range - the table will be wide. Consider narrowing it for easier reading.</div>`
+    : "";
+
+  const schoolIds = cache.schools.map(s => s.id);
+  if(!schoolIds.length){ toast("No schools in your jurisdiction", "bad"); return; }
+
+  document.getElementById("reportCard").style.display = "";
+  const thead = document.querySelector("#reportTable thead");
+  const tbody = document.querySelector("#reportTable tbody");
+  tbody.innerHTML = `<tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr>`;
+
+  const [{ data: summary, error: sumErr }, { data: dailyRows, error: dayErr }] = await Promise.all([
+    sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: to }),
+    sb.from("consumption").select("school_id, product_id, consumption_date, quantity")
+      .in("school_id", schoolIds).gte("consumption_date", from).lte("consumption_date", to).eq("status", "active"),
+  ]);
+  if(sumErr){ tbody.innerHTML = `<tr><td colspan="6" class="err">${esc(sumErr.message)}</td></tr>`; return; }
+  if(dayErr){ tbody.innerHTML = `<tr><td colspan="6" class="err">${esc(dayErr.message)}</td></tr>`; return; }
+
+  // Pivot summary (long: school+product) and daily consumption (long: school+product+date)
+  // into a per-school, per-product lookup for rendering.
+  const summaryBy = {};
+  (summary || []).forEach(r => {
+    summaryBy[r.school_id] = summaryBy[r.school_id] || {};
+    summaryBy[r.school_id][r.product_id] = r;
+  });
+  const dailyBy = {};
+  (dailyRows || []).forEach(r => {
+    const key = `${r.school_id}|${r.product_id}|${r.consumption_date}`;
+    dailyBy[key] = (dailyBy[key] || 0) + Number(r.quantity);
+  });
+
+  // Header: Sr#/EMIS/School, then per product: Opening, Received, [one column
+  // per date], Remaining, Loaned Out, Loaned In.
+  const groupClass = (p) => p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
+  const perProductColCount = 3 + dates.length + 2; // opening+received + dates + remaining+loaned_out+loaned_in... see below
+  thead.innerHTML = `<tr>
+    <th rowspan="2">Sr#</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
+    ${cache.products.map(p => `<th colspan="${4 + dates.length}" class="${groupClass(p)}">${esc(p.product_name)}</th>`).join("")}
+  </tr><tr>
+    ${cache.products.map(p => `
+      <th class="${groupClass(p)}">Opening</th>
+      <th class="${groupClass(p)}">Received</th>
+      ${dates.map(d => `<th class="${groupClass(p)}">${shortDate(d)}</th>`).join("")}
+      <th class="${groupClass(p)}">Remaining</th>
+      <th class="${groupClass(p)}">Loaned Out</th>
+      <th class="${groupClass(p)}">Loaned In</th>
+    `).join("")}
+  </tr>`;
+
+  tbody.innerHTML = cache.schools.map((s, i) => {
+    const productCells = cache.products.map(p => {
+      const sum = (summaryBy[s.id] || {})[p.id] || { opening:0, received:0, remaining:0, loaned_out:0, loaned_in:0 };
+      const cls = groupClass(p);
+      const dayCells = dates.map(d => `<td class="${cls}">${fmt(dailyBy[`${s.id}|${p.id}|${d}`] || 0)}</td>`).join("");
+      return `
+        <td class="${cls}">${fmt(sum.opening)}</td>
+        <td class="${cls}">${fmt(sum.received)}</td>
+        ${dayCells}
+        <td class="${cls}"><b>${fmt(sum.remaining)}</b></td>
+        <td class="${cls}">${fmt(sum.loaned_out)}</td>
+        <td class="${cls}">${fmt(sum.loaned_in)}</td>
+      `;
+    }).join("");
+    return `<tr><td>${i+1}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${productCells}</tr>`;
+  }).join("");
+
+  document.getElementById("exportBtn").onclick = () => exportCsv(dates, summaryBy, dailyBy);
+}
+
+function exportCsv(dates, summaryBy, dailyBy){
+  const groupLabel = (p) => p.product_name;
+  const header1 = ["Sr#","EMIS","School"];
+  cache.products.forEach(p => {
+    header1.push(`${groupLabel(p)} Opening`, `${groupLabel(p)} Received`);
+    dates.forEach(d => header1.push(`${groupLabel(p)} ${d}`));
+    header1.push(`${groupLabel(p)} Remaining`, `${groupLabel(p)} Loaned Out`, `${groupLabel(p)} Loaned In`);
+  });
+
+  const rows = cache.schools.map((s, i) => {
+    const row = [i+1, s.emis_code, s.school_name];
+    cache.products.forEach(p => {
+      const sum = (summaryBy[s.id] || {})[p.id] || { opening:0, received:0, remaining:0, loaned_out:0, loaned_in:0 };
+      row.push(sum.opening, sum.received);
+      dates.forEach(d => row.push(dailyBy[`${s.id}|${p.id}|${d}`] || 0));
+      row.push(sum.remaining, sum.loaned_out, sum.loaned_in);
+    });
+    return row;
+  });
+
+  const csv = [header1, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `smp-period-report-${todayStr()}.csv`;
+  a.click();
+}
+</script>
+</body>
+</html>

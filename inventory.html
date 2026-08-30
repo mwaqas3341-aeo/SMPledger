@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SMP AEO Inventory — School Meal Program</title>
+<title>Inventory Received — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
@@ -11,28 +11,21 @@
 <body>
 
 <div id="app">
-  <aside id="sidebar">
+  <div id="topbar">
     <div class="brand">
-      <div class="eyebrow">SMP · Punjab SED</div>
-      <h2>AEO Inventory</h2>
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Inventory Received</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
     </div>
-    <div class="top-nav"><a class="top-nav-item" href="dashboard.html">Dashboard</a><a class="top-nav-item active" href="inventory.html">Inventory</a><a class="top-nav-item" href="consumption.html">Consumption</a><a class="top-nav-item" href="operations.html">Operations</a><a class="top-nav-item" href="transfers.html">Transfers & Loans</a><a class="top-nav-item" href="reports.html">Reports</a></div>
-    <nav id="navList"></nav>
-    <div class="footer">
-      <div id="whoBox">—</div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
       <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
     </div>
-  </aside>
-  <div id="main">
-    <div id="topbar">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <button id="menuToggle" type="button">☰</button>
-        <h1 id="pageTitle">Markaz Inventory Receipts</h1>
-      </div>
-      <div class="who" id="topWho"></div>
-    </div>
-    <div id="content"></div>
   </div>
+  <div class="menu-cards" id="navList"></div>
+  <div id="content"></div>
 </div>
 
 <div class="toast-area" id="toastArea"></div>
@@ -42,7 +35,7 @@
 const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
 
 /* ===================== STATE ===================== */
-let currentUser = null, currentProfile = null, currentSection = "markaz_receipts";
+let currentUser = null, currentProfile = null, currentSection = "my_receipts";
 let cache = { markaz:[], schools:[], products:[] };
 
 /* ===================== HELPERS ===================== */
@@ -56,6 +49,7 @@ function toast(msg, kind){
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
+function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 
 /* ===================== AUTH ===================== */
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
@@ -81,14 +75,13 @@ async function boot(){
 }
 boot();
 function showApp(){
-  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
-  document.getElementById("topWho").textContent = currentUser.email;
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
   buildNav();
-  navigate("markaz_receipts");
+  navigate("my_receipts");
 }
 
 async function loadRefData(){
-  let markazQuery = sb.from("markaz").select("id,name,tehsil").eq("active", true).order("name");
+  let markazQuery = sb.from("markaz").select("id,name").eq("active", true).order("name");
   if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
   const [{ data: markaz }, { data: products }] = await Promise.all([
     markazQuery,
@@ -97,194 +90,216 @@ async function loadRefData(){
   cache.markaz = markaz || [];
   cache.products = products || [];
 
+  // "His schools" - every school in the AEO's own markaz. Admins see all.
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
   const { data: schools } = await schoolsQuery;
   cache.schools = schools || [];
 }
 
-/* ===================== NAV ===================== */
-const isAdmin = () => ["admin","super_admin"].includes(currentProfile.role);
-function SECTIONS(){
-  const s = [{ id:"markaz_receipts", label:"Markaz Inventory Receipts" }];
-  if(isAdmin()) s.push({ id:"adjustments", label:"Inventory Adjustments" });
-  return s;
-}
+/* ===================== NAV (card-based, not a sidebar) ===================== */
+const SECTIONS = [
+  { id:"my_receipts", label:"My Receipts", desc:"Add & review what you've entered" },
+  { id:"company_data", label:"Company Data & Certification", desc:"Compare and flag vendor-reported deliveries" },
+];
 function buildNav(){
   const nav = document.getElementById("navList");
   nav.innerHTML = "";
-  SECTIONS().forEach(s => {
+  SECTIONS.forEach(s => {
     const a = document.createElement("a");
-    a.className = "nav-item" + (s.id === currentSection ? " active" : "");
-    a.textContent = s.label;
+    a.className = "menu-card" + (s.id === currentSection ? " active" : "");
+    a.innerHTML = `<span class="label">${esc(s.label)}</span><span class="desc">${esc(s.desc)}</span>`;
     a.dataset.id = s.id;
     a.onclick = () => navigate(s.id);
     nav.appendChild(a);
   });
 }
-document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
-
 async function navigate(id){
   currentSection = id;
-  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
-  document.getElementById("sidebar").classList.remove("open");
-  const titleMap = Object.fromEntries(SECTIONS().map(s => [s.id, s.label]));
-  document.getElementById("pageTitle").textContent = titleMap[id] || "";
+  document.querySelectorAll("#navList .menu-card").forEach(el => el.classList.toggle("active", el.dataset.id === id));
   const content = document.getElementById("content");
   content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
   try{
-    if(id === "markaz_receipts") await renderMarkazReceipts(content);
-    else if(id === "adjustments") await renderAdjustments(content);
+    if(id === "my_receipts") await renderMyReceipts(content);
+    if(id === "company_data") await renderCompanyData(content);
   }catch(err){
     content.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
   }
 }
 
-/* ===================== MARKAZ / AEO INVENTORY RECEIPTS ===================== */
-async function renderMarkazReceipts(content){
-  const { data: receipts, error } = await sb.from("aeo_markaz_receipts")
-    .select("*, markaz(name), products(product_name,unit_name)")
-    .order("receipt_date", { ascending:false }).limit(50);
-  if(error) throw error;
-
-  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
-  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join("");
+/* ===================== SECTION: MY RECEIPTS ===================== */
+async function renderMyReceipts(content){
+  const schoolOpts = cache.schools.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
 
   content.innerHTML = `
     <div class="card">
-      <h3>Record Markaz-level receipt</h3>
-      <div class="sub">Stock received directly by the AEO/Markaz, before it's allocated or transferred to individual schools.</div>
-      <form id="receiptForm">
-        <div class="form-row">
-          <div><label>Markaz</label><select name="markaz_id" required><option value="">Select…</option>${markazOpts}</select></div>
-          <div><label>Product</label><select name="product_id" required>${productOpts}</select></div>
-          <div><label>Date</label><input type="date" name="receipt_date" required value="${todayStr()}"/></div>
-          <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
-          <div><label>Source</label><input name="source" placeholder="e.g. District store" /></div>
-          <div><label>Invoice Number</label><input name="invoice_number" /></div>
-          <div><label>Received From</label><input name="received_from" /></div>
-          <div><label>Remarks</label><input name="remarks" /></div>
-        </div>
-        <div class="actions-row"><button class="btn-primary" type="submit">Save receipt</button></div>
+      <h3>Add inventory received</h3>
+      <p class="sub">Milk and biscuit deliveries for the same school and date may use the same invoice number - that's expected and won't be blocked.</p>
+      <form id="receiptForm" class="form-row">
+        <div><label>School</label><select name="school_id" required><option value="">Select…</option>${schoolOpts}</select></div>
+        <div><label>Product</label><select name="product_id" required><option value="">Select…</option>${productOpts}</select></div>
+        <div><label>Date received</label><input type="date" name="receipt_date" value="${todayStr()}" required/></div>
+        <div><label>Quantity</label><input type="number" name="quantity_received" min="0" step="0.01" required/></div>
+        <div><label>Invoice / reference no.</label><input type="text" name="invoice_number" placeholder="As shown on delivery slip"/></div>
+        <div><label>Collected by</label><input type="text" name="collected_by" placeholder="Optional"/></div>
+        <div style="grid-column:1/-1;"><label>Remarks</label><input type="text" name="remarks" placeholder="Optional"/></div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Save receipt</button></div>
       </form>
     </div>
     <div class="card">
-      <h3>Recent Markaz receipts</h3>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>Qty</th><th>Source</th><th>Invoice #</th><th>Received From</th></tr></thead>
-        <tbody>${(receipts||[]).map(r => `
-          <tr>
-            <td>${fmtDate(r.receipt_date)}</td>
-            <td>${esc(r.markaz?.name || "—")}</td>
-            <td>${esc(r.products?.product_name || "—")}</td>
-            <td>${r.quantity} ${esc(r.products?.unit_name || "")}</td>
-            <td>${esc(r.source || "—")}</td>
-            <td>${esc(r.invoice_number || "—")}</td>
-            <td>${esc(r.received_from || "—")}</td>
-          </tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">No Markaz receipts yet.</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
+      <h3>Receipts already entered</h3>
+      <p class="sub">Sorted by date (most recent first), then by EMIS code.</p>
+      <div class="table-wrap"><table id="receiptsTable"><thead><tr>
+        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Collected by</th><th>Remarks</th>
+      </tr></thead><tbody><tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+    </div>
+  `;
 
   document.getElementById("receiptForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     try{
-      const { error } = await sb.rpc("fn_record_aeo_markaz_receipt", {
-        p_markaz_id: fd.get("markaz_id"),
-        p_product_id: fd.get("product_id"),
-        p_receipt_date: fd.get("receipt_date"),
-        p_quantity: Number(fd.get("quantity")),
-        p_source: fd.get("source") || null,
-        p_invoice_number: fd.get("invoice_number") || null,
-        p_received_from: fd.get("received_from") || null,
-        p_remarks: fd.get("remarks") || null,
+      const { error } = await sb.from("school_receipts").insert({
+        school_id: fd.get("school_id"),
+        product_id: fd.get("product_id"),
+        receipt_date: fd.get("receipt_date"),
+        quantity_received: fd.get("quantity_received"),
+        invoice_number: fd.get("invoice_number") || null,
+        collected_by: fd.get("collected_by") || null,
+        remarks: fd.get("remarks") || null,
+        created_by: currentUser.id,
       });
-      if(error) throw error;
-      toast("Markaz receipt recorded");
-      navigate("markaz_receipts");
+      if(error){
+        if(error.code === "23505") throw new Error("A receipt for this school, product, date, and invoice number already exists.");
+        throw error;
+      }
+      toast("Receipt saved");
+
+      // Mirror into the ledger, same pattern as the existing RPCs use, so
+      // balances (opening/remaining, consumption grid, reports) stay correct.
+      await sb.from("inventory_transactions").insert({
+        txn_date: fd.get("receipt_date"),
+        product_id: fd.get("product_id"),
+        entity_type: "school",
+        school_id: fd.get("school_id"),
+        quantity: fd.get("quantity_received"),
+        transaction_type: "SCHOOL_RECEIPT",
+        reference_type: "school_receipts",
+        created_by: currentUser.id,
+      });
+
+      e.target.reset();
+      e.target.querySelector('[name="receipt_date"]').value = todayStr();
+      await loadReceiptsTable();
     }catch(err){ toast(err.message, "bad"); }
   });
+
+  await loadReceiptsTable();
 }
 
-/* ===================== INVENTORY ADJUSTMENTS (admin only) ===================== */
-async function renderAdjustments(content){
-  const { data: adjustments, error } = await sb.from("inventory_adjustments")
-    .select("*, schools(school_name,emis_code), markaz(name), products(product_name,unit_name)")
-    .order("adjustment_date", { ascending:false }).limit(50);
-  if(error) throw error;
+async function loadReceiptsTable(){
+  const schoolIds = cache.schools.map(s => s.id);
+  const { data, error } = await sb
+    .from("school_receipts")
+    .select("receipt_date, quantity_received, invoice_number, collected_by, remarks, status, schools(emis_code, school_name), products(product_name, unit_name)")
+    .in("school_id", schoolIds)
+    .eq("status", "active")
+    .order("receipt_date", { ascending: false });
 
-  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
-  const schoolOpts = cache.schools.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
-  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join("");
+  const tbody = document.querySelector("#receiptsTable tbody");
+  if(error){ tbody.innerHTML = `<tr><td colspan="8" class="err">${esc(error.message)}</td></tr>`; return; }
 
+  // Requested sort: date descending, then EMIS code ascending within each date.
+  const rows = (data || []).sort((a, b) => {
+    if(a.receipt_date !== b.receipt_date) return a.receipt_date < b.receipt_date ? 1 : -1;
+    return (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || "");
+  });
+
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="8" style="color:var(--ink-soft)">No receipts entered yet.</td></tr>`; return; }
+
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${fmtDate(r.receipt_date)}</td>
+      <td>${esc(r.schools?.emis_code)}</td>
+      <td>${esc(r.schools?.school_name)}</td>
+      <td>${esc(r.products?.product_name)}</td>
+      <td>${fmt(r.quantity_received)} ${esc(r.products?.unit_name || "")}</td>
+      <td>${esc(r.invoice_number) || "—"}</td>
+      <td>${esc(r.collected_by) || "—"}</td>
+      <td>${esc(r.remarks) || "—"}</td>
+    </tr>
+  `).join("");
+}
+
+/* ===================== SECTION: COMPANY DATA & CERTIFICATION ===================== */
+async function renderCompanyData(content){
   content.innerHTML = `
     <div class="card">
-      <h3>Post a manual adjustment</h3>
-      <div class="sub">Use for missing, damaged, or expired stock (negative quantity), or a correction (positive quantity). Every adjustment is audit-logged.</div>
-      <form id="adjustForm">
-        <div class="form-row">
-          <div><label>Applies to</label>
-            <select name="entity_type" id="entityType" required>
-              <option value="school">A School</option>
-              <option value="markaz">A Markaz</option>
-            </select>
-          </div>
-          <div id="schoolField"><label>School</label><select name="school_id"><option value="">Select…</option>${schoolOpts}</select></div>
-          <div id="markazField" class="hidden"><label>Markaz</label><select name="markaz_id"><option value="">Select…</option>${markazOpts}</select></div>
-          <div><label>Product</label><select name="product_id" required>${productOpts}</select></div>
-          <div><label>Date</label><input type="date" name="adjustment_date" required value="${todayStr()}"/></div>
-          <div><label>Quantity (negative = loss/damage/expiry, positive = correction up)</label><input type="number" step="0.01" name="quantity" required /></div>
-          <div><label>Reason</label><input name="reason" required placeholder="e.g. Expired stock removed" /></div>
-        </div>
-        <div class="actions-row"><button class="btn-primary" type="submit">Post adjustment</button></div>
-      </form>
+      <h3>Company-provided delivery data</h3>
+      <p class="sub">Uploaded by admins from vendor invoices. Mark each row Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
+      <div class="table-wrap"><table id="companyTable"><thead><tr>
+        <th>Invoice date</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Certify</th>
+      </tr></thead><tbody><tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
-    <div class="card">
-      <h3>Recent adjustments</h3>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Applies To</th><th>Product</th><th>Qty</th><th>Reason</th></tr></thead>
-        <tbody>${(adjustments||[]).map(a => `
-          <tr>
-            <td>${fmtDate(a.adjustment_date)}</td>
-            <td>${a.entity_type === "school" ? esc(a.schools?.school_name || "—") : esc(a.markaz?.name || "—")}</td>
-            <td>${esc(a.products?.product_name || "—")}</td>
-            <td style="color:${a.quantity < 0 ? 'var(--bad-fg)' : 'var(--ok-fg)'}; font-weight:600;">${a.quantity > 0 ? "+" : ""}${a.quantity}</td>
-            <td>${esc(a.reason)}</td>
-          </tr>`).join("") || `<tr><td colspan="5" style="color:var(--ink-soft)">No adjustments recorded yet.</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
-
-  const entityType = document.getElementById("entityType");
-  const schoolField = document.getElementById("schoolField");
-  const markazField = document.getElementById("markazField");
-  entityType.addEventListener("change", () => {
-    schoolField.classList.toggle("hidden", entityType.value !== "school");
-    markazField.classList.toggle("hidden", entityType.value !== "markaz");
-  });
-
-  document.getElementById("adjustForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const entType = fd.get("entity_type");
-    try{
-      const { error } = await sb.rpc("fn_create_adjustment", {
-        p_entity_type: entType,
-        p_school_id: entType === "school" ? fd.get("school_id") : null,
-        p_markaz_id: entType === "markaz" ? fd.get("markaz_id") : null,
-        p_product_id: fd.get("product_id"),
-        p_quantity: Number(fd.get("quantity")),
-        p_adjustment_date: fd.get("adjustment_date"),
-        p_reason: fd.get("reason"),
-      });
-      if(error) throw error;
-      toast("Adjustment posted");
-      navigate("adjustments");
-    }catch(err){ toast(err.message, "bad"); }
-  });
+  `;
+  await loadCompanyTable();
 }
 
+async function loadCompanyTable(){
+  const { data, error } = await sb
+    .from("company_invoice_items")
+    .select(`
+      id, quantity, aeo_verification_status, aeo_verification_remarks,
+      schools(emis_code, school_name), products(product_name, unit_name),
+      company_invoices(invoice_number, invoice_date, delivery_date, status)
+    `)
+    .order("created_at", { ascending: false });
+
+  const tbody = document.querySelector("#companyTable tbody");
+  if(error){ tbody.innerHTML = `<tr><td colspan="8" class="err">${esc(error.message)}</td></tr>`; return; }
+
+  const rows = (data || []).filter(r => r.company_invoices?.status !== "void");
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="8" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
+
+  const statusPill = (s) => s === "received" ? '<span class="pill pill-ok">Received</span>'
+    : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
+    : '<span class="pill pill-warn">Pending</span>';
+
+  tbody.innerHTML = rows.map(r => `
+    <tr data-id="${r.id}">
+      <td>${fmtDate(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date)}</td>
+      <td>${esc(r.schools?.emis_code)}</td>
+      <td>${esc(r.schools?.school_name)}</td>
+      <td>${esc(r.products?.product_name)}</td>
+      <td>${fmt(r.quantity)} ${esc(r.products?.unit_name || "")}</td>
+      <td>${esc(r.company_invoices?.invoice_number) || "—"}</td>
+      <td class="status-cell">${statusPill(r.aeo_verification_status)}</td>
+      <td>
+        <button class="link-btn" data-action="received">Mark received</button>
+        <button class="link-btn danger" data-action="not_received">Not received</button>
+      </td>
+    </tr>
+  `).join("");
+
+  tbody.querySelectorAll("button[data-action]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const tr = btn.closest("tr");
+      const id = tr.dataset.id;
+      const status = btn.dataset.action;
+      let remarks = null;
+      if(status === "not_received"){
+        remarks = prompt("Optional: note what's wrong (for rectification)") || null;
+      }
+      try{
+        const { error } = await sb.rpc("fn_verify_company_item", { p_item_id: id, p_status: status, p_remarks: remarks });
+        if(error) throw error;
+        toast(status === "received" ? "Marked received" : "Flagged as not received");
+        await loadCompanyTable();
+      }catch(err){ toast(err.message, "bad"); }
+    });
+  });
+}
 </script>
 </body>
 </html>

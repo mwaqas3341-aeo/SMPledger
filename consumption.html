@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SMP Consumption &amp; Inventory — School Meal Program</title>
+<title>Consumption — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
@@ -11,28 +11,20 @@
 <body>
 
 <div id="app">
-  <aside id="sidebar">
+  <div id="topbar">
     <div class="brand">
-      <div class="eyebrow">SMP · Punjab SED</div>
-      <h2>Consumption</h2>
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Consumption</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
     </div>
-    <div class="top-nav"><a class="top-nav-item" href="dashboard.html">Dashboard</a><a class="top-nav-item" href="inventory.html">Inventory</a><a class="top-nav-item active" href="consumption.html">Consumption</a><a class="top-nav-item" href="operations.html">Operations</a><a class="top-nav-item" href="transfers.html">Transfers & Loans</a><a class="top-nav-item" href="reports.html">Reports</a></div>
-    <nav id="navList"></nav>
-    <div class="footer">
-      <div id="whoBox">—</div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
       <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
     </div>
-  </aside>
-  <div id="main">
-    <div id="topbar">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <button id="menuToggle" type="button">☰</button>
-        <h1 id="pageTitle">Consumption Entry</h1>
-      </div>
-      <div class="who" id="topWho"></div>
-    </div>
-    <div id="content"></div>
   </div>
+  <div id="content"></div>
 </div>
 
 <div class="toast-area" id="toastArea"></div>
@@ -42,9 +34,9 @@
 const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
 
 /* ===================== STATE ===================== */
-let currentUser = null, currentProfile = null, currentSection = "consumption";
+let currentUser = null, currentProfile = null;
 let cache = { markaz:[], schools:[], products:[] };
-const DOW_LABELS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+let selectedDate = new Date().toISOString().slice(0,10);
 
 /* ===================== HELPERS ===================== */
 function toast(msg, kind){
@@ -55,10 +47,8 @@ function toast(msg, kind){
   setTimeout(() => el.remove(), 4200);
 }
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{month:"short",day:"numeric"}); }
+function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
-function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
-function dowOf(dateStr){ return new Date(dateStr + "T00:00:00").getDay(); }
 
 /* ===================== AUTH ===================== */
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
@@ -73,315 +63,147 @@ async function boot(){
     window.location.href = "index.html";
     return;
   }
+  if(!["admin","super_admin","aeo"].includes(profile.role)){
+    alert("This module is for AEOs and administrators.");
+    window.location.href = "dashboard.html";
+    return;
+  }
   currentProfile = profile;
   await loadRefData();
   showApp();
 }
 boot();
 function showApp(){
-  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
-  document.getElementById("topWho").textContent = currentUser.email;
-  buildNav();
-  navigate("consumption");
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+  renderGrid();
 }
 
 async function loadRefData(){
-  const { data: products } = await sb.from("products").select("id,product_name,unit_name,schedule_dow").eq("active", true).order("product_name");
-  cache.products = products || [];
-
-  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("emis_code");
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
-  if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
-  const { data: schools } = await schoolsQuery;
+  const [{ data: schools }, { data: products }] = await Promise.all([
+    schoolsQuery,
+    sb.from("products").select("id,product_name,unit_name").eq("active", true),
+  ]);
   cache.schools = schools || [];
-}
-
-/* ===================== NAV ===================== */
-const SECTIONS = [
-  { id:"consumption", label:"Consumption Entry" },
-  { id:"milk", label:"Milk Inventory Report" },
-  { id:"biscuit", label:"Biscuit Inventory Report" },
-];
-function buildNav(){
-  const nav = document.getElementById("navList");
-  nav.innerHTML = "";
-  SECTIONS.forEach(s => {
-    const a = document.createElement("a");
-    a.className = "nav-item" + (s.id === currentSection ? " active" : "");
-    a.textContent = s.label;
-    a.dataset.id = s.id;
-    a.onclick = () => navigate(s.id);
-    nav.appendChild(a);
+  // Milk block first, then Biscuit (and anything else after), matching the
+  // requested column order rather than plain alphabetical.
+  cache.products = (products || []).sort((a, b) => {
+    const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    return am - bm;
   });
 }
-document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
 
-async function navigate(id){
-  currentSection = id;
-  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
-  document.getElementById("sidebar").classList.remove("open");
-  const titleMap = Object.fromEntries(SECTIONS.map(s => [s.id, s.label]));
-  document.getElementById("pageTitle").textContent = titleMap[id] || "";
+/* ===================== GRID ===================== */
+async function renderGrid(){
   const content = document.getElementById("content");
-  content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
-  try{
-    if(id === "consumption") await renderConsumption(content);
-    else if(id === "milk") await renderInventoryReport(content, "Milk");
-    else if(id === "biscuit") await renderInventoryReport(content, "Biscuits");
-  }catch(err){
-    content.innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
-  }
-}
-
-/* ===================== CONSUMPTION ENTRY ===================== */
-async function renderConsumption(content){
-  const { data: recent, error } = await sb.from("consumption")
-    .select("*, schools(school_name,emis_code), products(product_name,unit_name)")
-    .order("consumption_date", { ascending:false }).limit(50);
-  if(error) throw error;
-
-  const fixedSchool = currentProfile.role === "school_user";
-  const schoolOptions = cache.schools.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
-  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
-
   content.innerHTML = `
     <div class="card">
-      <h3>Record distribution</h3>
-      <div class="sub">The product is auto-selected from the date's weekly schedule. Off-schedule dates are blocked unless an admin allows an override.</div>
-      <form id="consumptionForm">
-        <div class="form-row">
-          <div><label>School</label>
-            ${fixedSchool
-              ? `<input value="${esc(cache.schools[0]?.school_name || '')}" readonly />`
-              : `<select name="school_id" required><option value="">Select…</option>${schoolOptions}</select>`}
-          </div>
-          <div><label>Date</label><input type="date" name="consumption_date" id="consDate" required value="${todayStr()}"/></div>
-          <div><label>Product</label><select name="product_id" id="consProduct" required></select></div>
-          <div><label>Quantity Distributed</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
-          <div><label>Students Served</label><input type="number" min="0" step="1" name="students_served" /></div>
-          <div><label>Remarks</label><input name="remarks" /></div>
-        </div>
-        <div id="scheduleNote" class="sub" style="margin-top:10px;"></div>
-        ${isAdmin ? `<label style="display:flex;align-items:center;gap:8px;margin-top:10px;">
-            <input type="checkbox" name="override" id="overrideCheck" style="width:auto;" />
-            <span style="font-size:12.5px;color:var(--ink-soft);">Override schedule for this entry (admin only)</span>
-          </label>` : ""}
-        <div class="actions-row"><button class="btn-primary" type="submit">Save entry</button></div>
-      </form>
+      <h3>Date</h3>
+      <p class="sub">Defaults to today. Pick an earlier date to review or correct that day's entries.</p>
+      <div class="form-row">
+        <div><label>Consumption date</label><input type="date" id="dateInput" value="${selectedDate}" max="${todayStr()}" /></div>
+        <div style="align-self:end;"><button class="btn-primary" id="loadDateBtn" type="button">Load</button></div>
+        <div style="align-self:end;"><button class="btn-secondary" id="todayBtn" type="button">Jump to today</button></div>
+      </div>
     </div>
     <div class="card">
-      <h3>Recent entries</h3>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>School</th><th>Product</th><th>Qty</th><th>Students</th><th>Note</th></tr></thead>
-        <tbody>${(recent||[]).map(r => `
-          <tr>
-            <td>${fmtDate(r.consumption_date)}</td>
-            <td>${esc(r.schools?.school_name || "—")}</td>
-            <td>${esc(r.products?.product_name || "—")}</td>
-            <td>${r.quantity} ${esc(r.products?.unit_name || "")}</td>
-            <td>${r.students_served ?? "—"}</td>
-            <td>${r.schedule_override ? '<span class="pill pill-warn">Schedule override</span>' : ''}</td>
-          </tr>`).join("") || `<tr><td colspan="6" style="color:var(--ink-soft)">No entries yet.</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
+      <h3>Schools — ${esc(selectedDate)}</h3>
+      <p class="sub">Click a Consumed cell to enter or correct that school's figure for the selected date. Values save immediately.</p>
+      <div class="table-wrap"><table id="gridTable"><thead></thead><tbody>
+        <tr><td colspan="20" style="color:var(--ink-soft)">Loading…</td></tr>
+      </tbody></table></div>
+    </div>
+  `;
 
-  const productSelect = document.getElementById("consProduct");
-  const dateInput = document.getElementById("consDate");
-  const scheduleNote = document.getElementById("scheduleNote");
-
-  async function refreshProductOptions(){
-    const dateStr = dateInput.value;
-    const dow = dowOf(dateStr);
-
-    // Look up any admin-set exception for this date across products
-    const { data: exceptions } = await sb.from("schedule_exceptions").select("product_id,status,reason").eq("exception_date", dateStr);
-    const exByProduct = Object.fromEntries((exceptions||[]).map(x => [x.product_id, x]));
-
-    productSelect.innerHTML = cache.products.map(p => {
-      const ex = exByProduct[p.id];
-      const defaultScheduled = p.schedule_dow.includes(dow);
-      const scheduled = ex ? ex.status === "allowed" : defaultScheduled;
-      const blocked = ex ? ex.status === "blocked" : !defaultScheduled;
-      const label = scheduled ? `${p.product_name} — scheduled today` : `${p.product_name} — not scheduled${blocked ? '' : ''}`;
-      return `<option value="${p.id}" data-scheduled="${scheduled}">${esc(label)}</option>`;
-    }).join("");
-
-    // default-select the scheduled product if exactly one is scheduled today
-    const scheduledOpt = Array.from(productSelect.options).find(o => o.dataset.scheduled === "true");
-    if(scheduledOpt) productSelect.value = scheduledOpt.value;
-    updateScheduleNote();
-  }
-  function updateScheduleNote(){
-    const opt = productSelect.selectedOptions[0];
-    if(!opt) return;
-    if(opt.dataset.scheduled === "true"){
-      scheduleNote.innerHTML = `<span class="pill pill-ok">On schedule</span>`;
-    }else{
-      scheduleNote.innerHTML = `<span class="pill pill-warn">Off schedule for ${DOW_LABELS[dowOf(dateInput.value)]}</span> ${isAdmin ? "— check the override box to allow it." : "— an admin must record this with an override."}`;
-    }
-  }
-  dateInput.addEventListener("change", refreshProductOptions);
-  productSelect.addEventListener("change", updateScheduleNote);
-  await refreshProductOptions();
-
-  document.getElementById("consumptionForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const schoolId = fixedSchool ? cache.schools[0]?.id : fd.get("school_id");
-    if(!schoolId){ toast("Select a school", "bad"); return; }
-    try{
-      const { error } = await sb.rpc("fn_record_consumption", {
-        p_school_id: schoolId,
-        p_product_id: fd.get("product_id"),
-        p_consumption_date: fd.get("consumption_date"),
-        p_quantity: Number(fd.get("quantity")),
-        p_students_served: fd.get("students_served") ? Number(fd.get("students_served")) : null,
-        p_remarks: fd.get("remarks") || null,
-        p_override: isAdmin ? document.getElementById("overrideCheck").checked : false,
-      });
-      if(error) throw error;
-      toast("Consumption recorded");
-      navigate("consumption");
-    }catch(err){ toast(err.message, "bad"); }
+  document.getElementById("loadDateBtn").addEventListener("click", () => {
+    selectedDate = document.getElementById("dateInput").value || todayStr();
+    renderGrid();
   });
+  document.getElementById("todayBtn").addEventListener("click", () => {
+    selectedDate = todayStr();
+    renderGrid();
+  });
+
+  await loadGridData();
 }
 
-/* ===================== MILK / BISCUIT INVENTORY REPORT ===================== */
-async function renderInventoryReport(content, productName){
-  const product = cache.products.find(p => p.product_name === productName);
-  if(!product){
-    content.innerHTML = `<div class="card"><div class="err">Product "${esc(productName)}" is not set up.</div></div>`;
-    return;
-  }
-  const defaultFrom = daysAgoStr(30);
-  const defaultTo = todayStr();
-
-  content.innerHTML = `
-    <div class="card">
-      <h3>${esc(productName)} Inventory — ${esc(product.unit_name)}</h3>
-      <div class="sub">School-wise opening balance, receipts, day-by-day consumption, and remaining stock for the selected period.</div>
-      <form id="reportFilterForm" class="form-row">
-        <div><label>From</label><input type="date" name="from" value="${defaultFrom}"/></div>
-        <div><label>To</label><input type="date" name="to" value="${defaultTo}"/></div>
-        <div style="align-self:end;"><button class="btn-primary" type="submit">Run report</button></div>
-      </form>
-    </div>
-    <div id="reportResults"><p style="color:var(--ink-soft)">Choose a date range and run the report.</p></div>`;
-
-  document.getElementById("reportFilterForm").addEventListener("submit", (e) => { e.preventDefault(); runReport(product); });
-  await runReport(product);
-}
-
-async function runReport(product){
-  const fd = new FormData(document.getElementById("reportFilterForm"));
-  const from = fd.get("from"), to = fd.get("to");
-  const box = document.getElementById("reportResults");
-  box.innerHTML = `<p style="color:var(--ink-soft)">Calculating…</p>`;
-
+async function loadGridData(){
   const schoolIds = cache.schools.map(s => s.id);
-  if(schoolIds.length === 0){
-    box.innerHTML = `<div class="card">No schools in scope.</div>`;
+  const thead = document.querySelector("#gridTable thead");
+  const tbody = document.querySelector("#gridTable tbody");
+
+  if(!schoolIds.length){
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--ink-soft)">No schools in your jurisdiction.</td></tr>`;
     return;
   }
 
-  // Opening balance per school = sum of all ledger movements strictly before "from"
-  const { data: openingRows, error: openErr } = await sb.from("inventory_transactions")
-    .select("school_id, quantity")
-    .eq("product_id", product.id)
-    .in("school_id", schoolIds)
-    .lt("txn_date", from);
-  if(openErr){ box.innerHTML = `<div class="card"><div class="err">${esc(openErr.message)}</div></div>`; return; }
+  const { data, error } = await sb.rpc("fn_consumption_grid", { p_school_ids: schoolIds, p_date: selectedDate });
+  if(error){
+    tbody.innerHTML = `<tr><td colspan="3" class="err">${esc(error.message)}</td></tr>`;
+    return;
+  }
 
-  // All movements within the range
-  const { data: rangeRows, error: rangeErr } = await sb.from("inventory_transactions")
-    .select("school_id, txn_date, quantity, transaction_type")
-    .eq("product_id", product.id)
-    .in("school_id", schoolIds)
-    .gte("txn_date", from).lte("txn_date", to);
-  if(rangeErr){ box.innerHTML = `<div class="card"><div class="err">${esc(rangeErr.message)}</div></div>`; return; }
-
-  const opening = {};
-  schoolIds.forEach(id => opening[id] = 0);
-  (openingRows||[]).forEach(r => { opening[r.school_id] = (opening[r.school_id]||0) + Number(r.quantity); });
-
-  // Which dates actually had consumption for this product (these become the report's date columns)
-  const dateSet = new Set();
-  (rangeRows||[]).forEach(r => { if(r.transaction_type === "CONSUMPTION") dateSet.add(r.txn_date); });
-  const dateCols = Array.from(dateSet).sort();
-
-  const perSchool = {};
-  schoolIds.forEach(id => perSchool[id] = {
-    received:0, consumptionByDate:{}, totalConsumption:0,
-    transferIn:0, transferOut:0, loanIn:0, loanOut:0, adjustments:0,
-  });
-  (rangeRows||[]).forEach(r => {
-    const s = perSchool[r.school_id];
-    if(!s) return;
-    const q = Number(r.quantity);
-    switch(r.transaction_type){
-      case "SCHOOL_RECEIPT": s.received += q; break;
-      case "CONSUMPTION":
-        s.consumptionByDate[r.txn_date] = (s.consumptionByDate[r.txn_date]||0) + Math.abs(q);
-        s.totalConsumption += Math.abs(q);
-        break;
-      case "TRANSFER_IN": s.transferIn += q; break;
-      case "TRANSFER_OUT": s.transferOut += Math.abs(q); break;
-      case "LOAN_IN": case "LOAN_RETURN_IN": s.loanIn += q; break;
-      case "LOAN_OUT": case "LOAN_RETURN_OUT": s.loanOut += Math.abs(q); break;
-      case "ADJUSTMENT": s.adjustments += q; break;
-    }
+  // Pivot the long RPC result (one row per school+product) into a wide row per school.
+  const bySchool = {};
+  (data || []).forEach(r => {
+    bySchool[r.school_id] = bySchool[r.school_id] || {};
+    bySchool[r.school_id][r.product_id] = r;
   });
 
-  const rows = cache.schools.map(school => {
-    const s = perSchool[school.id];
-    const openBal = opening[school.id] || 0;
-    const net = s.received + s.transferIn + s.loanIn - s.transferOut - s.loanOut + s.adjustments - s.totalConsumption;
-    const closing = openBal + net;
-    return { school, s, openBal, closing };
+  // Header: Sr#, EMIS, School, then Opening/Received/Consumed/Remaining per product.
+  thead.innerHTML = `<tr>
+    <th rowspan="2">Sr#</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
+    ${cache.products.map(p => `<th colspan="4" class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">${esc(p.product_name)}</th>`).join("")}
+  </tr><tr>
+    ${cache.products.map(p => `
+      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Opening</th>
+      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Received</th>
+      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Consumed</th>
+      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Remaining</th>
+    `).join("")}
+  </tr>`;
+
+  tbody.innerHTML = cache.schools.map((s, i) => {
+    const cells = cache.products.map(p => {
+      const r = (bySchool[s.id] || {})[p.id] || { opening:0, received:0, consumed:0, remaining:0 };
+      const cls = p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
+      return `
+        <td class="${cls}">${fmt(r.opening)}</td>
+        <td class="${cls}">${fmt(r.received)}</td>
+        <td class="${cls}">
+          <input type="number" min="0" step="0.01" class="consumed-input" style="width:80px;padding:5px 6px;"
+                 data-school="${s.id}" data-product="${p.id}" value="${r.consumed}" />
+        </td>
+        <td class="${cls}">${fmt(r.remaining)}</td>
+      `;
+    }).join("");
+    return `<tr><td>${i+1}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
+  }).join("");
+
+  tbody.querySelectorAll(".consumed-input").forEach(inp => {
+    inp.addEventListener("change", async () => {
+      const schoolId = inp.dataset.school;
+      const productId = inp.dataset.product;
+      const qty = Number(inp.value || 0);
+      try{
+        const { error } = await sb.rpc("fn_upsert_consumption", {
+          p_school_id: schoolId,
+          p_product_id: productId,
+          p_consumption_date: selectedDate,
+          p_quantity: qty,
+        });
+        if(error) throw error;
+        toast("Saved");
+        await loadGridData();
+      }catch(err){
+        toast(err.message, "bad");
+        await loadGridData(); // revert the cell to the real stored value
+      }
+    });
   });
-
-  const totals = {
-    opening: rows.reduce((a,r)=>a+r.openBal,0),
-    received: rows.reduce((a,r)=>a+r.s.received,0),
-    consumption: rows.reduce((a,r)=>a+r.s.totalConsumption,0),
-    closing: rows.reduce((a,r)=>a+r.closing,0),
-  };
-
-  box.innerHTML = `
-    <div class="grid-4">
-      <div class="stat"><div class="n">${totals.opening.toFixed(0)}</div><div class="l">Total opening</div></div>
-      <div class="stat"><div class="n">${totals.received.toFixed(0)}</div><div class="l">Total received</div></div>
-      <div class="stat"><div class="n">${totals.consumption.toFixed(0)}</div><div class="l">Total consumed</div></div>
-      <div class="stat"><div class="n">${totals.closing.toFixed(0)}</div><div class="l">Total remaining</div></div>
-    </div>
-    <div class="card">
-      <div class="table-wrap"><table>
-        <thead><tr>
-          <th class="sticky-col">School</th><th>EMIS</th><th>Opening</th><th>Received</th>
-          ${dateCols.map(d => `<th>${fmtDate(d)}</th>`).join("")}
-          <th>Total Consumed</th><th>Transfer In</th><th>Transfer Out</th><th>Loan In</th><th>Loan Out</th><th>Adjustments</th><th>Remaining</th>
-        </tr></thead>
-        <tbody>${rows.map(r => `
-          <tr>
-            <td class="sticky-col">${esc(r.school.school_name)}</td>
-            <td>${esc(r.school.emis_code)}</td>
-            <td>${r.openBal.toFixed(2)}</td>
-            <td>${r.s.received.toFixed(2)}</td>
-            ${dateCols.map(d => `<td>${(r.s.consumptionByDate[d]||0).toFixed(2) === "0.00" ? "—" : (r.s.consumptionByDate[d]||0).toFixed(2)}</td>`).join("")}
-            <td>${r.s.totalConsumption.toFixed(2)}</td>
-            <td>${r.s.transferIn.toFixed(2)}</td>
-            <td>${r.s.transferOut.toFixed(2)}</td>
-            <td>${r.s.loanIn.toFixed(2)}</td>
-            <td>${r.s.loanOut.toFixed(2)}</td>
-            <td>${r.s.adjustments.toFixed(2)}</td>
-            <td><strong>${r.closing.toFixed(2)}</strong></td>
-          </tr>`).join("") || `<tr><td colspan="99" style="color:var(--ink-soft)">No schools in scope.</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
 }
-
 </script>
 </body>
 </html>

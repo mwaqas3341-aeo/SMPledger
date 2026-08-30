@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Report Comparison — School Meal Program</title>
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div class="brand">
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Report Comparison</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
+    </div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </div>
+  <div id="content"></div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+
+/* ===================== STATE ===================== */
+let currentUser = null, currentProfile = null;
+let cache = { markaz:[], schools:[], products:[] };
+
+/* ===================== HELPERS ===================== */
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+
+/* ===================== AUTH ===================== */
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
+
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    window.location.href = "index.html";
+    return;
+  }
+  // Report Comparison is admin/super_admin/tr only.
+  if(!["admin","super_admin","tr"].includes(profile.role)){
+    alert("Report Comparison is only available to admins and Tehsil Representatives.");
+    window.location.href = "dashboard.html";
+    return;
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+boot();
+function showApp(){
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+  renderPage();
+}
+
+async function loadRefData(){
+  const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
+    sb.from("markaz").select("id,name").eq("active", true).order("name"),
+    sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true),
+    sb.from("products").select("id,product_name").eq("active", true),
+  ]);
+  cache.markaz = markaz || [];
+  cache.schools = schools || [];
+  cache.products = products || [];
+}
+
+/* ===================== PAGE ===================== */
+async function renderPage(){
+  const content = document.getElementById("content");
+  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Company vs AEO comparison</h3>
+      <p class="sub">Company-uploaded vendor invoice quantities against what AEOs reported receiving. Non-zero differences are flagged for follow-up.</p>
+      <form id="filterForm" class="form-row">
+        <div><label>From</label><input type="date" name="from" value="${daysAgoStr(30)}"/></div>
+        <div><label>To</label><input type="date" name="to" value="${todayStr()}"/></div>
+        <div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${markazOpts}</select></div>
+        <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option></select></div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
+      </form>
+    </div>
+    <div class="grid-4" id="statCards"></div>
+    <div class="card">
+      <div class="table-wrap"><table id="compTable"><thead><tr>
+        <th>Delivery date</th><th>EMIS</th><th>School</th><th>Product</th><th>Invoice #</th>
+        <th>Company qty</th><th>AEO qty</th><th>Difference</th><th>Status</th>
+      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+    </div>
+  `;
+
+  document.getElementById("filterForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    loadComparison(new FormData(e.target));
+  });
+
+  await loadComparison(new FormData(document.getElementById("filterForm")));
+}
+
+async function loadComparison(fd){
+  const from = fd.get("from"), to = fd.get("to"), markazId = fd.get("markaz_id"), filter = fd.get("filter");
+  const tbody = document.querySelector("#compTable tbody");
+  tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr>`;
+
+  let query = sb.from("v_company_vs_aeo_comparison").select("*")
+    .gte("delivery_date", from).lte("delivery_date", to)
+    .order("delivery_date", { ascending: false });
+  const { data, error } = await query;
+
+  if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }
+
+  const schoolById = Object.fromEntries(cache.schools.map(s => [s.id, s]));
+  const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
+
+  let rows = (data || []).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
+  if(markazId) rows = rows.filter(r => r.school?.markaz_id === markazId);
+  if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0);
+
+  // date desc, EMIS asc within date - same convention as Inventory Received.
+  rows.sort((a, b) => {
+    if(a.delivery_date !== b.delivery_date) return a.delivery_date < b.delivery_date ? 1 : -1;
+    return (a.school?.emis_code || "").localeCompare(b.school?.emis_code || "");
+  });
+
+  const matched = rows.filter(r => Number(r.difference) === 0).length;
+  const mismatched = rows.length - matched;
+  document.getElementById("statCards").innerHTML = `
+    <div class="stat"><div class="n">${rows.length}</div><div class="l">Total rows</div></div>
+    <div class="stat"><div class="n">${matched}</div><div class="l">Matching</div></div>
+    <div class="stat"><div class="n">${mismatched}</div><div class="l">Mismatched</div></div>
+    <div class="stat"><div class="n">${rows.length ? Math.round(matched/rows.length*100) : 0}%</div><div class="l">Match rate</div></div>
+  `;
+
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
+
+  tbody.innerHTML = rows.map(r => {
+    const diff = Number(r.difference);
+    const pill = diff === 0 ? '<span class="pill pill-ok">Match</span>' : '<span class="pill pill-bad">Mismatch</span>';
+    return `<tr>
+      <td>${fmtDate(r.delivery_date)}</td>
+      <td>${esc(r.school?.emis_code)}</td>
+      <td>${esc(r.school?.school_name)}</td>
+      <td>${esc(r.product?.product_name)}</td>
+      <td>${esc(r.invoice_number) || "—"}</td>
+      <td>${fmt(r.company_qty)}</td>
+      <td>${fmt(r.aeo_qty)}</td>
+      <td>${diff > 0 ? "+" : ""}${fmt(diff)}</td>
+      <td>${pill}</td>
+    </tr>`;
+  }).join("");
+}
+</script>
+</body>
+</html>

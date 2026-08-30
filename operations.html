@@ -11,28 +11,21 @@
 <body>
 
 <div id="app">
-  <aside id="sidebar">
+  <div id="topbar">
     <div class="brand">
-      <div class="eyebrow">SMP · Punjab SED</div>
-      <h2>Operations</h2>
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Operations</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
     </div>
-    <div class="top-nav"><a class="top-nav-item" href="dashboard.html">Dashboard</a><a class="top-nav-item" href="inventory.html">Inventory</a><a class="top-nav-item" href="consumption.html">Consumption</a><a class="top-nav-item active" href="operations.html">Operations</a><a class="top-nav-item" href="transfers.html">Transfers & Loans</a><a class="top-nav-item" href="reports.html">Reports</a></div>
-    <nav id="navList"></nav>
-    <div class="footer">
-      <div id="whoBox">—</div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
       <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
     </div>
-  </aside>
-  <div id="main">
-    <div id="topbar">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <button id="menuToggle" type="button">☰</button>
-        <h1 id="pageTitle">Company Deliveries</h1>
-      </div>
-      <div class="who" id="topWho"></div>
-    </div>
-    <div id="content"></div>
   </div>
+  <div class="menu-cards" id="navList"></div>
+  <div id="content"></div>
 </div>
 
 <div class="toast-area" id="toastArea"></div>
@@ -77,9 +70,8 @@ async function boot(){
 }
 boot();
 function showApp(){
-  document.getElementById("whoBox").innerHTML = `<strong>${esc(currentProfile.full_name)}</strong><br/>${esc(currentProfile.role)}`;
-  document.getElementById("topWho").textContent = currentUser.email;
-  buildNav();
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+    buildNav();
   const first = SECTIONS.find(s => visibleTo(s)).id;
   navigate(first);
 }
@@ -119,14 +111,12 @@ function buildNav(){
     nav.appendChild(a);
   });
 }
-document.getElementById("menuToggle").onclick = () => document.getElementById("sidebar").classList.toggle("open");
 
 async function navigate(id){
   currentSection = id;
-  document.querySelectorAll("#navList .nav-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
-  document.getElementById("sidebar").classList.remove("open");
+  document.querySelectorAll("#navList .menu-card").forEach(el => el.classList.toggle("active", el.dataset.id === id));
   const titleMap = Object.fromEntries(SECTIONS.map(s => [s.id, s.label]));
-  document.getElementById("pageTitle").textContent = titleMap[id] || "";
+  document.getElementById("pageTitleUnused").textContent = titleMap[id] || "";
   const content = document.getElementById("content");
   content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
   try{
