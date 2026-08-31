@@ -79,12 +79,16 @@ function showApp(){
 }
 
 async function loadRefData(){
+  let markazQuery = sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name");
+  if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("emis_code");
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
-  const [{ data: schools }, { data: products }] = await Promise.all([
+  const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
+    markazQuery,
     schoolsQuery,
     sb.from("products").select("id,product_name,unit_name").eq("active", true),
   ]);
+  cache.markaz = markaz || [];
   cache.schools = schools || [];
   // Milk block first, then Biscuit (and anything else after), matching the
   // requested column order rather than plain alphabetical.
@@ -93,6 +97,47 @@ async function loadRefData(){
     const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
     return am - bm;
   });
+}
+
+/* ===================== JURISDICTION FILTER (admin/tr only) ===================== */
+function renderJurisdictionFilter(container, onApply){
+  if(!["admin","super_admin","tr"].includes(currentProfile.role)){
+    onApply(cache.schools.map(s => s.id));
+    return;
+  }
+  const districts = [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort();
+  container.innerHTML = `
+    <div class="card">
+      <h3>Filter by jurisdiction</h3>
+      <p class="sub">Narrow the schools shown below by District, Tehsil, or Markaz.</p>
+      <div class="form-row">
+        <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
+        <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
+        <div><label>Markaz</label><select id="jfMarkaz"><option value="">All</option></select></div>
+      </div>
+    </div>
+  `;
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
+  function refreshTehsil(){
+    const d = dEl.value;
+    const tehsils = [...new Set(cache.markaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
+    tEl.innerHTML = `<option value="">All</option>` + tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  }
+  function refreshMarkaz(){
+    const d = dEl.value, t = tEl.value;
+    const list = cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t));
+    mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  }
+  function apply(){
+    const d = dEl.value, t = tEl.value, mId = mEl.value;
+    const markazIds = new Set(cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
+    onApply(cache.schools.filter(s => markazIds.has(s.markaz_id)).map(s => s.id));
+  }
+  refreshTehsil(); refreshMarkaz();
+  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); apply(); });
+  tEl.addEventListener("change", () => { refreshMarkaz(); apply(); });
+  mEl.addEventListener("change", apply);
+  apply();
 }
 
 /* ===================== GRID ===================== */
@@ -108,6 +153,7 @@ async function renderGrid(){
         <div style="align-self:end;"><button class="btn-secondary" id="todayBtn" type="button">Jump to today</button></div>
       </div>
     </div>
+    <div id="filterMount"></div>
     <div class="card">
       <h3>Schools — ${esc(selectedDate)}</h3>
       <p class="sub">Click a Consumed cell to enter or correct that school's figure for the selected date. Values save immediately.</p>
@@ -126,16 +172,17 @@ async function renderGrid(){
     renderGrid();
   });
 
-  await loadGridData();
+  renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => loadGridData(schoolIds));
 }
 
-async function loadGridData(){
-  const schoolIds = cache.schools.map(s => s.id);
+async function loadGridData(visibleSchoolIds){
+  const schoolIds = visibleSchoolIds;
+  const visibleSchools = cache.schools.filter(s => schoolIds.includes(s.id));
   const thead = document.querySelector("#gridTable thead");
   const tbody = document.querySelector("#gridTable tbody");
 
   if(!schoolIds.length){
-    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--ink-soft)">No schools in your jurisdiction.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
     return;
   }
 
@@ -165,7 +212,7 @@ async function loadGridData(){
     `).join("")}
   </tr>`;
 
-  tbody.innerHTML = cache.schools.map((s, i) => {
+  tbody.innerHTML = visibleSchools.map((s, i) => {
     const cells = cache.products.map(p => {
       const r = (bySchool[s.id] || {})[p.id] || { opening:0, received:0, consumed:0, remaining:0 };
       const cls = p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
@@ -196,10 +243,10 @@ async function loadGridData(){
         });
         if(error) throw error;
         toast("Saved");
-        await loadGridData();
+        await loadGridData(schoolIds);
       }catch(err){
         toast(err.message, "bad");
-        await loadGridData(); // revert the cell to the real stored value
+        await loadGridData(schoolIds); // revert the cell to the real stored value
       }
     });
   });

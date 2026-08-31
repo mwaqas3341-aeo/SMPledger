@@ -81,7 +81,7 @@ function showApp(){
 }
 
 async function loadRefData(){
-  let markazQuery = sb.from("markaz").select("id,name").eq("active", true).order("name");
+  let markazQuery = sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name");
   if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
   const [{ data: markaz }, { data: products }] = await Promise.all([
     markazQuery,
@@ -127,12 +127,64 @@ async function navigate(id){
   }
 }
 
+/* ===================== JURISDICTION FILTER (admin/tr only) ===================== */
+// Cascading District -> Tehsil -> Markaz filter. AEOs are already scoped to
+// their own markaz and never see this. Calls onApply(filteredSchoolIds)
+// whenever a selection changes, including once on initial render.
+function renderJurisdictionFilter(container, onApply){
+  if(!["admin","super_admin","tr"].includes(currentProfile.role)){
+    onApply(cache.schools.map(s => s.id));
+    return;
+  }
+  const districts = [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort();
+  container.innerHTML = `
+    <div class="card">
+      <h3>Filter by jurisdiction</h3>
+      <p class="sub">Narrow the view below by District, Tehsil, or Markaz.</p>
+      <div class="form-row">
+        <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
+        <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
+        <div><label>Markaz</label><select id="jfMarkaz"><option value="">All</option></select></div>
+      </div>
+    </div>
+  `;
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
+
+  function refreshTehsil(){
+    const d = dEl.value;
+    const tehsils = [...new Set(cache.markaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
+    tEl.innerHTML = `<option value="">All</option>` + tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  }
+  function refreshMarkaz(){
+    const d = dEl.value, t = tEl.value;
+    const list = cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t));
+    mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  }
+  function apply(){
+    const d = dEl.value, t = tEl.value, mId = mEl.value;
+    const markazIds = new Set(cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
+    onApply(cache.schools.filter(s => markazIds.has(s.markaz_id)).map(s => s.id));
+  }
+  refreshTehsil(); refreshMarkaz();
+  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); apply(); });
+  tEl.addEventListener("change", () => { refreshMarkaz(); apply(); });
+  mEl.addEventListener("change", apply);
+  apply();
+}
+
 /* ===================== SECTION: MY RECEIPTS ===================== */
 async function renderMyReceipts(content){
-  const schoolOpts = cache.schools.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
+  content.innerHTML = `<div id="filterMount"></div><div id="receiptsMount"></div>`;
+  renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => renderMyReceiptsBody(schoolIds));
+}
+
+async function renderMyReceiptsBody(visibleSchoolIds){
+  const mount = document.getElementById("receiptsMount");
+  const visibleSchools = cache.schools.filter(s => visibleSchoolIds.includes(s.id));
+  const schoolOpts = visibleSchools.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
   const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
 
-  content.innerHTML = `
+  mount.innerHTML = `
     <div class="card">
       <h3>Add inventory received</h3>
       <p class="sub">Milk and biscuit deliveries for the same school and date may use the same invoice number - that's expected and won't be blocked.</p>
@@ -191,15 +243,14 @@ async function renderMyReceipts(content){
 
       e.target.reset();
       e.target.querySelector('[name="receipt_date"]').value = todayStr();
-      await loadReceiptsTable();
+      await loadReceiptsTable(visibleSchoolIds);
     }catch(err){ toast(err.message, "bad"); }
   });
 
-  await loadReceiptsTable();
+  await loadReceiptsTable(visibleSchoolIds);
 }
 
-async function loadReceiptsTable(){
-  const schoolIds = cache.schools.map(s => s.id);
+async function loadReceiptsTable(schoolIds){
   const { data, error } = await sb
     .from("school_receipts")
     .select("receipt_date, quantity_received, invoice_number, collected_by, remarks, status, schools(emis_code, school_name), products(product_name, unit_name)")
@@ -234,7 +285,13 @@ async function loadReceiptsTable(){
 
 /* ===================== SECTION: COMPANY DATA & CERTIFICATION ===================== */
 async function renderCompanyData(content){
-  content.innerHTML = `
+  content.innerHTML = `<div id="filterMount"></div><div id="companyMount"></div>`;
+  renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => renderCompanyDataBody(schoolIds));
+}
+
+async function renderCompanyDataBody(visibleSchoolIds){
+  const mount = document.getElementById("companyMount");
+  mount.innerHTML = `
     <div class="card">
       <h3>Company-provided delivery data</h3>
       <p class="sub">Uploaded by admins from vendor invoices. Mark each row Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
@@ -243,10 +300,10 @@ async function renderCompanyData(content){
       </tr></thead><tbody><tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
-  await loadCompanyTable();
+  await loadCompanyTable(visibleSchoolIds);
 }
 
-async function loadCompanyTable(){
+async function loadCompanyTable(schoolIds){
   const { data, error } = await sb
     .from("company_invoice_items")
     .select(`
@@ -254,6 +311,7 @@ async function loadCompanyTable(){
       schools(emis_code, school_name), products(product_name, unit_name),
       company_invoices(invoice_number, invoice_date, delivery_date, status)
     `)
+    .in("school_id", schoolIds)
     .order("created_at", { ascending: false });
 
   const tbody = document.querySelector("#companyTable tbody");
@@ -295,7 +353,7 @@ async function loadCompanyTable(){
         const { error } = await sb.rpc("fn_verify_company_item", { p_item_id: id, p_status: status, p_remarks: remarks });
         if(error) throw error;
         toast(status === "received" ? "Marked received" : "Flagged as not received");
-        await loadCompanyTable();
+        await loadCompanyTable(schoolIds);
       }catch(err){ toast(err.message, "bad"); }
     });
   });

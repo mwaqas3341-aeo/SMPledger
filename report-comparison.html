@@ -82,7 +82,7 @@ function showApp(){
 
 async function loadRefData(){
   const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
-    sb.from("markaz").select("id,name").eq("active", true).order("name"),
+    sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name"),
     sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true),
     sb.from("products").select("id,product_name").eq("active", true),
   ]);
@@ -94,7 +94,7 @@ async function loadRefData(){
 /* ===================== PAGE ===================== */
 async function renderPage(){
   const content = document.getElementById("content");
-  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const districts = [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort();
 
   content.innerHTML = `
     <div class="card">
@@ -103,7 +103,9 @@ async function renderPage(){
       <form id="filterForm" class="form-row">
         <div><label>From</label><input type="date" name="from" value="${daysAgoStr(30)}"/></div>
         <div><label>To</label><input type="date" name="to" value="${todayStr()}"/></div>
-        <div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${markazOpts}</select></div>
+        <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
+        <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
+        <div><label>Markaz</label><select id="jfMarkaz"><option value="">All</option></select></div>
         <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option></select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
       </form>
@@ -117,6 +119,21 @@ async function renderPage(){
     </div>
   `;
 
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
+  function refreshTehsil(){
+    const d = dEl.value;
+    const tehsils = [...new Set(cache.markaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
+    tEl.innerHTML = `<option value="">All</option>` + tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  }
+  function refreshMarkaz(){
+    const d = dEl.value, t = tEl.value;
+    const list = cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t));
+    mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  }
+  refreshTehsil(); refreshMarkaz();
+  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); });
+  tEl.addEventListener("change", refreshMarkaz);
+
   document.getElementById("filterForm").addEventListener("submit", (e) => {
     e.preventDefault();
     loadComparison(new FormData(e.target));
@@ -126,7 +143,9 @@ async function renderPage(){
 }
 
 async function loadComparison(fd){
-  const from = fd.get("from"), to = fd.get("to"), markazId = fd.get("markaz_id"), filter = fd.get("filter");
+  const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter");
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
+  const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value;
   const tbody = document.querySelector("#compTable tbody");
   tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr>`;
 
@@ -139,9 +158,12 @@ async function loadComparison(fd){
 
   const schoolById = Object.fromEntries(cache.schools.map(s => [s.id, s]));
   const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
+  const markazById = Object.fromEntries(cache.markaz.map(m => [m.id, m]));
 
   let rows = (data || []).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
-  if(markazId) rows = rows.filter(r => r.school?.markaz_id === markazId);
+  if(selMarkazId) rows = rows.filter(r => r.school?.markaz_id === selMarkazId);
+  else if(selTehsil) rows = rows.filter(r => markazById[r.school?.markaz_id]?.tehsil === selTehsil);
+  else if(selDistrict) rows = rows.filter(r => markazById[r.school?.markaz_id]?.district === selDistrict);
   if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0);
 
   // date desc, EMIS asc within date - same convention as Inventory Received.
