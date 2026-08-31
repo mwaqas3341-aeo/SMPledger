@@ -52,6 +52,16 @@ function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDi
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 
+// Excel/CSV dates arrive as arbitrary text (8/1/2026, 2026-08-01, 01-Aug-2026,
+// etc.) - normalize to ISO so the database accepts it. Returns "" if unparseable.
+function normalizeDate(raw){
+  if(!raw) return "";
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const d = new Date(raw);
+  if(isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0,10);
+}
+
 /* ===================== AUTH ===================== */
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
 
@@ -152,21 +162,22 @@ async function renderPage(){
 let uploadState = { rows: null, headers: null, mapping: null, productId: null, manualInvoiceNumber: null, manualDate: null };
 
 function renderUploadWizard(mount){
-  uploadState = { rows: null, headers: null, mapping: null, productId: null, manualInvoiceNumber: null, manualDate: null };
+  uploadState = { rows: null, headers: null, mapping: null, productId: null };
   const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
   mount.innerHTML = `
     <div class="card">
       <h3>Upload company-provided data</h3>
-      <p class="sub">Import a vendor delivery sheet (Excel/CSV). Milk and biscuit are uploaded separately, matching how the vendor issues invoices per product.</p>
+      <p class="sub">Import a vendor delivery sheet (Excel/CSV) - a file can cover a whole week or month of deliveries with different dates and invoice numbers per row, so both are read from the file itself, not entered once for the whole batch. Milk and biscuit are uploaded separately, matching how the vendor issues invoices per product.</p>
       <div class="form-row">
         <div><label>Product</label><select id="upProduct" required><option value="">Select…</option>${productOpts}</select></div>
-        <div><label>Invoice # (if not a column in the file)</label><input type="text" id="upInvoiceNumber" placeholder="Optional fallback"/></div>
-        <div><label>Delivery date (if not a column in the file)</label><input type="date" id="upDeliveryDate"/></div>
         <div><label>File</label><input type="file" id="upFile" accept=".xlsx,.xls,.csv"/></div>
+        <div style="align-self:end;"><button class="btn-secondary" type="button" id="templateBtn">Download template</button></div>
       </div>
       <div id="wizardStep2"></div>
     </div>
   `;
+
+  document.getElementById("templateBtn").addEventListener("click", downloadTemplate);
 
   document.getElementById("upFile").addEventListener("change", async (e) => {
     const file = e.target.files[0];
@@ -182,18 +193,31 @@ function renderUploadWizard(mount){
   });
 }
 
+function downloadTemplate(){
+  const wsData = [
+    ["EMIS Code", "Quantity", "Invoice Number", "Delivery Date"],
+    ["40074", "50", "INV-1001", "2026-08-01"],
+    ["40074", "50", "INV-1015", "2026-08-08"],
+    ["40081", "35", "INV-1002", "2026-08-01"],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Deliveries");
+  XLSX.writeFile(wb, "smp-company-data-template.xlsx");
+}
+
 function renderColumnMapping(){
   const step2 = document.getElementById("wizardStep2");
-  const headerOpts = (skipLabel) => `<option value="">${skipLabel}</option>` + uploadState.headers.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join("");
+  const headerOpts = `<option value="">Select…</option>` + uploadState.headers.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join("");
   step2.innerHTML = `
     <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--line);">
       <h3 style="font-size:14px;">Map columns</h3>
-      <p class="sub">${uploadState.rows.length} rows detected. Tell us which column is which.</p>
+      <p class="sub">${uploadState.rows.length} rows detected. Every field is read per-row from the file - tell us which column is which.</p>
       <div class="form-row">
-        <div><label>EMIS code column *</label><select id="mapEmis">${headerOpts("Select…")}</select></div>
-        <div><label>Quantity column *</label><select id="mapQty">${headerOpts("Select…")}</select></div>
-        <div><label>Invoice # column (optional)</label><select id="mapInvoice">${headerOpts("Use fallback above")}</select></div>
-        <div><label>Delivery date column (optional)</label><select id="mapDate">${headerOpts("Use fallback above")}</select></div>
+        <div><label>EMIS code column *</label><select id="mapEmis">${headerOpts}</select></div>
+        <div><label>Quantity column *</label><select id="mapQty">${headerOpts}</select></div>
+        <div><label>Invoice # column *</label><select id="mapInvoice">${headerOpts}</select></div>
+        <div><label>Delivery date column *</label><select id="mapDate">${headerOpts}</select></div>
       </div>
       <div class="actions-row"><button class="btn-primary" type="button" id="previewBtn">Preview</button></div>
       <div id="wizardStep3"></div>
@@ -204,24 +228,26 @@ function renderColumnMapping(){
 
 function renderPreview(){
   const productId = document.getElementById("upProduct").value;
-  const fallbackInvoice = document.getElementById("upInvoiceNumber").value.trim();
-  const fallbackDate = document.getElementById("upDeliveryDate").value;
   const emisCol = document.getElementById("mapEmis").value;
   const qtyCol = document.getElementById("mapQty").value;
   const invoiceCol = document.getElementById("mapInvoice").value;
   const dateCol = document.getElementById("mapDate").value;
 
   if(!productId){ toast("Select a product first", "bad"); return; }
-  if(emisCol === "" || qtyCol === ""){ toast("EMIS and Quantity columns are required", "bad"); return; }
+  if(emisCol === "" || qtyCol === "" || invoiceCol === "" || dateCol === ""){
+    toast("EMIS, Quantity, Invoice #, and Delivery Date columns are all required", "bad");
+    return;
+  }
 
   const schoolByEmis = Object.fromEntries(cache.schools.map(s => [String(s.emis_code).trim(), s]));
 
-  // Parse every row, resolve school, apply per-row or fallback invoice/date.
+  // Parse every row, resolve school, and read invoice/date per-row from the
+  // file (no batch-wide fallback - a real file spans many dates/invoices).
   const parsed = uploadState.rows.map((r, i) => {
     const emis = String(r[emisCol] ?? "").trim();
     const qty = Number(r[qtyCol]);
-    const invoiceNumber = (invoiceCol !== "" ? String(r[invoiceCol] ?? "").trim() : "") || fallbackInvoice;
-    const deliveryDate = (dateCol !== "" ? String(r[dateCol] ?? "").trim() : "") || fallbackDate;
+    const invoiceNumber = String(r[invoiceCol] ?? "").trim();
+    const deliveryDate = normalizeDate(String(r[dateCol] ?? "").trim());
     const school = schoolByEmis[emis];
     return { rowNum: i + 2, emis, qty, invoiceNumber, deliveryDate, school, valid: !!school && !isNaN(qty) && qty >= 0 && !!invoiceNumber && !!deliveryDate };
   });
