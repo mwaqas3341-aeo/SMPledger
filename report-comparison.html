@@ -6,6 +6,7 @@
 <title>Report Comparison — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
 </head>
 <body>
@@ -95,8 +96,10 @@ async function loadRefData(){
 async function renderPage(){
   const content = document.getElementById("content");
   const districts = [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort();
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
 
   content.innerHTML = `
+    <div id="uploadMount"></div>
     <div class="card">
       <h3>Company vs AEO comparison</h3>
       <p class="sub">Company-uploaded vendor invoice quantities against what AEOs reported receiving. Non-zero differences are flagged for follow-up.</p>
@@ -119,6 +122,8 @@ async function renderPage(){
     </div>
   `;
 
+  if(isAdmin) renderUploadWizard(document.getElementById("uploadMount"));
+
   const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
   function refreshTehsil(){
     const d = dEl.value;
@@ -140,6 +145,179 @@ async function renderPage(){
   });
 
   await loadComparison(new FormData(document.getElementById("filterForm")));
+}
+
+/* ===================== UPLOAD WIZARD (admin only) ===================== */
+// State carried across the wizard's steps.
+let uploadState = { rows: null, headers: null, mapping: null, productId: null, manualInvoiceNumber: null, manualDate: null };
+
+function renderUploadWizard(mount){
+  uploadState = { rows: null, headers: null, mapping: null, productId: null, manualInvoiceNumber: null, manualDate: null };
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+  mount.innerHTML = `
+    <div class="card">
+      <h3>Upload company-provided data</h3>
+      <p class="sub">Import a vendor delivery sheet (Excel/CSV). Milk and biscuit are uploaded separately, matching how the vendor issues invoices per product.</p>
+      <div class="form-row">
+        <div><label>Product</label><select id="upProduct" required><option value="">Select…</option>${productOpts}</select></div>
+        <div><label>Invoice # (if not a column in the file)</label><input type="text" id="upInvoiceNumber" placeholder="Optional fallback"/></div>
+        <div><label>Delivery date (if not a column in the file)</label><input type="date" id="upDeliveryDate"/></div>
+        <div><label>File</label><input type="file" id="upFile" accept=".xlsx,.xls,.csv"/></div>
+      </div>
+      <div id="wizardStep2"></div>
+    </div>
+  `;
+
+  document.getElementById("upFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+    if(!rows.length){ toast("File appears empty", "bad"); return; }
+    uploadState.headers = rows[0].map(h => String(h).trim());
+    uploadState.rows = rows.slice(1).filter(r => r.some(c => String(c).trim() !== ""));
+    renderColumnMapping();
+  });
+}
+
+function renderColumnMapping(){
+  const step2 = document.getElementById("wizardStep2");
+  const headerOpts = (skipLabel) => `<option value="">${skipLabel}</option>` + uploadState.headers.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join("");
+  step2.innerHTML = `
+    <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--line);">
+      <h3 style="font-size:14px;">Map columns</h3>
+      <p class="sub">${uploadState.rows.length} rows detected. Tell us which column is which.</p>
+      <div class="form-row">
+        <div><label>EMIS code column *</label><select id="mapEmis">${headerOpts("Select…")}</select></div>
+        <div><label>Quantity column *</label><select id="mapQty">${headerOpts("Select…")}</select></div>
+        <div><label>Invoice # column (optional)</label><select id="mapInvoice">${headerOpts("Use fallback above")}</select></div>
+        <div><label>Delivery date column (optional)</label><select id="mapDate">${headerOpts("Use fallback above")}</select></div>
+      </div>
+      <div class="actions-row"><button class="btn-primary" type="button" id="previewBtn">Preview</button></div>
+      <div id="wizardStep3"></div>
+    </div>
+  `;
+  document.getElementById("previewBtn").addEventListener("click", renderPreview);
+}
+
+function renderPreview(){
+  const productId = document.getElementById("upProduct").value;
+  const fallbackInvoice = document.getElementById("upInvoiceNumber").value.trim();
+  const fallbackDate = document.getElementById("upDeliveryDate").value;
+  const emisCol = document.getElementById("mapEmis").value;
+  const qtyCol = document.getElementById("mapQty").value;
+  const invoiceCol = document.getElementById("mapInvoice").value;
+  const dateCol = document.getElementById("mapDate").value;
+
+  if(!productId){ toast("Select a product first", "bad"); return; }
+  if(emisCol === "" || qtyCol === ""){ toast("EMIS and Quantity columns are required", "bad"); return; }
+
+  const schoolByEmis = Object.fromEntries(cache.schools.map(s => [String(s.emis_code).trim(), s]));
+
+  // Parse every row, resolve school, apply per-row or fallback invoice/date.
+  const parsed = uploadState.rows.map((r, i) => {
+    const emis = String(r[emisCol] ?? "").trim();
+    const qty = Number(r[qtyCol]);
+    const invoiceNumber = (invoiceCol !== "" ? String(r[invoiceCol] ?? "").trim() : "") || fallbackInvoice;
+    const deliveryDate = (dateCol !== "" ? String(r[dateCol] ?? "").trim() : "") || fallbackDate;
+    const school = schoolByEmis[emis];
+    return { rowNum: i + 2, emis, qty, invoiceNumber, deliveryDate, school, valid: !!school && !isNaN(qty) && qty >= 0 && !!invoiceNumber && !!deliveryDate };
+  });
+
+  // Dedupe within this batch: same EMIS + invoice number for this product ->
+  // keep the first occurrence, flag the rest.
+  const seen = new Set();
+  parsed.forEach(row => {
+    if(!row.valid) return;
+    const key = `${row.emis}|${row.invoiceNumber.toUpperCase()}`;
+    if(seen.has(key)){ row.duplicate = true; row.valid = false; }
+    else seen.add(key);
+  });
+
+  uploadState.parsed = parsed;
+  uploadState.productId = productId;
+
+  const validCount = parsed.filter(r => r.valid).length;
+  const invalidRows = parsed.filter(r => !r.valid);
+
+  const step3 = document.getElementById("wizardStep3");
+  step3.innerHTML = `
+    <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--line);">
+      <div class="grid-4">
+        <div class="stat"><div class="n">${parsed.length}</div><div class="l">Rows in file</div></div>
+        <div class="stat"><div class="n">${validCount}</div><div class="l">Ready to import</div></div>
+        <div class="stat"><div class="n">${invalidRows.filter(r => r.duplicate).length}</div><div class="l">Duplicates skipped</div></div>
+        <div class="stat"><div class="n">${invalidRows.filter(r => !r.duplicate && !r.school).length}</div><div class="l">Unmatched EMIS</div></div>
+      </div>
+      ${invalidRows.length ? `
+        <p class="sub" style="margin-top:12px;">Rows that will be skipped:</p>
+        <div class="table-wrap"><table><thead><tr><th>Row</th><th>EMIS</th><th>Qty</th><th>Invoice #</th><th>Date</th><th>Reason</th></tr></thead><tbody>
+          ${invalidRows.map(r => `<tr>
+            <td>${r.rowNum}</td><td>${esc(r.emis)}</td><td>${esc(r.qty)}</td><td>${esc(r.invoiceNumber)}</td><td>${esc(r.deliveryDate)}</td>
+            <td>${r.duplicate ? "Duplicate EMIS+invoice in this file" : !r.school ? "EMIS not found" : "Missing quantity, invoice #, or date"}</td>
+          </tr>`).join("")}
+        </tbody></table></div>
+      ` : ""}
+      <div class="actions-row">
+        <button class="btn-primary" type="button" id="importBtn" ${validCount ? "" : "disabled"}>Import ${validCount} rows</button>
+      </div>
+    </div>
+  `;
+  document.getElementById("importBtn").addEventListener("click", runImport);
+}
+
+async function runImport(){
+  const btn = document.getElementById("importBtn");
+  btn.disabled = true;
+  btn.textContent = "Importing…";
+  const validRows = uploadState.parsed.filter(r => r.valid);
+
+  // Group by invoice number (+ delivery date, in case the same number is
+  // reused across dates) so each distinct invoice becomes one
+  // company_invoices row with its line items underneath.
+  const groups = {};
+  validRows.forEach(r => {
+    const key = `${r.invoiceNumber}|${r.deliveryDate}`;
+    (groups[key] = groups[key] || []).push(r);
+  });
+
+  let invoiceCount = 0, itemCount = 0, errorCount = 0;
+  for(const key in groups){
+    const rows = groups[key];
+    const { invoiceNumber, deliveryDate } = rows[0];
+    try{
+      const { data: invoice, error: invErr } = await sb.from("company_invoices").insert({
+        invoice_number: invoiceNumber,
+        product_id: uploadState.productId,
+        invoice_date: deliveryDate,
+        delivery_date: deliveryDate,
+        entered_by: currentUser.id,
+      }).select("id").single();
+      if(invErr) throw invErr;
+
+      const items = rows.map(r => ({
+        invoice_id: invoice.id,
+        school_id: r.school.id,
+        product_id: uploadState.productId,
+        quantity: r.qty,
+      }));
+      const { error: itemErr } = await sb.from("company_invoice_items").insert(items);
+      if(itemErr) throw itemErr;
+
+      invoiceCount++;
+      itemCount += rows.length;
+    }catch(err){
+      errorCount++;
+      console.error("Import failed for invoice", invoiceNumber, err);
+    }
+  }
+
+  toast(`Imported ${itemCount} rows across ${invoiceCount} invoice(s)${errorCount ? ` — ${errorCount} invoice group(s) failed (see console)` : ""}`,
+    errorCount ? "bad" : "ok");
+  await loadComparison(new FormData(document.getElementById("filterForm")));
+  renderUploadWizard(document.getElementById("uploadMount"));
 }
 
 async function loadComparison(fd){
@@ -172,20 +350,28 @@ async function loadComparison(fd){
     return (a.school?.emis_code || "").localeCompare(b.school?.emis_code || "");
   });
 
-  const matched = rows.filter(r => Number(r.difference) === 0).length;
-  const mismatched = rows.length - matched;
+  const matched = rows.filter(r => r.status === "Matched").length;
+  const aeoOnly = rows.filter(r => r.status === "AEO entered, company did not provide").length;
+  const companyOnly = rows.filter(r => r.status === "Company provided, AEO did not enter").length;
+  const qtyMismatch = rows.filter(r => r.status === "Short Received" || r.status === "Excess Received").length;
   document.getElementById("statCards").innerHTML = `
     <div class="stat"><div class="n">${rows.length}</div><div class="l">Total rows</div></div>
     <div class="stat"><div class="n">${matched}</div><div class="l">Matching</div></div>
-    <div class="stat"><div class="n">${mismatched}</div><div class="l">Mismatched</div></div>
-    <div class="stat"><div class="n">${rows.length ? Math.round(matched/rows.length*100) : 0}%</div><div class="l">Match rate</div></div>
+    <div class="stat"><div class="n">${aeoOnly}</div><div class="l">AEO entered, company didn't</div></div>
+    <div class="stat"><div class="n">${companyOnly}</div><div class="l">Company provided, AEO didn't</div></div>
   `;
 
   if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
 
+  const pillFor = (status) => {
+    if(status === "Matched") return '<span class="pill pill-ok">Matched</span>';
+    if(status === "AEO entered, company did not provide") return '<span class="pill pill-warn">AEO only</span>';
+    if(status === "Company provided, AEO did not enter") return '<span class="pill pill-warn">Company only</span>';
+    return '<span class="pill pill-bad">' + esc(status) + '</span>'; // Short/Excess Received
+  };
+
   tbody.innerHTML = rows.map(r => {
     const diff = Number(r.difference);
-    const pill = diff === 0 ? '<span class="pill pill-ok">Match</span>' : '<span class="pill pill-bad">Mismatch</span>';
     return `<tr>
       <td>${fmtDate(r.delivery_date)}</td>
       <td>${esc(r.school?.emis_code)}</td>
@@ -195,7 +381,7 @@ async function loadComparison(fd){
       <td>${fmt(r.company_qty)}</td>
       <td>${fmt(r.aeo_qty)}</td>
       <td>${diff > 0 ? "+" : ""}${fmt(diff)}</td>
-      <td>${pill}</td>
+      <td>${pillFor(r.status)}</td>
     </tr>`;
   }).join("");
 }
