@@ -357,7 +357,14 @@
     try {
       const res = await fetch(LOGIN_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // The edge function gateway expects an apikey on every request it
+          // routes, even with verify_jwt disabled - without this the request
+          // gets rejected before our function code (and its CORS headers)
+          // ever runs, which looks like a plain connectivity failure.
+          apikey: SMP_CONFIG.SUPABASE_ANON_KEY,
+        },
         body: JSON.stringify({ cnic, password }),
       });
       const data = await res.json();
