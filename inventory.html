@@ -64,7 +64,7 @@ async function boot(){
     window.location.href = "index.html";
     return;
   }
-  if(!["admin","super_admin","aeo"].includes(profile.role)){
+  if(!["admin","super_admin","tr","aeo"].includes(profile.role)){
     alert("This module is for AEOs and administrators.");
     window.location.href = "dashboard.html";
     return;
@@ -83,6 +83,7 @@ function showApp(){
 async function loadRefData(){
   let markazQuery = sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name");
   if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
+  if(currentProfile.role === "tr" && currentProfile.tehsil) markazQuery = markazQuery.eq("tehsil", currentProfile.tehsil);
   const [{ data: markaz }, { data: products }] = await Promise.all([
     markazQuery,
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
@@ -93,6 +94,7 @@ async function loadRefData(){
   // "His schools" - every school in the AEO's own markaz. Admins see all.
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+  if(currentProfile.role === "tr" && currentProfile.tehsil) schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,markaz!inner(tehsil)").eq("active", true).eq("markaz.tehsil", currentProfile.tehsil).order("school_name");
   const { data: schools } = await schoolsQuery;
   cache.schools = schools || [];
 }
