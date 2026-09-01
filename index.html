@@ -385,8 +385,9 @@
         return;
       }
 
-      if (data.markaz_warning) {
-        sessionStorage.setItem("smp_jurisdiction_warning", data.markaz_warning);
+      const jurisdictionWarning = data.markaz_warning || data.tehsil_warning;
+      if (jurisdictionWarning) {
+        sessionStorage.setItem("smp_jurisdiction_warning", jurisdictionWarning);
       }
 
       window.location.href = "dashboard.html";
