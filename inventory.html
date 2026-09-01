@@ -214,34 +214,27 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     e.preventDefault();
     const fd = new FormData(e.target);
     try{
-      const { error } = await sb.from("school_receipts").insert({
-        school_id: fd.get("school_id"),
-        product_id: fd.get("product_id"),
-        receipt_date: fd.get("receipt_date"),
-        quantity_received: fd.get("quantity_received"),
-        invoice_number: fd.get("invoice_number") || null,
-        collected_by: fd.get("collected_by") || null,
-        remarks: fd.get("remarks") || null,
-        created_by: currentUser.id,
+      // Both the receipt row and its ledger entry are written atomically
+      // inside this RPC (SECURITY DEFINER), which also enforces
+      // fn_can_write_school itself - a direct table insert here would be
+      // rejected by RLS for anyone but an admin (school_receipts' only
+      // write policy is admin-only).
+      const { error } = await sb.rpc("fn_create_school_receipt", {
+        p_school_id: fd.get("school_id"),
+        p_product_id: fd.get("product_id"),
+        p_receipt_date: fd.get("receipt_date"),
+        p_quantity_received: fd.get("quantity_received"),
+        p_invoice_number: fd.get("invoice_number") || null,
+        p_collected_by: fd.get("collected_by") || null,
+        p_remarks: fd.get("remarks") || null,
       });
       if(error){
-        if(error.code === "23505") throw new Error("A receipt for this school, product, date, and invoice number already exists.");
+        if(error.code === "23505" || /duplicate key/i.test(error.message)){
+          throw new Error("A receipt for this school, product, date, and invoice number already exists.");
+        }
         throw error;
       }
       toast("Receipt saved");
-
-      // Mirror into the ledger, same pattern as the existing RPCs use, so
-      // balances (opening/remaining, consumption grid, reports) stay correct.
-      await sb.from("inventory_transactions").insert({
-        txn_date: fd.get("receipt_date"),
-        product_id: fd.get("product_id"),
-        entity_type: "school",
-        school_id: fd.get("school_id"),
-        quantity: fd.get("quantity_received"),
-        transaction_type: "SCHOOL_RECEIPT",
-        reference_type: "school_receipts",
-        created_by: currentUser.id,
-      });
 
       e.target.reset();
       e.target.querySelector('[name="receipt_date"]').value = todayStr();
