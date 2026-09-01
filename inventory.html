@@ -184,19 +184,32 @@ async function renderMyReceiptsBody(visibleSchoolIds){
   const mount = document.getElementById("receiptsMount");
   const visibleSchools = cache.schools.filter(s => visibleSchoolIds.includes(s.id));
   const schoolOpts = visibleSchools.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
-  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+
+  // One invoice can cover both products for the same school/date - checkboxes
+  // let the AEO pick either or both, each with its own quantity, all saved
+  // under the one invoice number entered below.
+  const productChecks = cache.products.map(p => `
+    <div class="product-check" data-product-id="${p.id}">
+      <label style="display:flex;align-items:center;gap:6px;font-weight:600;">
+        <input type="checkbox" class="productCheckbox" value="${p.id}" style="width:auto;" checked/> ${esc(p.product_name)}
+      </label>
+      <input type="number" class="productQty" data-product-id="${p.id}" min="0" step="0.01" placeholder="Quantity" required/>
+    </div>
+  `).join("");
 
   mount.innerHTML = `
     <div class="card">
       <h3>Add inventory received</h3>
-      <p class="sub">Milk and biscuit deliveries for the same school and date may use the same invoice number - that's expected and won't be blocked.</p>
+      <p class="sub">Select one or both products - both share the same invoice number and date when a single delivery covers both.</p>
       <form id="receiptForm" class="form-row">
         <div><label>School</label><select name="school_id" required><option value="">Select…</option>${schoolOpts}</select></div>
-        <div><label>Product</label><select name="product_id" required><option value="">Select…</option>${productOpts}</select></div>
         <div><label>Date received</label><input type="date" name="receipt_date" value="${todayStr()}" required/></div>
-        <div><label>Quantity</label><input type="number" name="quantity_received" min="0" step="0.01" required/></div>
         <div><label>Invoice / reference no.</label><input type="text" name="invoice_number" placeholder="As shown on delivery slip"/></div>
         <div><label>Collected by</label><input type="text" name="collected_by" placeholder="Optional"/></div>
+        <div style="grid-column:1/-1;">
+          <label>Products received</label>
+          <div class="product-check-row">${productChecks}</div>
+        </div>
         <div style="grid-column:1/-1;"><label>Remarks</label><input type="text" name="remarks" placeholder="Optional"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Save receipt</button></div>
       </form>
@@ -210,36 +223,77 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     </div>
   `;
 
+  // Toggle each product's quantity field with its checkbox.
+  mount.querySelectorAll(".product-check").forEach(row => {
+    const checkbox = row.querySelector(".productCheckbox");
+    const qtyInput = row.querySelector(".productQty");
+    function sync(){
+      qtyInput.disabled = !checkbox.checked;
+      qtyInput.required = checkbox.checked;
+      qtyInput.style.opacity = checkbox.checked ? "1" : ".4";
+    }
+    checkbox.addEventListener("change", sync);
+    sync();
+  });
+
   document.getElementById("receiptForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    try{
-      // Both the receipt row and its ledger entry are written atomically
-      // inside this RPC (SECURITY DEFINER), which also enforces
-      // fn_can_write_school itself - a direct table insert here would be
-      // rejected by RLS for anyone but an admin (school_receipts' only
-      // write policy is admin-only).
+    const checkedProducts = Array.from(mount.querySelectorAll(".productCheckbox:checked")).map(cb => cb.value);
+
+    if(!checkedProducts.length){ toast("Select at least one product", "bad"); return; }
+
+    const shared = {
+      p_school_id: fd.get("school_id"),
+      p_receipt_date: fd.get("receipt_date"),
+      p_invoice_number: fd.get("invoice_number") || null,
+      p_collected_by: fd.get("collected_by") || null,
+      p_remarks: fd.get("remarks") || null,
+    };
+    if(!shared.p_school_id){ toast("Select a school", "bad"); return; }
+
+    // Both the receipt row and its ledger entry are written atomically
+    // inside this RPC (SECURITY DEFINER), which also enforces
+    // fn_can_write_school itself - a direct table insert here would be
+    // rejected by RLS for anyone but an admin (school_receipts' only
+    // write policy is admin-only). Called once per checked product, all
+    // sharing the same invoice number/date/school entered above.
+    let savedCount = 0;
+    const failures = [];
+    for(const productId of checkedProducts){
+      const qtyInput = mount.querySelector(`.productQty[data-product-id="${productId}"]`);
+      const qty = qtyInput.value;
+      if(!qty){ failures.push(`${productId}: quantity required`); continue; }
       const { error } = await sb.rpc("fn_create_school_receipt", {
-        p_school_id: fd.get("school_id"),
-        p_product_id: fd.get("product_id"),
-        p_receipt_date: fd.get("receipt_date"),
-        p_quantity_received: fd.get("quantity_received"),
-        p_invoice_number: fd.get("invoice_number") || null,
-        p_collected_by: fd.get("collected_by") || null,
-        p_remarks: fd.get("remarks") || null,
+        ...shared,
+        p_product_id: productId,
+        p_quantity_received: qty,
       });
       if(error){
-        if(error.code === "23505" || /duplicate key/i.test(error.message)){
-          throw new Error("A receipt for this school, product, date, and invoice number already exists.");
-        }
-        throw error;
+        const dupe = error.code === "23505" || /duplicate key/i.test(error.message);
+        const productName = cache.products.find(p => p.id === productId)?.product_name || productId;
+        failures.push(dupe
+          ? `${productName}: a receipt for this school, product, date, and invoice number already exists`
+          : `${productName}: ${error.message}`);
+      } else {
+        savedCount++;
       }
-      toast("Receipt saved");
+    }
 
+    if(savedCount) toast(`Saved ${savedCount} product${savedCount > 1 ? "s" : ""}`);
+    if(failures.length) toast(failures.join(" · "), "bad");
+
+    if(savedCount){
       e.target.reset();
+      mount.querySelectorAll(".productCheckbox").forEach(cb => cb.checked = true);
+      mount.querySelectorAll(".product-check").forEach(row => {
+        const checkbox = row.querySelector(".productCheckbox");
+        const qtyInput = row.querySelector(".productQty");
+        qtyInput.disabled = false; qtyInput.required = true; qtyInput.style.opacity = "1"; qtyInput.value = "";
+      });
       e.target.querySelector('[name="receipt_date"]').value = todayStr();
       await loadReceiptsTable(visibleSchoolIds);
-    }catch(err){ toast(err.message, "bad"); }
+    }
   });
 
   await loadReceiptsTable(visibleSchoolIds);
