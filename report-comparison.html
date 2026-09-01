@@ -127,8 +127,8 @@ async function renderPage(){
     <div class="card">
       <div class="table-wrap"><table id="compTable"><thead><tr>
         <th>Delivery date</th><th>EMIS</th><th>School</th><th>Product</th><th>Invoice #</th>
-        <th>Company qty</th><th>AEO qty</th><th>Difference</th><th>Status</th>
-      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Company qty</th><th>AEO qty</th><th>Difference</th><th>Status</th><th>AEO Certification</th>
+      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
@@ -351,14 +351,14 @@ async function loadComparison(fd){
   const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
   const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value;
   const tbody = document.querySelector("#compTable tbody");
-  tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr>`;
 
   let query = sb.from("v_company_vs_aeo_comparison").select("*")
     .gte("delivery_date", from).lte("delivery_date", to)
     .order("delivery_date", { ascending: false });
   const { data, error } = await query;
 
-  if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
 
   const schoolById = Object.fromEntries(cache.schools.map(s => [s.id, s]));
   const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
@@ -387,13 +387,23 @@ async function loadComparison(fd){
     <div class="stat"><div class="n">${companyOnly}</div><div class="l">Company provided, AEO didn't</div></div>
   `;
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
 
   const pillFor = (status) => {
     if(status === "Matched") return '<span class="pill pill-ok">Matched</span>';
     if(status === "AEO entered, company did not provide") return '<span class="pill pill-warn">AEO only</span>';
     if(status === "Company provided, AEO did not enter") return '<span class="pill pill-warn">Company only</span>';
     return '<span class="pill pill-bad">' + esc(status) + '</span>'; // Short/Excess Received
+  };
+
+  // aeo_verification_status is set by AEOs from Inventory Received's
+  // Company Data & Certification section (fn_verify_company_item) - only
+  // meaningful on rows where company data actually exists.
+  const certPillFor = (status) => {
+    if(!status) return "—";
+    if(status.includes("not_received")) return '<span class="pill pill-bad">Not received</span>';
+    if(status.includes("received")) return '<span class="pill pill-ok">Received</span>';
+    return '<span class="pill pill-warn">Pending</span>';
   };
 
   tbody.innerHTML = rows.map(r => {
@@ -408,6 +418,7 @@ async function loadComparison(fd){
       <td>${fmt(r.aeo_qty)}</td>
       <td>${diff > 0 ? "+" : ""}${fmt(diff)}</td>
       <td>${pillFor(r.status)}</td>
+      <td>${certPillFor(r.aeo_verification_status)}</td>
     </tr>`;
   }).join("");
 }
