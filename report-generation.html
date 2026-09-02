@@ -6,7 +6,19 @@
 <title>Report Generation — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
+<style>
+  #reportTable{ font-size:11.5px; }
+  #reportTable th, #reportTable td{ padding:5px 6px; white-space:nowrap; }
+  #reportTable .milk-col{ background:#f6fbff; }
+  #reportTable .biscuit-col{ background:#fef9f1; }
+  #reportTable .rat-col{ background:#f5f2fb; }
+  #reportTable .total-row td{ font-weight:700; background:var(--paper); border-top:2px solid var(--navy); }
+  #reportTable .markaz-name{ white-space:normal; }
+  .proforma-title{ text-align:center; font-weight:700; font-size:14px; margin-bottom:2px; }
+  .proforma-period{ text-align:center; font-size:12.5px; color:var(--ink-soft); margin-bottom:14px; }
+</style>
 </head>
 <body>
 
@@ -35,7 +47,8 @@ const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_AN
 
 /* ===================== STATE ===================== */
 let currentUser = null, currentProfile = null;
-let cache = { markaz:[], schools:[], products:[] };
+let cache = { markaz:[], products:[] };
+let lastReport = null; // kept around for export
 
 /* ===================== HELPERS ===================== */
 function toast(msg, kind){
@@ -49,12 +62,13 @@ function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function fmtDMY(d){ const dt = new Date(d); const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return `${dt.getDate()}-${months[dt.getMonth()]}-${dt.getFullYear()}`; }
+function shortDate(d){ const dt = new Date(d); return `${dt.getDate()}/${dt.getMonth()+1}`; }
 function dateRange(from, to){
   const dates = []; let d = new Date(from); const end = new Date(to);
   while(d <= end){ dates.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
   return dates;
 }
-function shortDate(d){ const dt = new Date(d); return `${dt.getDate()}/${dt.getMonth()+1}`; }
 
 /* ===================== AUTH ===================== */
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
@@ -80,19 +94,11 @@ function showApp(){
 }
 
 async function loadRefData(){
-  let markazQuery = sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name");
-  if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
-  if(currentProfile.role === "tr" && currentProfile.tehsil) markazQuery = markazQuery.eq("tehsil", currentProfile.tehsil);
-  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("emis_code");
-  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
-  if(currentProfile.role === "tr" && currentProfile.tehsil) schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,markaz!inner(tehsil)").eq("active", true).eq("markaz.tehsil", currentProfile.tehsil).order("emis_code");
-  const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
-    markazQuery,
-    schoolsQuery,
-    sb.from("products").select("id,product_name,unit_name").eq("active", true),
+  const [{ data: markaz }, { data: products }] = await Promise.all([
+    sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name"),
+    sb.from("products").select("id,product_name,unit_name,schedule_dow").eq("active", true),
   ]);
   cache.markaz = markaz || [];
-  cache.schools = schools || [];
   cache.products = (products || []).sort((a, b) => {
     const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
     const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
@@ -103,50 +109,43 @@ async function loadRefData(){
 /* ===================== PAGE ===================== */
 async function renderPage(){
   const content = document.getElementById("content");
-  const isAdminOrTr = ["admin","super_admin","tr"].includes(currentProfile.role);
-  const districts = isAdminOrTr ? [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort() : [];
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const isTr = currentProfile.role === "tr";
+
+  let scopeNote, tehsilField = "";
+  if(isAdmin){
+    const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
+    scopeNote = "As an admin, pick a tehsil to generate its full proforma report.";
+    tehsilField = `<div><label>Tehsil</label><select name="tehsil" required><option value="">Select…</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>`;
+  } else if(isTr){
+    scopeNote = `Generates the full proforma for your tehsil${currentProfile.tehsil ? " (" + esc(currentProfile.tehsil) + ")" : ""}.`;
+  } else {
+    scopeNote = "Generates the report for your own markaz's schools.";
+  }
 
   content.innerHTML = `
     <div class="card">
-      <h3>Select period${isAdminOrTr ? " & jurisdiction" : ""}</h3>
-      <p class="sub">Opening balance, receipts, daily consumption, remaining balance, and loan movement for schools over the chosen period.</p>
+      <h3>Select period</h3>
+      <p class="sub">${scopeNote} Only the dates each product is actually scheduled on (or specifically allowed via an exception) get their own consumption column - not every date in the range.</p>
       <form id="periodForm" class="form-row">
-        <div><label>From</label><input type="date" name="from" value="${daysAgoStr(6)}" required/></div>
+        <div><label>From</label><input type="date" name="from" value="${daysAgoStr(13)}" required/></div>
         <div><label>To</label><input type="date" name="to" value="${todayStr()}" required/></div>
-        ${isAdminOrTr ? `
-          <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
-          <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
-          <div><label>Markaz</label><select id="jfMarkaz"><option value="">All</option></select></div>
-        ` : ""}
+        ${tehsilField}
         <div style="align-self:end;"><button class="btn-primary" type="submit">Generate report</button></div>
       </form>
       <div id="rangeWarning"></div>
     </div>
     <div class="card" id="reportCard" style="display:none;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-        <h3 style="margin:0;">Period report</h3>
-        <button class="btn-secondary" id="exportBtn" type="button">Export CSV</button>
+        <h3 style="margin:0;">Proforma report</h3>
+        <div class="actions-row" style="margin:0;">
+          <button class="btn-secondary" id="exportExcelBtn" type="button">Export Excel</button>
+        </div>
       </div>
+      <div id="reportHeader"></div>
       <div class="table-wrap"><table id="reportTable"><thead></thead><tbody></tbody></table></div>
     </div>
   `;
-
-  if(isAdminOrTr){
-    const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
-    function refreshTehsil(){
-      const d = dEl.value;
-      const tehsils = [...new Set(cache.markaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
-      tEl.innerHTML = `<option value="">All</option>` + tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
-    }
-    function refreshMarkaz(){
-      const d = dEl.value, t = tEl.value;
-      const list = cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t));
-      mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
-    }
-    refreshTehsil(); refreshMarkaz();
-    dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); });
-    tEl.addEventListener("change", refreshMarkaz);
-  }
 
   document.getElementById("periodForm").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -154,42 +153,79 @@ async function renderPage(){
   });
 }
 
+/* ===================== ALLOWED-DAY COMPUTATION ===================== */
+function computeAllowedDates(dates, product, exceptionsByProduct){
+  const exceptions = exceptionsByProduct[product.id] || {};
+  return dates.filter(d => {
+    const ex = exceptions[d];
+    if(ex === "blocked") return false;
+    if(ex === "allowed") return true;
+    const dow = new Date(d + "T00:00:00").getDay();
+    return (product.schedule_dow || []).includes(dow);
+  });
+}
+
+/* ===================== GENERATE ===================== */
 async function generateReport(fd){
   const from = fd.get("from"), to = fd.get("to");
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const isTr = currentProfile.role === "tr";
+  const tehsil = isAdmin ? fd.get("tehsil") : (isTr ? currentProfile.tehsil : null);
+
+  if(isAdmin && !tehsil){ toast("Select a tehsil first", "bad"); return; }
+  if(isTr && !tehsil){ toast("Your account has no tehsil set - contact your admin to fix this in A-I-DB.", "bad"); return; }
+
   const warnBox = document.getElementById("rangeWarning");
-  const dates = dateRange(from, to);
-  warnBox.innerHTML = dates.length > 31
-    ? `<div class="warn" style="margin-top:12px;background:var(--warn-bg);color:var(--warn-fg);padding:10px 12px;border-radius:8px;font-size:12.5px;">This is a ${dates.length}-day range - the table will be wide. Consider narrowing it for easier reading.</div>`
+  const allDates = dateRange(from, to);
+  warnBox.innerHTML = allDates.length > 62
+    ? `<div style="margin-top:12px;background:var(--warn-bg);color:var(--warn-fg);padding:10px 12px;border-radius:8px;font-size:12.5px;">This is a ${allDates.length}-day range - the report may be very wide. A fortnight (14 days) is the typical period for this proforma.</div>`
     : "";
 
-  // Apply the jurisdiction filter (admin/tr only - the selects only exist for them).
-  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
-  let schoolIds;
-  if(dEl){
-    const d = dEl.value, t = tEl.value, mId = mEl.value;
-    const markazIds = new Set(cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
-    schoolIds = cache.schools.filter(s => markazIds.has(s.markaz_id)).map(s => s.id);
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,markaz!inner(name,tehsil)").eq("active", true);
+  if(currentProfile.role === "aeo"){
+    schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
   } else {
-    schoolIds = cache.schools.map(s => s.id);
+    schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);
   }
-  const visibleSchools = cache.schools.filter(s => schoolIds.includes(s.id));
-  if(!schoolIds.length){ toast("No schools match this filter", "bad"); return; }
+  const { data: schools, error: schoolErr } = await schoolsQuery;
+  if(schoolErr){ toast(schoolErr.message, "bad"); return; }
+  if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }
+
+  schools.sort((a, b) => {
+    const am = a.markaz?.name || "", bm = b.markaz?.name || "";
+    if(am !== bm) return am.localeCompare(bm);
+    return (a.emis_code || "").localeCompare(b.emis_code || "");
+  });
+
+  const schoolIds = schools.map(s => s.id);
+  const markazIds = [...new Set(schools.map(s => s.markaz_id))];
 
   document.getElementById("reportCard").style.display = "";
-  const thead = document.querySelector("#reportTable thead");
   const tbody = document.querySelector("#reportTable tbody");
-  tbody.innerHTML = `<tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td>Loading…</td></tr>`;
 
-  const [{ data: summary, error: sumErr }, { data: dailyRows, error: dayErr }] = await Promise.all([
+  const [{ data: summary, error: sumErr }, { data: dailyRows, error: dayErr },
+         { data: exceptions, error: exErr }, { data: aeoDir, error: aeoErr }] = await Promise.all([
     sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: to }),
     sb.from("consumption").select("school_id, product_id, consumption_date, quantity")
       .in("school_id", schoolIds).gte("consumption_date", from).lte("consumption_date", to).eq("status", "active"),
+    sb.from("schedule_exceptions").select("exception_date, product_id, status").gte("exception_date", from).lte("exception_date", to),
+    currentProfile.role === "aeo" ? Promise.resolve({ data: null, error: null }) : sb.rpc("fn_aeo_directory", { p_markaz_ids: markazIds }),
   ]);
-  if(sumErr){ tbody.innerHTML = `<tr><td colspan="6" class="err">${esc(sumErr.message)}</td></tr>`; return; }
-  if(dayErr){ tbody.innerHTML = `<tr><td colspan="6" class="err">${esc(dayErr.message)}</td></tr>`; return; }
+  if(sumErr){ tbody.innerHTML = `<tr><td class="err">${esc(sumErr.message)}</td></tr>`; return; }
+  if(dayErr){ tbody.innerHTML = `<tr><td class="err">${esc(dayErr.message)}</td></tr>`; return; }
+  if(exErr){ tbody.innerHTML = `<tr><td class="err">${esc(exErr.message)}</td></tr>`; return; }
+  if(aeoErr){ tbody.innerHTML = `<tr><td class="err">${esc(aeoErr.message)}</td></tr>`; return; }
 
-  // Pivot summary (long: school+product) and daily consumption (long: school+product+date)
-  // into a per-school, per-product lookup for rendering.
+  const exceptionsByProduct = {};
+  (exceptions || []).forEach(e => {
+    exceptionsByProduct[e.product_id] = exceptionsByProduct[e.product_id] || {};
+    exceptionsByProduct[e.product_id][e.exception_date] = e.status;
+  });
+
+  const allowedDatesByProduct = {};
+  cache.products.forEach(p => { allowedDatesByProduct[p.id] = computeAllowedDates(allDates, p, exceptionsByProduct); });
+
   const summaryBy = {};
   (summary || []).forEach(r => {
     summaryBy[r.school_id] = summaryBy[r.school_id] || {};
@@ -200,71 +236,185 @@ async function generateReport(fd){
     const key = `${r.school_id}|${r.product_id}|${r.consumption_date}`;
     dailyBy[key] = (dailyBy[key] || 0) + Number(r.quantity);
   });
+  const aeoByMarkaz = {};
+  (aeoDir || []).forEach(r => { aeoByMarkaz[r.markaz_id] = r; });
+  if(currentProfile.role === "aeo"){
+    aeoByMarkaz[currentProfile.markaz_id] = { aeo_name: currentProfile.full_name, aeo_cell_no: currentProfile.cell_no };
+  }
 
-  // Header: Sr#/EMIS/School, then per product: Opening, Received, [one column
-  // per date], Remaining, Loaned Out, Loaned In.
-  const groupClass = (p) => p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
-  const perProductColCount = 3 + dates.length + 2; // opening+received + dates + remaining+loaned_out+loaned_in... see below
-  thead.innerHTML = `<tr>
-    <th rowspan="2">Sr#</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
-    ${cache.products.map(p => `<th colspan="${4 + dates.length}" class="${groupClass(p)}">${esc(p.product_name)}</th>`).join("")}
-  </tr><tr>
-    ${cache.products.map(p => `
-      <th class="${groupClass(p)}">Opening</th>
-      <th class="${groupClass(p)}">Received</th>
-      ${dates.map(d => `<th class="${groupClass(p)}">${shortDate(d)}</th>`).join("")}
-      <th class="${groupClass(p)}">Remaining</th>
-      <th class="${groupClass(p)}">Loaned Out</th>
-      <th class="${groupClass(p)}">Loaned In</th>
-    `).join("")}
-  </tr>`;
-
-  tbody.innerHTML = visibleSchools.map((s, i) => {
-    const productCells = cache.products.map(p => {
-      const sum = (summaryBy[s.id] || {})[p.id] || { opening:0, received:0, remaining:0, loaned_out:0, loaned_in:0 };
-      const cls = groupClass(p);
-      const dayCells = dates.map(d => `<td class="${cls}">${fmt(dailyBy[`${s.id}|${p.id}|${d}`] || 0)}</td>`).join("");
-      return `
-        <td class="${cls}">${fmt(sum.opening)}</td>
-        <td class="${cls}">${fmt(sum.received)}</td>
-        ${dayCells}
-        <td class="${cls}"><b>${fmt(sum.remaining)}</b></td>
-        <td class="${cls}">${fmt(sum.loaned_out)}</td>
-        <td class="${cls}">${fmt(sum.loaned_in)}</td>
-      `;
-    }).join("");
-    return `<tr><td>${i+1}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${productCells}</tr>`;
-  }).join("");
-
-  document.getElementById("exportBtn").onclick = () => exportCsv(dates, summaryBy, dailyBy, visibleSchools);
+  lastReport = { schools, summaryBy, dailyBy, aeoByMarkaz, allowedDatesByProduct, from, to, tehsil };
+  renderReportHeader(tehsil, from, to);
+  renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDatesByProduct);
+  document.getElementById("exportExcelBtn").onclick = () => exportExcel(lastReport);
 }
 
-function exportCsv(dates, summaryBy, dailyBy, visibleSchools){
-  const groupLabel = (p) => p.product_name;
-  const header1 = ["Sr#","EMIS","School"];
-  cache.products.forEach(p => {
-    header1.push(`${groupLabel(p)} Opening`, `${groupLabel(p)} Received`);
-    dates.forEach(d => header1.push(`${groupLabel(p)} ${d}`));
-    header1.push(`${groupLabel(p)} Remaining`, `${groupLabel(p)} Loaned Out`, `${groupLabel(p)} Loaned In`);
+function renderReportHeader(tehsil, from, to){
+  document.getElementById("reportHeader").innerHTML = `
+    <div class="proforma-title">PROFORMA REGARDING MEAL PROGRAM${tehsil ? " TEHSIL " + esc(tehsil.toUpperCase()) : ""}</div>
+    <div class="proforma-period">FROM ${fmtDMY(from)} &nbsp; TO &nbsp; ${fmtDMY(to)}</div>
+  `;
+}
+
+/* ===================== TABLE RENDER ===================== */
+function renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDatesByProduct){
+  const [milk, biscuit] = cache.products;
+  const milkDates = allowedDatesByProduct[milk?.id] || [];
+  const biscuitDates = allowedDatesByProduct[biscuit?.id] || [];
+
+  const thead = document.querySelector("#reportTable thead");
+  const tbody = document.querySelector("#reportTable tbody");
+
+  thead.innerHTML = `
+    <tr>
+      <th rowspan="3">Sr#</th><th rowspan="3">Tehsil</th><th rowspan="3">EMIS</th><th rowspan="3">School</th>
+      <th rowspan="3">Markaz</th><th rowspan="3">AEO</th><th rowspan="3">Cell No</th>
+      <th colspan="${3 + milkDates.length}" class="milk-col">MILK</th>
+      <th colspan="${3 + biscuitDates.length}" class="biscuit-col">BISCUITS</th>
+      <th colspan="4" class="rat-col">STOCK RATIONALIZATION</th>
+      <th colspan="2">REMAINING AFTER RATIONALIZATION</th>
+    </tr>
+    <tr>
+      <th class="milk-col">Previous Balance</th><th class="milk-col">Received</th>
+      <th colspan="${milkDates.length}" class="milk-col">Consumption</th>
+      <th class="milk-col">Remaining</th>
+      <th class="biscuit-col">Previous Balance</th><th class="biscuit-col">Received</th>
+      <th colspan="${biscuitDates.length}" class="biscuit-col">Consumption</th>
+      <th class="biscuit-col">Remaining</th>
+      <th class="rat-col">Sent (Milk)</th><th class="rat-col">Received (Milk)</th>
+      <th class="rat-col">Sent (Biscuits)</th><th class="rat-col">Received (Biscuits)</th>
+      <th>Milk</th><th>Biscuits</th>
+    </tr>
+    <tr>
+      <th class="milk-col"></th><th class="milk-col"></th>
+      ${milkDates.map(d => `<th class="milk-col">${shortDate(d)}</th>`).join("")}
+      <th class="milk-col"></th>
+      <th class="biscuit-col"></th><th class="biscuit-col"></th>
+      ${biscuitDates.map(d => `<th class="biscuit-col">${shortDate(d)}</th>`).join("")}
+      <th class="biscuit-col"></th>
+      <th class="rat-col"></th><th class="rat-col"></th><th class="rat-col"></th><th class="rat-col"></th>
+      <th></th><th></th>
+    </tr>
+  `;
+
+  const totals = { milk:{received:0,remaining:0,sent:0,recv:0,afterMilk:0}, biscuit:{received:0,remaining:0,sent:0,recv:0,afterBiscuit:0} };
+  const milkDateTotals = milkDates.map(() => 0);
+  const biscuitDateTotals = biscuitDates.map(() => 0);
+
+  const rows = schools.map((s, i) => {
+    const aeo = aeoByMarkaz[s.markaz_id] || {};
+    const mSum = (summaryBy[s.id] || {})[milk?.id] || { opening:0, received:0, remaining:0, sent_out:0, received_from:0, remaining_after_rationalization:0 };
+    const bSum = (summaryBy[s.id] || {})[biscuit?.id] || { opening:0, received:0, remaining:0, sent_out:0, received_from:0, remaining_after_rationalization:0 };
+
+    totals.milk.received += Number(mSum.received);
+    totals.milk.remaining += Number(mSum.remaining);
+    totals.milk.sent += Number(mSum.sent_out);
+    totals.milk.recv += Number(mSum.received_from);
+    totals.milk.afterMilk += Number(mSum.remaining_after_rationalization);
+    totals.biscuit.received += Number(bSum.received);
+    totals.biscuit.remaining += Number(bSum.remaining);
+    totals.biscuit.sent += Number(bSum.sent_out);
+    totals.biscuit.recv += Number(bSum.received_from);
+    totals.biscuit.afterBiscuit += Number(bSum.remaining_after_rationalization);
+
+    const milkDayCells = milkDates.map((d, di) => {
+      const v = Number(dailyBy[`${s.id}|${milk?.id}|${d}`] || 0);
+      milkDateTotals[di] += v;
+      return `<td class="milk-col">${fmt(v)}</td>`;
+    }).join("");
+    const biscuitDayCells = biscuitDates.map((d, di) => {
+      const v = Number(dailyBy[`${s.id}|${biscuit?.id}|${d}`] || 0);
+      biscuitDateTotals[di] += v;
+      return `<td class="biscuit-col">${fmt(v)}</td>`;
+    }).join("");
+
+    return `<tr>
+      <td>${i+1}</td>
+      <td>${esc(s.markaz?.tehsil)}</td>
+      <td>${esc(s.emis_code)}</td>
+      <td class="markaz-name">${esc(s.school_name)}</td>
+      <td class="markaz-name">${esc(s.markaz?.name)}</td>
+      <td>${esc(aeo.aeo_name) || "—"}</td>
+      <td>${esc(aeo.aeo_cell_no) || "—"}</td>
+      <td class="milk-col">${fmt(mSum.opening)}</td>
+      <td class="milk-col">${fmt(mSum.received)}</td>
+      ${milkDayCells}
+      <td class="milk-col"><b>${fmt(mSum.remaining)}</b></td>
+      <td class="biscuit-col">${fmt(bSum.opening)}</td>
+      <td class="biscuit-col">${fmt(bSum.received)}</td>
+      ${biscuitDayCells}
+      <td class="biscuit-col"><b>${fmt(bSum.remaining)}</b></td>
+      <td class="rat-col">${fmt(mSum.sent_out)}</td>
+      <td class="rat-col">${fmt(mSum.received_from)}</td>
+      <td class="rat-col">${fmt(bSum.sent_out)}</td>
+      <td class="rat-col">${fmt(bSum.received_from)}</td>
+      <td><b>${fmt(mSum.remaining_after_rationalization)}</b></td>
+      <td><b>${fmt(bSum.remaining_after_rationalization)}</b></td>
+    </tr>`;
   });
 
-  const rows = visibleSchools.map((s, i) => {
-    const row = [i+1, s.emis_code, s.school_name];
-    cache.products.forEach(p => {
-      const sum = (summaryBy[s.id] || {})[p.id] || { opening:0, received:0, remaining:0, loaned_out:0, loaned_in:0 };
-      row.push(sum.opening, sum.received);
-      dates.forEach(d => row.push(dailyBy[`${s.id}|${p.id}|${d}`] || 0));
-      row.push(sum.remaining, sum.loaned_out, sum.loaned_in);
-    });
-    return row;
+  const totalRow = `<tr class="total-row">
+    <td colspan="7">TEHSIL GRAND TOTAL</td>
+    <td class="milk-col">—</td>
+    <td class="milk-col">${fmt(totals.milk.received)}</td>
+    ${milkDateTotals.map(v => `<td class="milk-col">${fmt(v)}</td>`).join("")}
+    <td class="milk-col">${fmt(totals.milk.remaining)}</td>
+    <td class="biscuit-col">—</td>
+    <td class="biscuit-col">${fmt(totals.biscuit.received)}</td>
+    ${biscuitDateTotals.map(v => `<td class="biscuit-col">${fmt(v)}</td>`).join("")}
+    <td class="biscuit-col">${fmt(totals.biscuit.remaining)}</td>
+    <td class="rat-col">${fmt(totals.milk.sent)}</td>
+    <td class="rat-col">${fmt(totals.milk.recv)}</td>
+    <td class="rat-col">${fmt(totals.biscuit.sent)}</td>
+    <td class="rat-col">${fmt(totals.biscuit.recv)}</td>
+    <td>${fmt(totals.milk.afterMilk)}</td>
+    <td>${fmt(totals.biscuit.afterBiscuit)}</td>
+  </tr>`;
+
+  tbody.innerHTML = rows.join("") + totalRow;
+}
+
+/* ===================== EXPORT ===================== */
+function exportExcel(report){
+  const { schools, summaryBy, dailyBy, aeoByMarkaz, allowedDatesByProduct, from, to, tehsil } = report;
+  const [milk, biscuit] = cache.products;
+  const milkDates = allowedDatesByProduct[milk?.id] || [];
+  const biscuitDates = allowedDatesByProduct[biscuit?.id] || [];
+
+  const header1 = ["Sr#","Tehsil","EMIS","School","Markaz","AEO","Cell No",
+    "Milk Previous Balance", `Milk Received ${from} to ${to}`,
+    ...milkDates.map(d => `Milk ${d}`), "Milk Remaining",
+    "Biscuit Previous Balance", `Biscuit Received ${from} to ${to}`,
+    ...biscuitDates.map(d => `Biscuit ${d}`), "Biscuit Remaining",
+    "Sent (Milk)","Received (Milk)","Sent (Biscuits)","Received (Biscuits)",
+    "Remaining After Rationalization - Milk","Remaining After Rationalization - Biscuits"];
+
+  const rows = schools.map((s, i) => {
+    const aeo = aeoByMarkaz[s.markaz_id] || {};
+    const mSum = (summaryBy[s.id] || {})[milk?.id] || {};
+    const bSum = (summaryBy[s.id] || {})[biscuit?.id] || {};
+    return [
+      i+1, s.markaz?.tehsil, s.emis_code, s.school_name, s.markaz?.name, aeo.aeo_name || "", aeo.aeo_cell_no || "",
+      Number(mSum.opening||0), Number(mSum.received||0),
+      ...milkDates.map(d => Number(dailyBy[`${s.id}|${milk?.id}|${d}`] || 0)),
+      Number(mSum.remaining||0),
+      Number(bSum.opening||0), Number(bSum.received||0),
+      ...biscuitDates.map(d => Number(dailyBy[`${s.id}|${biscuit?.id}|${d}`] || 0)),
+      Number(bSum.remaining||0),
+      Number(mSum.sent_out||0), Number(mSum.received_from||0), Number(bSum.sent_out||0), Number(bSum.received_from||0),
+      Number(mSum.remaining_after_rationalization||0), Number(bSum.remaining_after_rationalization||0),
+    ];
   });
 
-  const csv = [header1, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `smp-period-report-${todayStr()}.csv`;
-  a.click();
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`PROFORMA REGARDING MEAL PROGRAM${tehsil ? " TEHSIL " + tehsil.toUpperCase() : ""}`],
+    [`FROM ${from} TO ${to}`],
+    [],
+    header1,
+    ...rows,
+  ]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Proforma");
+  XLSX.writeFile(wb, `smp-proforma-${tehsil || "report"}-${from}-to-${to}.xlsx`);
 }
 </script>
 </body>
