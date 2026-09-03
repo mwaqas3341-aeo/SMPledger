@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Report Generation — School Meal Program</title>
+<title>Reports & Demand — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
@@ -27,7 +27,7 @@
     <div class="brand">
       <div>
         <div class="eyebrow">SMP · Punjab SED</div>
-        <h2>Report Generation</h2>
+        <h2>Reports & Demand</h2>
       </div>
       <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
     </div>
@@ -107,8 +107,30 @@ async function loadRefData(){
 }
 
 /* ===================== PAGE ===================== */
+let currentSection = "proforma";
+const SECTIONS = [
+  { id:"proforma", label:"Proforma Report", desc:"Period-based inventory & consumption" },
+  { id:"demand", label:"Demand", desc:"Enrollment-based requirement, school & tehsil wise" },
+];
+
 async function renderPage(){
   const content = document.getElementById("content");
+  content.innerHTML = `<div class="menu-cards" id="repSectionNav"></div><div id="repSectionContent"></div>`;
+  const nav = document.getElementById("repSectionNav");
+  SECTIONS.forEach(s => {
+    const a = document.createElement("a");
+    a.className = "menu-card" + (s.id === currentSection ? " active" : "");
+    a.innerHTML = `<span class="label">${esc(s.label)}</span><span class="desc">${esc(s.desc)}</span>`;
+    a.dataset.id = s.id;
+    a.onclick = () => { currentSection = s.id; renderPage(); };
+    nav.appendChild(a);
+  });
+  if(currentSection === "proforma") renderProformaSection();
+  else renderDemandSection();
+}
+
+function renderProformaSection(){
+  const content = document.getElementById("repSectionContent");
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
   const isTr = currentProfile.role === "tr";
 
@@ -155,6 +177,29 @@ async function renderPage(){
     e.preventDefault();
     generateReport(new FormData(e.target));
   });
+}
+
+function renderDemandSection(){
+  const content = document.getElementById("repSectionContent");
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const isTr = currentProfile.role === "tr";
+  const scopeNote = isAdmin ? "Generate demand for any tehsil, or a single school."
+    : isTr ? "Generate demand for your whole tehsil, or a single school within it."
+    : "Generate demand for your own schools.";
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Demand / Required quantities</h3>
+      <p class="sub">${scopeNote} Calculated from current student enrollment - not built yet, waiting on the enrollment data source.</p>
+      <div style="background:var(--paper); border:1px dashed var(--line); border-radius:var(--radius); padding:16px 18px; color:var(--ink-soft); font-size:13px; line-height:1.6;">
+        This section is scaffolded but not functional yet - it needs a live enrollment
+        source to calculate demand against, which hasn't been connected yet. Once that's
+        wired up, this will generate both school-wise and tehsil-wise demand figures
+        from current enrollment, matching the same jurisdiction scope as the Proforma
+        Report (your own schools, your tehsil, or admin's choice of any tehsil).
+      </div>
+    </div>
+  `;
 }
 
 /* ===================== ALLOWED-DAY COMPUTATION ===================== */
