@@ -136,9 +136,13 @@ async function renderPage(){
       <div id="rangeWarning"></div>
     </div>
     <div class="card" id="reportCard" style="display:none;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
         <h3 style="margin:0;">Proforma report</h3>
         <div class="actions-row" style="margin:0;">
+          <label style="display:flex; align-items:center; gap:6px; font-weight:500; font-size:13px; margin:0;">
+            <input type="checkbox" id="includeComparisonCheck" style="width:auto;"/>
+            Also include company vs AEO comparison
+          </label>
           <button class="btn-secondary" id="exportExcelBtn" type="button">Export Excel</button>
         </div>
       </div>
@@ -374,7 +378,7 @@ function renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDate
 }
 
 /* ===================== EXPORT ===================== */
-function exportExcel(report){
+async function exportExcel(report){
   const { schools, summaryBy, dailyBy, aeoByMarkaz, allowedDatesByProduct, from, to, tehsil } = report;
   const [milk, biscuit] = cache.products;
   const milkDates = allowedDatesByProduct[milk?.id] || [];
@@ -414,7 +418,55 @@ function exportExcel(report){
   ]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Proforma");
+
+  const includeComparison = document.getElementById("includeComparisonCheck")?.checked;
+  if(includeComparison){
+    const btn = document.getElementById("exportExcelBtn");
+    const originalLabel = btn.textContent;
+    btn.textContent = "Loading comparison…";
+    btn.disabled = true;
+    try{
+      await addComparisonSheet(wb, schools, from, to);
+    }catch(err){
+      toast("Could not load comparison data: " + err.message, "bad");
+    }finally{
+      btn.textContent = originalLabel;
+      btn.disabled = false;
+    }
+  }
+
   XLSX.writeFile(wb, `smp-proforma-${tehsil || "report"}-${from}-to-${to}.xlsx`);
+}
+
+// Same data source as report-comparison.html - RLS already scopes this
+// correctly per role (admin/tr see everything, aeo sees their own schools),
+// so no extra authorization logic needed here.
+async function addComparisonSheet(wb, schools, from, to){
+  const schoolIds = schools.map(s => s.id);
+  const { data, error } = await sb.from("v_company_vs_aeo_comparison").select("*")
+    .gte("delivery_date", from).lte("delivery_date", to)
+    .in("school_id", schoolIds)
+    .order("delivery_date", { ascending: false });
+  if(error) throw error;
+
+  const schoolById = Object.fromEntries(schools.map(s => [s.id, s]));
+  const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
+
+  const header = ["Delivery Date","EMIS","School","Product","Invoice #","Company Qty","AEO Qty","Difference","Status","AEO Certification"];
+  const rows = (data || [])
+    .sort((a, b) => {
+      if(a.delivery_date !== b.delivery_date) return a.delivery_date < b.delivery_date ? 1 : -1;
+      return (schoolById[a.school_id]?.emis_code || "").localeCompare(schoolById[b.school_id]?.emis_code || "");
+    })
+    .map(r => [
+      r.delivery_date, schoolById[r.school_id]?.emis_code || "", schoolById[r.school_id]?.school_name || "",
+      productById[r.product_id]?.product_name || "", r.invoice_number || "",
+      Number(r.company_qty||0), Number(r.aeo_qty||0), Number(r.difference||0),
+      r.status, r.aeo_verification_status || "pending",
+    ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  XLSX.utils.book_append_sheet(wb, ws, "Company vs AEO Comparison");
 }
 </script>
 </body>
