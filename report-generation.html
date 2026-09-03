@@ -317,17 +317,19 @@ function renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDate
     <tr>
       <th rowspan="3">Sr#</th><th rowspan="3">Tehsil</th><th rowspan="3">EMIS</th><th rowspan="3">School</th>
       <th rowspan="3">Markaz</th><th rowspan="3">AEO</th><th rowspan="3">Cell No</th>
-      <th colspan="${3 + milkDates.length}" class="milk-col">MILK</th>
-      <th colspan="${3 + biscuitDates.length}" class="biscuit-col">BISCUITS</th>
+      <th colspan="${4 + milkDates.length}" class="milk-col">MILK</th>
+      <th colspan="${4 + biscuitDates.length}" class="biscuit-col">BISCUITS</th>
       <th colspan="4" class="rat-col">STOCK RATIONALIZATION</th>
       <th colspan="2">REMAINING AFTER RATIONALIZATION</th>
     </tr>
     <tr>
       <th class="milk-col">Previous Balance</th><th class="milk-col">Received</th>
       <th colspan="${milkDates.length}" class="milk-col">Consumption</th>
+      <th class="milk-col">Total Consumption</th>
       <th class="milk-col">Remaining</th>
       <th class="biscuit-col">Previous Balance</th><th class="biscuit-col">Received</th>
       <th colspan="${biscuitDates.length}" class="biscuit-col">Consumption</th>
+      <th class="biscuit-col">Total Consumption</th>
       <th class="biscuit-col">Remaining</th>
       <th class="rat-col">Sent (Milk)</th><th class="rat-col">Received (Milk)</th>
       <th class="rat-col">Sent (Biscuits)</th><th class="rat-col">Received (Biscuits)</th>
@@ -336,30 +338,32 @@ function renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDate
     <tr>
       <th class="milk-col"></th><th class="milk-col"></th>
       ${milkDates.map(d => `<th class="milk-col">${shortDate(d)}</th>`).join("")}
-      <th class="milk-col"></th>
+      <th class="milk-col"></th><th class="milk-col"></th>
       <th class="biscuit-col"></th><th class="biscuit-col"></th>
       ${biscuitDates.map(d => `<th class="biscuit-col">${shortDate(d)}</th>`).join("")}
-      <th class="biscuit-col"></th>
+      <th class="biscuit-col"></th><th class="biscuit-col"></th>
       <th class="rat-col"></th><th class="rat-col"></th><th class="rat-col"></th><th class="rat-col"></th>
       <th></th><th></th>
     </tr>
   `;
 
-  const totals = { milk:{received:0,remaining:0,sent:0,recv:0,afterMilk:0}, biscuit:{received:0,remaining:0,sent:0,recv:0,afterBiscuit:0} };
+  const totals = { milk:{received:0,consumed:0,remaining:0,sent:0,recv:0,afterMilk:0}, biscuit:{received:0,consumed:0,remaining:0,sent:0,recv:0,afterBiscuit:0} };
   const milkDateTotals = milkDates.map(() => 0);
   const biscuitDateTotals = biscuitDates.map(() => 0);
 
   const rows = schools.map((s, i) => {
     const aeo = aeoByMarkaz[s.markaz_id] || {};
-    const mSum = (summaryBy[s.id] || {})[milk?.id] || { opening:0, received:0, remaining:0, sent_out:0, received_from:0, remaining_after_rationalization:0 };
-    const bSum = (summaryBy[s.id] || {})[biscuit?.id] || { opening:0, received:0, remaining:0, sent_out:0, received_from:0, remaining_after_rationalization:0 };
+    const mSum = (summaryBy[s.id] || {})[milk?.id] || { opening:0, received:0, consumed:0, remaining:0, sent_out:0, received_from:0, remaining_after_rationalization:0 };
+    const bSum = (summaryBy[s.id] || {})[biscuit?.id] || { opening:0, received:0, consumed:0, remaining:0, sent_out:0, received_from:0, remaining_after_rationalization:0 };
 
     totals.milk.received += Number(mSum.received);
+    totals.milk.consumed += Number(mSum.consumed);
     totals.milk.remaining += Number(mSum.remaining);
     totals.milk.sent += Number(mSum.sent_out);
     totals.milk.recv += Number(mSum.received_from);
     totals.milk.afterMilk += Number(mSum.remaining_after_rationalization);
     totals.biscuit.received += Number(bSum.received);
+    totals.biscuit.consumed += Number(bSum.consumed);
     totals.biscuit.remaining += Number(bSum.remaining);
     totals.biscuit.sent += Number(bSum.sent_out);
     totals.biscuit.recv += Number(bSum.received_from);
@@ -387,10 +391,12 @@ function renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDate
       <td class="milk-col">${fmt(mSum.opening)}</td>
       <td class="milk-col">${fmt(mSum.received)}</td>
       ${milkDayCells}
+      <td class="milk-col">${fmt(mSum.consumed)}</td>
       <td class="milk-col"><b>${fmt(mSum.remaining)}</b></td>
       <td class="biscuit-col">${fmt(bSum.opening)}</td>
       <td class="biscuit-col">${fmt(bSum.received)}</td>
       ${biscuitDayCells}
+      <td class="biscuit-col">${fmt(bSum.consumed)}</td>
       <td class="biscuit-col"><b>${fmt(bSum.remaining)}</b></td>
       <td class="rat-col">${fmt(mSum.sent_out)}</td>
       <td class="rat-col">${fmt(mSum.received_from)}</td>
@@ -406,10 +412,12 @@ function renderReportTable(schools, summaryBy, dailyBy, aeoByMarkaz, allowedDate
     <td class="milk-col">—</td>
     <td class="milk-col">${fmt(totals.milk.received)}</td>
     ${milkDateTotals.map(v => `<td class="milk-col">${fmt(v)}</td>`).join("")}
+    <td class="milk-col">${fmt(totals.milk.consumed)}</td>
     <td class="milk-col">${fmt(totals.milk.remaining)}</td>
     <td class="biscuit-col">—</td>
     <td class="biscuit-col">${fmt(totals.biscuit.received)}</td>
     ${biscuitDateTotals.map(v => `<td class="biscuit-col">${fmt(v)}</td>`).join("")}
+    <td class="biscuit-col">${fmt(totals.biscuit.consumed)}</td>
     <td class="biscuit-col">${fmt(totals.biscuit.remaining)}</td>
     <td class="rat-col">${fmt(totals.milk.sent)}</td>
     <td class="rat-col">${fmt(totals.milk.recv)}</td>
@@ -431,9 +439,9 @@ async function exportExcel(report){
 
   const header1 = ["Sr#","Tehsil","EMIS","School","Markaz","AEO","Cell No",
     "Milk Previous Balance", `Milk Received ${from} to ${to}`,
-    ...milkDates.map(d => `Milk ${d}`), "Milk Remaining",
+    ...milkDates.map(d => `Milk ${d}`), "Milk Total Consumption", "Milk Remaining",
     "Biscuit Previous Balance", `Biscuit Received ${from} to ${to}`,
-    ...biscuitDates.map(d => `Biscuit ${d}`), "Biscuit Remaining",
+    ...biscuitDates.map(d => `Biscuit ${d}`), "Biscuit Total Consumption", "Biscuit Remaining",
     "Sent (Milk)","Received (Milk)","Sent (Biscuits)","Received (Biscuits)",
     "Remaining After Rationalization - Milk","Remaining After Rationalization - Biscuits"];
 
@@ -445,9 +453,11 @@ async function exportExcel(report){
       i+1, s.markaz?.tehsil, s.emis_code, s.school_name, s.markaz?.name, aeo.aeo_name || "", aeo.aeo_cell_no || "",
       Number(mSum.opening||0), Number(mSum.received||0),
       ...milkDates.map(d => Number(dailyBy[`${s.id}|${milk?.id}|${d}`] || 0)),
+      Number(mSum.consumed||0),
       Number(mSum.remaining||0),
       Number(bSum.opening||0), Number(bSum.received||0),
       ...biscuitDates.map(d => Number(dailyBy[`${s.id}|${biscuit?.id}|${d}`] || 0)),
+      Number(bSum.consumed||0),
       Number(bSum.remaining||0),
       Number(mSum.sent_out||0), Number(mSum.received_from||0), Number(bSum.sent_out||0), Number(bSum.received_from||0),
       Number(mSum.remaining_after_rationalization||0), Number(bSum.remaining_after_rationalization||0),
