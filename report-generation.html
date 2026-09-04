@@ -151,8 +151,12 @@ function renderProformaSection(){
     <div class="card">
       <h3>AEO directory sync</h3>
       <p class="sub">AEO names and cell numbers only populate once someone actually logs in. If a markaz shows a blank AEO/Cell No in reports, they likely haven't signed in yet - this pulls everyone's directory info from A-I-DB up front instead of waiting for that.</p>
-      <div class="actions-row"><button class="btn-secondary" id="syncDirectoryBtn" type="button">Sync AEO directory from A-I-DB</button></div>
+      <div class="actions-row">
+        <button class="btn-secondary" id="syncDirectoryBtn" type="button">Sync AEO directory from A-I-DB</button>
+        <button class="btn-secondary" id="syncWingBtn" type="button">Sync school Wing data from A-I-DB</button>
+      </div>
       <div id="syncDirectoryStatus"></div>
+      <div id="syncWingStatus"></div>
     </div>
     ` : ""}
     <div class="card">
@@ -211,6 +215,37 @@ function renderProformaSection(){
       }finally{
         btn.disabled = false;
         btn.textContent = "Sync AEO directory from A-I-DB";
+      }
+    });
+
+    document.getElementById("syncWingBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("syncWingBtn");
+      const statusBox = document.getElementById("syncWingStatus");
+      btn.disabled = true;
+      btn.textContent = "Syncing…";
+      statusBox.innerHTML = "";
+      try{
+        const { data: { session } } = await sb.auth.getSession();
+        const res = await fetch(`${SMP_CONFIG.SUPABASE_URL}/functions/v1/sync-school-wings`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: SMP_CONFIG.SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || "Sync failed");
+        statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">
+          Matched ${data.updated} of ${data.total} schools by EMIS${data.unmatched ? `, ${data.unmatched} not found in A-I-DB` : ""}.
+          ${data.unmatchedEmis?.length ? `<br>Unmatched EMIS (first 20): ${data.unmatchedEmis.join(", ")}` : ""}
+        </p>`;
+        toast("Wing sync complete");
+      }catch(err){
+        toast(err.message, "bad");
+      }finally{
+        btn.disabled = false;
+        btn.textContent = "Sync school Wing data from A-I-DB";
       }
     });
   }
