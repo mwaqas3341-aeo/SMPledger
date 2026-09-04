@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SMP Transfers &amp; Loans — School Meal Program</title>
+<title>SMP Transfers &amp; Rationalization — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
@@ -15,7 +15,7 @@
     <div class="brand">
       <div>
         <div class="eyebrow">SMP · Punjab SED</div>
-        <h2>Transfers & Loans</h2>
+        <h2>Transfers & Rationalization</h2>
       </div>
       <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
     </div>
@@ -64,7 +64,7 @@ async function boot(){
     return;
   }
   if(!["admin","super_admin","tr","aeo"].includes(profile.role)){
-    alert("Transfers and loans are managed by AEOs and administrators.");
+    alert("Transfers and rationalization are managed by AEOs and administrators.");
     window.location.href = "dashboard.html";
     return;
   }
@@ -100,8 +100,8 @@ async function loadRefData(){
 /* ===================== NAV ===================== */
 const SECTIONS = [
   { id:"transfers", label:"Transfers" },
-  { id:"loans", label:"Loans" },
-  { id:"outstanding", label:"Outstanding Loans" },
+  { id:"loans", label:"Rationalization" },
+  { id:"outstanding", label:"Outstanding Rationalization" },
 ];
 function buildNav(){
   const nav = document.getElementById("navList");
@@ -225,7 +225,7 @@ async function renderLoans(content){
 
   content.innerHTML = `
     <div class="card">
-      <h3>New loan</h3>
+      <h3>New rationalization</h3>
       <div class="sub">Stock moves temporarily and is expected back — track it here through to return.</div>
       <form id="loanForm">
         <div class="form-row">
@@ -234,18 +234,18 @@ async function renderLoans(content){
           <div><label>From School (lender)</label><select name="from_school_id" required></select></div>
           <div><label>To School (borrower)</label><select name="to_school_id" required></select></div>
           <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
-          <div><label>Loan Date</label><input type="date" name="loan_date" required value="${todayStr()}"/></div>
+          <div><label>Rationalization Date</label><input type="date" name="loan_date" required value="${todayStr()}"/></div>
           <div><label>Expected Return Date</label><input type="date" name="expected_return_date" /></div>
           <div><label>Reason</label><input name="reason" /></div>
         </div>
-        <div class="actions-row"><button class="btn-primary" type="submit">Create loan</button></div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Create rationalization</button></div>
       </form>
     </div>
     <div class="card">
-      <h3>Recent loans</h3>
+      <h3>Recent rationalization records</h3>
       <div class="table-wrap"><table>
         <thead><tr><th>Date</th><th>Product</th><th>From</th><th>To</th><th>Qty</th><th>Returned</th><th>Status</th><th></th></tr></thead>
-        <tbody>${(loans||[]).map(l => loanRow(l)).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No loans yet.</td></tr>`}</tbody>
+        <tbody>${(loans||[]).map(l => loanRow(l)).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No rationalization records yet.</td></tr>`}</tbody>
       </table></div>
     </div>`;
 
@@ -266,7 +266,7 @@ async function renderLoans(content){
         p_expected_return_date: fd.get("expected_return_date") || null,
       });
       if(error) throw error;
-      toast("Loan created");
+      toast("Rationalization created");
       navigate("loans");
     }catch(err){ toast(err.message, "bad"); }
   });
@@ -315,10 +315,10 @@ async function renderOutstanding(content){
 
   content.innerHTML = `
     <div class="card">
-      <h3>Outstanding loans</h3>
-      <div class="sub">Loans not yet fully returned.</div>
+      <h3>Outstanding rationalization</h3>
+      <div class="sub">Rationalization not yet fully returned.</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Loan Date</th><th>Product</th><th>From</th><th>To</th><th>Loaned</th><th>Returned</th><th>Outstanding</th><th>Expected Return</th><th>Status</th></tr></thead>
+        <thead><tr><th>Date</th><th>Product</th><th>From</th><th>To</th><th>Quantity</th><th>Returned</th><th>Outstanding</th><th>Expected Return</th><th>Status</th></tr></thead>
         <tbody>${(data||[]).map(l => `
           <tr>
             <td>${fmtDate(l.loan_date)}</td>
@@ -330,7 +330,7 @@ async function renderOutstanding(content){
             <td><strong>${Number(l.outstanding_quantity).toFixed(2)}</strong></td>
             <td>${fmtDate(l.expected_return_date)}</td>
             <td>${loanStatusPill(l.status)}</td>
-          </tr>`).join("") || `<tr><td colspan="9" style="color:var(--ink-soft)">No outstanding loans.</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="9" style="color:var(--ink-soft)">No outstanding rationalization.</td></tr>`}
         </tbody>
       </table></div>
     </div>`;

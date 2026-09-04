@@ -98,7 +98,7 @@ const MODULES = [
   { href:"inventory.html",   label:"Inventory Received",   desc:"Record and verify deliveries" },
   { href:"consumption.html", label:"Consumption",          desc:"Daily distribution by school" },
   { href:"operations.html",  label:"Operations",           desc:"Post inventory adjustments" },
-  { href:"transfers.html",   label:"Transfers & Loans",    desc:"Move stock between schools" },
+  { href:"transfers.html",   label:"Transfers & Rationalization", desc:"Move stock between schools" },
   { href:"report-generation.html", label:"Reports & Demand", desc:"Period reports and enrollment-based demand" },
   { href:"report-comparison.html", label:"Report Comparison", desc:"Company vs AEO data", roles:["admin","super_admin","tr"] },
 ];
@@ -246,7 +246,7 @@ async function loadOverview(){
         <div class="stat"><div class="n">${lowStock.length}</div><div class="l">Low stock (≤ ${lowThreshold})</div></div>
         <div class="stat"><div class="n">${zeroStock.length}</div><div class="l">Zero stock</div></div>
         <div class="stat"><div class="n" style="color:${negative.length ? 'var(--bad-fg)' : 'inherit'}">${negative.length}</div><div class="l">Negative balance (should be 0)</div></div>
-        <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Outstanding loans</div></div>
+        <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Outstanding rationalization</div></div>
         <div class="stat"><div class="n">${transferCount ?? 0}</div><div class="l">Transfers in period</div></div>
       </div>
       ${renderFlagTable("Low stock schools", lowStock)}
