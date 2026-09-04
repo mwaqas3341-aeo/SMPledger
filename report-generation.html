@@ -147,6 +147,14 @@ function renderProformaSection(){
   }
 
   content.innerHTML = `
+    ${isAdmin ? `
+    <div class="card">
+      <h3>AEO directory sync</h3>
+      <p class="sub">AEO names and cell numbers only populate once someone actually logs in. If a markaz shows a blank AEO/Cell No in reports, they likely haven't signed in yet - this pulls everyone's directory info from A-I-DB up front instead of waiting for that.</p>
+      <div class="actions-row"><button class="btn-secondary" id="syncDirectoryBtn" type="button">Sync AEO directory from A-I-DB</button></div>
+      <div id="syncDirectoryStatus"></div>
+    </div>
+    ` : ""}
     <div class="card">
       <h3>Select period</h3>
       <p class="sub">${scopeNote} Only the dates each product is actually scheduled on (or specifically allowed via an exception) get their own consumption column - not every date in the range.</p>
@@ -173,6 +181,39 @@ function renderProformaSection(){
       <div class="table-wrap"><table id="reportTable"><thead></thead><tbody></tbody></table></div>
     </div>
   `;
+
+  if(isAdmin){
+    document.getElementById("syncDirectoryBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("syncDirectoryBtn");
+      const statusBox = document.getElementById("syncDirectoryStatus");
+      btn.disabled = true;
+      btn.textContent = "Syncing…";
+      statusBox.innerHTML = "";
+      try{
+        const { data: { session } } = await sb.auth.getSession();
+        const res = await fetch(`${SMP_CONFIG.SUPABASE_URL}/functions/v1/sync-directory`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: SMP_CONFIG.SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || "Sync failed");
+        statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">
+          Synced ${data.total} A-I-DB accounts - ${data.created} newly provisioned, ${data.updated} refreshed${data.skipped ? `, ${data.skipped} skipped` : ""}.
+          ${data.errors?.length ? `<br>Errors: ${data.errors.map(esc).join("; ")}` : ""}
+        </p>`;
+        toast("Directory sync complete");
+      }catch(err){
+        toast(err.message, "bad");
+      }finally{
+        btn.disabled = false;
+        btn.textContent = "Sync AEO directory from A-I-DB";
+      }
+    });
+  }
 
   document.getElementById("periodForm").addEventListener("submit", (e) => {
     e.preventDefault();
