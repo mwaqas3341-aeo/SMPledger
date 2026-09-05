@@ -50,6 +50,7 @@ let currentUser = null, currentProfile = null;
 let cache = { markaz:[], products:[] };
 let lastReport = null; // kept around for export
 let lastDemand = null; // kept around for demand export
+const WING_OPTIONS = ["M-EE", "W-EE", "SE"]; // stable values from A-I-DB's schools.wing
 
 /* ===================== HELPERS ===================== */
 function toast(msg, kind){
@@ -145,6 +146,7 @@ function renderProformaSection(){
   } else {
     scopeNote = "Generates the report for your own markaz's schools.";
   }
+  const wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
 
   content.innerHTML = `
     ${isAdmin ? `
@@ -166,6 +168,7 @@ function renderProformaSection(){
         <div><label>From</label><input type="date" name="from" value="${daysAgoStr(13)}" required/></div>
         <div><label>To</label><input type="date" name="to" value="${todayStr()}" required/></div>
         ${tehsilField}
+        ${wingField}
         <div style="align-self:end;"><button class="btn-primary" type="submit">Generate report</button></div>
       </form>
       <div id="rangeWarning"></div>
@@ -280,6 +283,7 @@ function renderDemandSection(){
       <p class="sub">${scopeNote} Enrolment is fetched fresh from the Integrated Dashboard's enrolment source right when you generate this - nothing is stored. Adjust the "required until" date to cover more or fewer days; there's no fixed period.</p>
       <form id="demandForm" class="form-row">
         ${tehsilField}
+        <div><label>Wing</label><select name="wing" id="demandWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Mode</label><select name="mode" id="demandMode"><option value="all">All schools in scope</option><option value="single">Single school</option></select></div>
         <div id="demandSchoolField" class="hidden"><label>School</label><select name="school_id"><option value="">Select…</option></select></div>
         <div><label>Required until</label><input type="date" name="until" value="${daysAgoStr(-13)}" required/></div>
@@ -302,10 +306,12 @@ function renderDemandSection(){
   async function refreshSchoolOptions(){
     const schoolSel = document.querySelector('#demandSchoolField select[name="school_id"]');
     const tehsil = isAdmin ? document.getElementById("demandTehsil")?.value : (isTr ? currentProfile.tehsil : null);
-    let q = sb.from("schools").select("id,school_name,emis_code,markaz_id,markaz!inner(name,tehsil)").eq("active", true);
+    const wing = document.getElementById("demandWing")?.value;
+    let q = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
     if(currentProfile.role === "aeo") q = q.eq("markaz_id", currentProfile.markaz_id);
     else if(tehsil) q = q.eq("markaz.tehsil", tehsil);
     else { schoolSel.innerHTML = `<option value="">Select a tehsil first…</option>`; return; }
+    if(wing) q = q.eq("wing", wing);
     const { data } = await q.order("emis_code");
     schoolSel.innerHTML = `<option value="">Select…</option>` + (data||[]).map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
   }
@@ -314,6 +320,9 @@ function renderDemandSection(){
     if(e.target.value === "single") refreshSchoolOptions();
   });
   if(isAdmin) document.getElementById("demandTehsil").addEventListener("change", () => {
+    if(document.getElementById("demandMode").value === "single") refreshSchoolOptions();
+  });
+  document.getElementById("demandWing").addEventListener("change", () => {
     if(document.getElementById("demandMode").value === "single") refreshSchoolOptions();
   });
 
@@ -327,6 +336,7 @@ async function generateDemand(fd){
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
   const isTr = currentProfile.role === "tr";
   const tehsil = isAdmin ? fd.get("tehsil") : (isTr ? currentProfile.tehsil : null);
+  const wing = fd.get("wing");
   const mode = fd.get("mode");
   const singleSchoolId = fd.get("school_id");
   const until = fd.get("until");
@@ -342,7 +352,7 @@ async function generateDemand(fd){
   if(until < from){ toast('"Required until" must be after today', "bad"); return; }
 
   // Resolve schools in scope.
-  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,markaz!inner(name,tehsil)").eq("active", true);
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
   if(mode === "single"){
     schoolsQuery = schoolsQuery.eq("id", singleSchoolId);
   } else if(currentProfile.role === "aeo"){
@@ -350,6 +360,7 @@ async function generateDemand(fd){
   } else {
     schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);
   }
+  if(wing && mode !== "single") schoolsQuery = schoolsQuery.eq("wing", wing);
   const { data: schools, error: schoolErr } = await schoolsQuery;
   if(schoolErr){ toast(schoolErr.message, "bad"); return; }
   if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }
@@ -495,6 +506,7 @@ function computeAllowedDates(dates, product, exceptionsByProduct){
 /* ===================== GENERATE ===================== */
 async function generateReport(fd){
   const from = fd.get("from"), to = fd.get("to");
+  const wing = fd.get("wing");
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
   const isTr = currentProfile.role === "tr";
   const tehsil = isAdmin ? fd.get("tehsil") : (isTr ? currentProfile.tehsil : null);
@@ -508,12 +520,13 @@ async function generateReport(fd){
     ? `<div style="margin-top:12px;background:var(--warn-bg);color:var(--warn-fg);padding:10px 12px;border-radius:8px;font-size:12.5px;">This is a ${allDates.length}-day range - the report may be very wide. A fortnight (14 days) is the typical period for this proforma.</div>`
     : "";
 
-  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,markaz!inner(name,tehsil)").eq("active", true);
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
   if(currentProfile.role === "aeo"){
     schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
   } else {
     schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);
   }
+  if(wing) schoolsQuery = schoolsQuery.eq("wing", wing);
   const { data: schools, error: schoolErr } = await schoolsQuery;
   if(schoolErr){ toast(schoolErr.message, "bad"); return; }
   if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }

@@ -94,7 +94,7 @@ function showApp(){
 async function loadRefData(){
   const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
     sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name"),
-    sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true),
+    sb.from("schools").select("id,school_name,emis_code,markaz_id,wing").eq("active", true),
     sb.from("products").select("id,product_name").eq("active", true),
   ]);
   cache.markaz = markaz || [];
@@ -119,6 +119,7 @@ async function renderPage(){
         <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
         <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
         <div><label>Markaz</label><select id="jfMarkaz"><option value="">All</option></select></div>
+        <div><label>Wing</label><select id="jfWing"><option value="">All</option>${[...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort().map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option></select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
       </form>
@@ -348,8 +349,8 @@ async function runImport(){
 
 async function loadComparison(fd){
   const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter");
-  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz");
-  const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value;
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing");
+  const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value, selWing = wEl.value;
   const tbody = document.querySelector("#compTable tbody");
   tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr>`;
 
@@ -368,6 +369,7 @@ async function loadComparison(fd){
   if(selMarkazId) rows = rows.filter(r => r.school?.markaz_id === selMarkazId);
   else if(selTehsil) rows = rows.filter(r => markazById[r.school?.markaz_id]?.tehsil === selTehsil);
   else if(selDistrict) rows = rows.filter(r => markazById[r.school?.markaz_id]?.district === selDistrict);
+  if(selWing) rows = rows.filter(r => r.school?.wing === selWing);
   if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0);
 
   // date desc, EMIS asc within date - same convention as Inventory Received.
