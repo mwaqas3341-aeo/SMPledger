@@ -381,7 +381,7 @@ async function generateDemand(fd){
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const enrolData = await res.json();
     (enrolData.schools || []).forEach(s => { enrolmentByEmis[s.emis_code] = s.total_school_students; });
-    statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">Enrolment fetched live just now (source last updated ${fmtDate(enrolData.scraped_at)}).</p>`;
+    statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">Enrolment fetched live just now (source last updated ${fmtDMY(enrolData.scraped_at)}).</p>`;
   }catch(err){
     tbody.innerHTML = `<tr><td class="err">Could not fetch enrolment data: ${esc(err.message)}</td></tr>`;
     statusBox.innerHTML = "";
