@@ -164,15 +164,21 @@ async function loadOverview(){
     return;
   }
 
-  // ---- Balances (as of now), scoped ----
-  let balQuery = sb.from("v_school_balances").select("*").in("school_id", scopedSchoolIds);
+  // ---- Balances (as of now) ----
+  // Only add an explicit school filter when a specific markaz was chosen -
+  // otherwise rely on RLS (security_invoker view), same as cmpQuery below.
+  // Passing all 741 school IDs in one .in() filter for the "everything"
+  // case produced a query string long enough to be rejected outright.
+  let balQuery = sb.from("v_school_balances").select("*");
+  if(markazId) balQuery = balQuery.in("school_id", scopedSchoolIds);
   if(productId) balQuery = balQuery.eq("product_id", productId);
   const { data: balances, error: balErr } = await balQuery;
   if(balErr){ box.innerHTML = `<div class="card"><div class="err">${esc(balErr.message)}</div></div>`; return; }
 
-  // ---- Ledger movement within range, scoped ----
+  // ---- Ledger movement within range ----
   let txQuery = sb.from("inventory_transactions").select("school_id, product_id, quantity, transaction_type")
-    .in("school_id", scopedSchoolIds).gte("txn_date", from).lte("txn_date", to);
+    .gte("txn_date", from).lte("txn_date", to);
+  if(markazId) txQuery = txQuery.in("school_id", scopedSchoolIds);
   if(productId) txQuery = txQuery.eq("product_id", productId);
   const { data: txns, error: txErr } = await txQuery;
   if(txErr){ box.innerHTML = `<div class="card"><div class="err">${esc(txErr.message)}</div></div>`; return; }
@@ -203,16 +209,19 @@ async function loadOverview(){
   const lowStock = (balances||[]).filter(b => Number(b.balance) > 0 && Number(b.balance) <= lowThreshold);
   const negative = (balances||[]).filter(b => Number(b.balance) < 0);
 
-  // ---- Loans & transfers in range, scoped ----
+  // ---- Rationalization (loans) & transfers in range ----
+  // These tables have their own markaz_id column and RLS already scopes by
+  // it (fn_can_write_markaz) - filter explicitly only when a specific
+  // markaz was chosen, same reasoning as the balance/ledger queries above.
   let loanQuery = sb.from("inventory_loans").select("id, status", { count:"exact" })
-    .or(`from_school_id.in.(${scopedSchoolIds.join(",")}),to_school_id.in.(${scopedSchoolIds.join(",")})`)
     .gte("loan_date", from).lte("loan_date", to);
+  if(markazId) loanQuery = loanQuery.eq("markaz_id", markazId);
   const { data: loanRows } = await loanQuery;
   const outstandingLoans = (loanRows||[]).filter(l => ["pending","approved","partially_returned"].includes(l.status)).length;
 
   let transferQuery = sb.from("school_transfers").select("id", { count:"exact" })
-    .or(`from_school_id.in.(${scopedSchoolIds.join(",")}),to_school_id.in.(${scopedSchoolIds.join(",")})`)
     .gte("transfer_date", from).lte("transfer_date", to);
+  if(markazId) transferQuery = transferQuery.eq("markaz_id", markazId);
   const { count: transferCount } = await transferQuery;
 
   box.innerHTML = `
