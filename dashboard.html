@@ -72,13 +72,13 @@ boot();
 
 async function loadRefData(){
   const [{ data: markaz }, { data: products }] = await Promise.all([
-    sb.from("markaz").select("id,name").eq("active", true).order("name"),
+    sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name"),
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
   ]);
   cache.markaz = markaz || [];
   cache.products = products || [];
 
-  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("school_name");
+  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing").eq("active", true).order("emis_code");
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
   if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
   const { data: schools } = await schoolsQuery;
@@ -125,116 +125,120 @@ async function renderOverviewSection(){
 }
 
 /* ===================== OVERVIEW ===================== */
+const ENROLMENT_URL = "https://raw.githubusercontent.com/mwaqas3341-aeo/SIS-online-Enrolment-Updater/main/data/layyah.json";
+const WING_OPTIONS = ["M-EE", "W-EE", "SE"];
+
 async function renderOverview(content){
-  const defaultFrom = daysAgoStr(30);
-  const defaultTo = todayStr();
-  const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
-  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const isTr = currentProfile.role === "tr";
+  const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
 
   content.innerHTML = `
     <div class="card">
       <h3>Filters</h3>
       <form id="dashFilterForm" class="form-row">
-        <div><label>From</label><input type="date" name="from" value="${defaultFrom}"/></div>
-        <div><label>To</label><input type="date" name="to" value="${defaultTo}"/></div>
-        <div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${markazOpts}</select></div>
-        <div><label>Product</label><select name="product_id"><option value="">All</option>${productOpts}</select></div>
-        <div><label>Low stock threshold</label><input type="number" name="low_threshold" value="20" min="0" step="1"/></div>
+        <div><label>Tehsil</label><select id="dashTehsil"><option value="">All</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
+        <div><label>Wing</label><select id="dashWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div><label>Markaz</label><select name="markaz_id" id="dashMarkaz"><option value="">All</option></select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
       </form>
     </div>
     <div id="dashResults"><p style="color:var(--ink-soft)">Loading…</p></div>`;
+
+  const tEl = document.getElementById("dashTehsil"), mEl = document.getElementById("dashMarkaz");
+  function refreshMarkazOptions(){
+    const t = tEl.value;
+    const list = cache.markaz.filter(m => !t || m.tehsil === t);
+    mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  }
+  // AEO/TR default their tehsil filter to their own scope, matching every other page's convention.
+  if(!isAdmin && currentProfile.tehsil) tEl.value = currentProfile.tehsil;
+  refreshMarkazOptions();
+  tEl.addEventListener("change", refreshMarkazOptions);
 
   document.getElementById("dashFilterForm").addEventListener("submit", (e) => { e.preventDefault(); loadOverview(); });
   await loadOverview();
 }
 
 async function loadOverview(){
-  const fd = new FormData(document.getElementById("dashFilterForm"));
-  const from = fd.get("from"), to = fd.get("to");
-  const markazId = fd.get("markaz_id") || null;
-  const productId = fd.get("product_id") || null;
-  const lowThreshold = Number(fd.get("low_threshold")) || 0;
+  const tehsil = document.getElementById("dashTehsil").value || null;
+  const wing = document.getElementById("dashWing").value || null;
+  const markazId = document.getElementById("dashMarkaz").value || null;
   const box = document.getElementById("dashResults");
   box.innerHTML = `<p style="color:var(--ink-soft)">Calculating…</p>`;
 
-  const scopedSchoolIds = (markazId ? cache.schools.filter(s => s.markaz_id === markazId) : cache.schools).map(s => s.id);
+  let scoped = cache.schools;
+  if(markazId) scoped = scoped.filter(s => s.markaz_id === markazId);
+  else if(tehsil) scoped = scoped.filter(s => cache.markaz.find(m => m.id === s.markaz_id)?.tehsil === tehsil);
+  if(wing) scoped = scoped.filter(s => s.wing === wing);
+  const scopedSchoolIds = scoped.map(s => s.id);
   if(scopedSchoolIds.length === 0){
     box.innerHTML = `<div class="card">No schools in scope.</div>`;
     return;
   }
+  const narrowed = !!(markazId || tehsil || wing); // whether we deliberately narrowed vs relying on RLS's full scope
 
   // ---- Balances (as of now) ----
-  // Only add an explicit school filter when a specific markaz was chosen -
-  // otherwise rely on RLS (security_invoker view), same as cmpQuery below.
-  // Passing all 741 school IDs in one .in() filter for the "everything"
-  // case produced a query string long enough to be rejected outright.
+  // Only add an explicit school filter when deliberately narrowed - otherwise
+  // rely on RLS (security_invoker view). Passing all 741 school IDs in one
+  // .in() filter for the "everything" case produces a query string long
+  // enough to be rejected outright as a 400.
   let balQuery = sb.from("v_school_balances").select("*");
-  if(markazId) balQuery = balQuery.in("school_id", scopedSchoolIds);
-  if(productId) balQuery = balQuery.eq("product_id", productId);
+  if(narrowed) balQuery = balQuery.in("school_id", scopedSchoolIds);
   const { data: balances, error: balErr } = await balQuery;
   if(balErr){ box.innerHTML = `<div class="card"><div class="err">${esc(balErr.message)}</div></div>`; return; }
 
-  // ---- Ledger movement within range ----
-  let txQuery = sb.from("inventory_transactions").select("school_id, product_id, quantity, transaction_type")
-    .gte("txn_date", from).lte("txn_date", to);
-  if(markazId) txQuery = txQuery.in("school_id", scopedSchoolIds);
-  if(productId) txQuery = txQuery.eq("product_id", productId);
-  const { data: txns, error: txErr } = await txQuery;
-  if(txErr){ box.innerHTML = `<div class="card"><div class="err">${esc(txErr.message)}</div></div>`; return; }
-
-  const receivedByProduct = {}, consumedByProduct = {};
-  const schoolsReceiving = { }, schoolsConsuming = { };
-  (txns||[]).forEach(t => {
-    const pname = cache.products.find(p => p.id === t.product_id)?.product_name || t.product_id;
-    if(t.transaction_type === "SCHOOL_RECEIPT"){
-      receivedByProduct[pname] = (receivedByProduct[pname]||0) + Number(t.quantity);
-      (schoolsReceiving[pname] ||= new Set()).add(t.school_id);
-    }
-    if(t.transaction_type === "CONSUMPTION"){
-      consumedByProduct[pname] = (consumedByProduct[pname]||0) + Math.abs(Number(t.quantity));
-      (schoolsConsuming[pname] ||= new Set()).add(t.school_id);
-    }
-  });
-
-  // ---- Comparison summary (scoped by RLS automatically; filter product client-side) ----
-  let cmpQuery = sb.from("v_company_vs_aeo_comparison").select("status, product_id").limit(2000);
-  if(productId) cmpQuery = cmpQuery.eq("product_id", productId);
-  const { data: cmpRows } = await cmpQuery;
-  const cmpCounts = { "Matched":0, "Short Received":0, "Excess Received":0, "Company Record Missing":0, "AEO Record Missing":0 };
+  // ---- Comparison summary (scoped by RLS automatically) ----
+  const { data: cmpRows } = await sb.from("v_company_vs_aeo_comparison").select("status").limit(2000);
+  const cmpCounts = { "Matched":0, "Short Received":0, "Excess Received":0, "AEO entered, company did not provide":0, "Company provided, AEO did not enter":0 };
   (cmpRows||[]).forEach(r => { cmpCounts[r.status] = (cmpCounts[r.status]||0) + 1; });
 
-  // ---- Inventory health ----
-  const zeroStock = (balances||[]).filter(b => Number(b.balance) === 0);
-  const lowStock = (balances||[]).filter(b => Number(b.balance) > 0 && Number(b.balance) <= lowThreshold);
-  const negative = (balances||[]).filter(b => Number(b.balance) < 0);
-
-  // ---- Rationalization (loans) & transfers in range ----
-  // These tables have their own markaz_id column and RLS already scopes by
-  // it (fn_can_write_markaz) - filter explicitly only when a specific
-  // markaz was chosen, same reasoning as the balance/ledger queries above.
-  let loanQuery = sb.from("inventory_loans").select("id, status", { count:"exact" })
-    .gte("loan_date", from).lte("loan_date", to);
+  // ---- Outstanding rationalization (current status, not period-bound) ----
+  let loanQuery = sb.from("inventory_loans").select("id, status");
   if(markazId) loanQuery = loanQuery.eq("markaz_id", markazId);
   const { data: loanRows } = await loanQuery;
   const outstandingLoans = (loanRows||[]).filter(l => ["pending","approved","partially_returned"].includes(l.status)).length;
 
-  let transferQuery = sb.from("school_transfers").select("id", { count:"exact" })
-    .gte("transfer_date", from).lte("transfer_date", to);
-  if(markazId) transferQuery = transferQuery.eq("markaz_id", markazId);
-  const { count: transferCount } = await transferQuery;
+  // ---- Enrolment, fetched fresh right now - never stored - to compute
+  // days-of-stock-remaining per school (same logic as the Demand sheet). ----
+  let enrolmentByEmis = {}, enrolmentError = null;
+  try{
+    const res = await fetch(ENROLMENT_URL, { cache: "no-store" });
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const enrolData = await res.json();
+    (enrolData.schools || []).forEach(s => { enrolmentByEmis[s.emis_code] = s.total_school_students; });
+  }catch(err){
+    enrolmentError = err.message;
+  }
+
+  const milk = cache.products.find(p => p.product_name.toLowerCase().includes("milk"));
+  const biscuit = cache.products.find(p => p.product_name.toLowerCase().includes("biscuit"));
+  const balanceBy = {};
+  (balances||[]).forEach(b => { (balanceBy[b.school_id] ||= {})[b.product_id] = Number(b.balance); });
+
+  const health = scoped.map(s => {
+    const enrolment = enrolmentByEmis[s.emis_code];
+    const milkBal = balanceBy[s.id]?.[milk?.id] ?? 0;
+    const biscuitBal = balanceBy[s.id]?.[biscuit?.id] ?? 0;
+    const milkDays = enrolment ? milkBal / enrolment : null;
+    const biscuitDays = enrolment ? biscuitBal / enrolment : null;
+    return {
+      school: s, enrolment, milkBal, biscuitBal, milkDays, biscuitDays,
+      milkLow: milkDays !== null && milkDays < 6,
+      biscuitLow: biscuitDays !== null && biscuitDays < 2,
+    };
+  });
+  const milkLowRows = health.filter(r => r.milkLow).sort((a,b) => a.milkDays - b.milkDays);
+  const biscuitLowRows = health.filter(r => r.biscuitLow).sort((a,b) => a.biscuitDays - b.biscuitDays);
+  const zeroStockRows = health.filter(r => r.milkBal <= 0 || r.biscuitBal <= 0);
 
   box.innerHTML = `
     <div class="card">
       <h3>Overall</h3>
       <div class="grid-4">
         <div class="stat"><div class="n">${scopedSchoolIds.length}</div><div class="l">Schools in scope</div></div>
-        ${Object.keys(receivedByProduct).length === 0 ? "" : Object.entries(receivedByProduct).map(([p,q]) => `
-          <div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} received</div></div>`).join("")}
-        ${Object.keys(consumedByProduct).length === 0 ? "" : Object.entries(consumedByProduct).map(([p,q]) => `
-          <div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} consumed</div></div>`).join("")}
         ${(balances||[]).length === 0 ? "" : Object.entries(
-            (balances||[]).reduce((acc,b) => { acc[b.product_name] = (acc[b.product_name]||0) + Number(b.balance); return acc; }, {})
+            (balances||[]).filter(b => scopedSchoolIds.includes(b.school_id)).reduce((acc,b) => { acc[b.product_name] = (acc[b.product_name]||0) + Number(b.balance); return acc; }, {})
           ).map(([p,q]) => `<div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} remaining</div></div>`).join("")}
       </div>
     </div>
@@ -245,34 +249,42 @@ async function loadOverview(){
         <div class="stat"><div class="n">${cmpCounts["Matched"]}</div><div class="l">Matched</div></div>
         <div class="stat"><div class="n">${cmpCounts["Short Received"]}</div><div class="l">Short</div></div>
         <div class="stat"><div class="n">${cmpCounts["Excess Received"]}</div><div class="l">Excess</div></div>
-        <div class="stat"><div class="n">${cmpCounts["Company Record Missing"]+cmpCounts["AEO Record Missing"]}</div><div class="l">Missing a record</div></div>
+        <div class="stat"><div class="n">${cmpCounts["AEO entered, company did not provide"] + cmpCounts["Company provided, AEO did not enter"]}</div><div class="l">Missing a record</div></div>
       </div>
     </div>
 
     <div class="card">
       <h3>Inventory Health</h3>
+      <p class="sub">Days of stock remaining = current balance ÷ enrolment, assuming one pack per enrolled student per scheduled day. Milk flagged under 6 days, Biscuits under 2 days.</p>
+      ${enrolmentError ? `<div class="err" style="margin-bottom:14px;">Could not fetch enrolment data (${esc(enrolmentError)}) - days-remaining figures below are unavailable.</div>` : ""}
       <div class="grid-4">
-        <div class="stat"><div class="n">${lowStock.length}</div><div class="l">Low stock (≤ ${lowThreshold})</div></div>
-        <div class="stat"><div class="n">${zeroStock.length}</div><div class="l">Zero stock</div></div>
-        <div class="stat"><div class="n" style="color:${negative.length ? 'var(--bad-fg)' : 'inherit'}">${negative.length}</div><div class="l">Negative balance (should be 0)</div></div>
+        <div class="stat"><div class="n" style="color:${milkLowRows.length ? 'var(--bad-fg)' : 'inherit'}">${milkLowRows.length}</div><div class="l">Milk &lt; 6 days</div></div>
+        <div class="stat"><div class="n" style="color:${biscuitLowRows.length ? 'var(--bad-fg)' : 'inherit'}">${biscuitLowRows.length}</div><div class="l">Biscuits &lt; 2 days</div></div>
+        <div class="stat"><div class="n">${zeroStockRows.length}</div><div class="l">Zero or negative stock</div></div>
         <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Outstanding rationalization</div></div>
-        <div class="stat"><div class="n">${transferCount ?? 0}</div><div class="l">Transfers in period</div></div>
       </div>
-      ${renderFlagTable("Low stock schools", lowStock)}
-      ${renderFlagTable("Zero stock schools", zeroStock)}
-      ${negative.length ? renderFlagTable("⚠ Negative balance schools (investigate)", negative) : ""}
+      ${renderHealthTable("⚠ Milk under 6 days", milkLowRows, "milk")}
+      ${renderHealthTable("⚠ Biscuits under 2 days", biscuitLowRows, "biscuit")}
     </div>`;
 }
 
-function renderFlagTable(title, rows){
+function renderHealthTable(title, rows, highlight){
   if(rows.length === 0) return "";
   return `
     <div style="margin-top:18px;">
       <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">${esc(title)}</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>School</th><th>EMIS</th><th>Product</th><th>Balance</th></tr></thead>
+        <thead><tr><th>EMIS</th><th>School</th><th>Enrolment</th><th>Milk Balance</th><th>Milk Days</th><th>Biscuit Balance</th><th>Biscuit Days</th></tr></thead>
         <tbody>${rows.slice(0,100).map(r => `
-          <tr><td>${esc(r.school_name)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.product_name)}</td><td>${fmt(r.balance)}</td></tr>`).join("")}
+          <tr>
+            <td>${esc(r.school.emis_code)}</td>
+            <td>${esc(r.school.school_name)}</td>
+            <td>${r.enrolment != null ? fmt(r.enrolment) : '<span class="pill pill-warn">Not found</span>'}</td>
+            <td style="${highlight==='milk' ? 'color:var(--bad-fg);font-weight:600;' : ''}">${fmt(r.milkBal)}</td>
+            <td style="${highlight==='milk' ? 'color:var(--bad-fg);font-weight:600;' : ''}">${r.milkDays != null ? fmt(r.milkDays) : "—"}</td>
+            <td style="${highlight==='biscuit' ? 'color:var(--bad-fg);font-weight:600;' : ''}">${fmt(r.biscuitBal)}</td>
+            <td style="${highlight==='biscuit' ? 'color:var(--bad-fg);font-weight:600;' : ''}">${r.biscuitDays != null ? fmt(r.biscuitDays) : "—"}</td>
+          </tr>`).join("")}
         </tbody>
       </table></div>
       ${rows.length > 100 ? `<div class="sub" style="margin-top:6px;">Showing first 100 of ${rows.length}.</div>` : ""}
