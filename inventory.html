@@ -261,12 +261,13 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     // write policy is admin-only). Called once per checked product, all
     // sharing the same invoice number/date/school entered above.
     let savedCount = 0;
+    let certifiedCount = 0;
     const failures = [];
     for(const productId of checkedProducts){
       const qtyInput = mount.querySelector(`.productQty[data-product-id="${productId}"]`);
       const qty = qtyInput.value;
       if(!qty){ failures.push(`${productId}: quantity required`); continue; }
-      const { error } = await sb.rpc("fn_create_school_receipt", {
+      const { data, error } = await sb.rpc("fn_create_school_receipt", {
         ...shared,
         p_product_id: productId,
         p_quantity_received: qty,
@@ -279,10 +280,14 @@ async function renderMyReceiptsBody(visibleSchoolIds){
           : `${productName}: ${error.message}`);
       } else {
         savedCount++;
+        if(data?.[0]?.auto_certified) certifiedCount++;
       }
     }
 
-    if(savedCount) toast(`Saved ${savedCount} product${savedCount > 1 ? "s" : ""}`);
+    if(savedCount){
+      toast(`Saved ${savedCount} product${savedCount > 1 ? "s" : ""}`
+        + (certifiedCount ? ` — ${certifiedCount} auto-certified against matching company data` : ""));
+    }
     if(failures.length) toast(failures.join(" · "), "bad");
 
     if(savedCount){

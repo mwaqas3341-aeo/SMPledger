@@ -310,7 +310,7 @@ async function runImport(){
     (groups[key] = groups[key] || []).push(r);
   });
 
-  let invoiceCount = 0, itemCount = 0, errorCount = 0;
+  let invoiceCount = 0, itemCount = 0, errorCount = 0, autoCertifiedCount = 0;
   for(const key in groups){
     const rows = groups[key];
     const { invoiceNumber, deliveryDate } = rows[0];
@@ -335,13 +335,22 @@ async function runImport(){
 
       invoiceCount++;
       itemCount += rows.length;
+
+      // Reverse of what happens on the AEO side (fn_create_school_receipt
+      // auto-certifies when a matching company row already exists) - here
+      // the company data is arriving second, so check for AEO receipts
+      // already on file that match this invoice's rows.
+      const { data: certCount } = await sb.rpc("fn_auto_certify_for_invoice", { p_invoice_id: invoice.id });
+      autoCertifiedCount += Number(certCount || 0);
     }catch(err){
       errorCount++;
       console.error("Import failed for invoice", invoiceNumber, err);
     }
   }
 
-  toast(`Imported ${itemCount} rows across ${invoiceCount} invoice(s)${errorCount ? ` — ${errorCount} invoice group(s) failed (see console)` : ""}`,
+  toast(`Imported ${itemCount} rows across ${invoiceCount} invoice(s)`
+    + (autoCertifiedCount ? ` — ${autoCertifiedCount} auto-certified against AEO receipts already on file` : "")
+    + (errorCount ? ` — ${errorCount} invoice group(s) failed (see console)` : ""),
     errorCount ? "bad" : "ok");
   await loadComparison(new FormData(document.getElementById("filterForm")));
   renderUploadWizard(document.getElementById("uploadMount"));
