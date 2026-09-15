@@ -41,15 +41,18 @@
   two different UIs writing to the same tables with room to drift out of
   sync, so they were removed rather than kept as a second entry point.
 
-  What's actually new here: Inventory Adjustments - the backend RPC
-  (fn_create_adjustment) already existed before this session touched the
-  project, but had no UI anywhere until now.
+  What's here now: Inventory Adjustments (admin-only, unchanged) plus a new
+  Missing Consumption card - open to aeo/tr/admin/school_user, each scoped
+  to their own jurisdiction, admin/tr able to narrow further and export a
+  CSV of schools that haven't logged a consumption entry for a given day.
 */
 
 const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
 
 let currentUser = null, currentProfile = null;
 let cache = { markaz:[], schools:[], products:[] };
+let lastMissing = null; // kept around for CSV export
+const WING_OPTIONS = ["M-EE", "W-EE", "SE"];
 
 function toast(msg, kind){
   const el = document.createElement("div");
@@ -75,14 +78,9 @@ async function boot(){
     window.location.href = "index.html";
     return;
   }
-  // Adjustments are enforced admin-only at the database level (fn_create_adjustment
-  // itself checks fn_is_admin()) - gating the page the same way avoids showing a
-  // form that would just fail server-side for anyone else.
-  if(!["admin","super_admin"].includes(profile.role)){
-    alert("Inventory Adjustments is only available to admins.");
-    window.location.href = "dashboard.html";
-    return;
-  }
+  // This page now covers Missing Consumption (all roles) plus Adjustments
+  // (admin-only - enforced again below at the section level, and by
+  // fn_create_adjustment itself server-side).
   currentProfile = profile;
   await loadRefData();
   showApp();
@@ -95,8 +93,8 @@ function showApp(){
 
 async function loadRefData(){
   const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
-    sb.from("markaz").select("id,name").eq("active", true).order("name"),
-    sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("emis_code"),
+    sb.from("markaz").select("id,name,tehsil").eq("active", true).order("name"),
+    sb.from("schools").select("id,school_name,emis_code,markaz_id,wing").eq("active", true).order("emis_code"),
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
   ]);
   cache.markaz = markaz || [];
@@ -104,8 +102,219 @@ async function loadRefData(){
   cache.products = products || [];
 }
 
-async function renderPage(){
+/* ===================== SECTION NAV ===================== */
+let currentSection = "missing";
+function visibleSections(){
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const sections = [
+    { id:"missing", label:"Missing Consumption", desc:"Schools that haven't logged a consumption entry" },
+  ];
+  if(isAdmin) sections.push({ id:"adjustments", label:"Inventory Adjustments", desc:"Post stock corrections" });
+  return sections;
+}
+
+function renderPage(){
   const content = document.getElementById("content");
+  const sections = visibleSections();
+  if(!sections.find(s => s.id === currentSection)) currentSection = sections[0].id;
+  content.innerHTML = `<div class="menu-cards" id="opsSectionNav"></div><div id="opsSectionContent"></div>`;
+  const nav = document.getElementById("opsSectionNav");
+  sections.forEach(s => {
+    const a = document.createElement("a");
+    a.className = "menu-card" + (s.id === currentSection ? " active" : "");
+    a.innerHTML = `<span class="label">${esc(s.label)}</span><span class="desc">${esc(s.desc)}</span>`;
+    a.dataset.id = s.id;
+    a.onclick = () => { currentSection = s.id; renderPage(); };
+    nav.appendChild(a);
+  });
+  if(currentSection === "missing") renderMissingSection();
+  else renderAdjustmentsSection();
+}
+
+/* ===================== MISSING CONSUMPTION ===================== */
+function renderMissingSection(){
+  const content = document.getElementById("opsSectionContent");
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const isTr = currentProfile.role === "tr";
+  const isAeo = currentProfile.role === "aeo";
+
+  let scopeNote, tehsilField = "", markazField = "", wingField = "";
+  if(isAdmin){
+    const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
+    scopeNote = "Pick a tehsil to check, then optionally narrow to a markaz or wing. Leave tehsil unset to check the whole district.";
+    tehsilField = `<div><label>Tehsil</label><select name="tehsil" id="missTehsil"><option value="">All</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>`;
+    markazField = `<div><label>Markaz</label><select name="markaz_id" id="missMarkaz"><option value="">All</option></select></div>`;
+    wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+  } else if(isTr){
+    scopeNote = `Checks your tehsil${currentProfile.tehsil ? " (" + esc(currentProfile.tehsil) + ")" : ""} - narrow to a single markaz or wing if needed.`;
+    const tehsilMarkaz = cache.markaz.filter(m => m.tehsil === currentProfile.tehsil);
+    markazField = `<div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${tehsilMarkaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")}</select></div>`;
+    wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+  } else if(isAeo){
+    scopeNote = "Checks the schools in your own markaz.";
+    wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+  } else {
+    scopeNote = "Checks your own school.";
+  }
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Check missing consumption entries</h3>
+      <p class="sub">${scopeNote} Only products actually scheduled to be distributed on the chosen date (or specifically allowed via an exception) are checked - a product not due that day is never counted as "missing".</p>
+      <form id="missForm" class="form-row">
+        <div><label>Date</label><input type="date" name="date" value="${todayStr()}" required/></div>
+        ${tehsilField}
+        ${markazField}
+        ${wingField}
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Check</button></div>
+      </form>
+      <div id="missStatus"></div>
+    </div>
+    <div class="card" id="missCard" style="display:none;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
+        <h3 style="margin:0;" id="missTitle">Results</h3>
+        <button class="btn-secondary" id="missExportBtn" type="button">Download CSV</button>
+      </div>
+      <div class="table-wrap"><table id="missTable"><thead><tr>
+        <th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th><th>Missing</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+  `;
+
+  if(isAdmin){
+    const tehsilSel = document.getElementById("missTehsil");
+    const markazSel = document.getElementById("missMarkaz");
+    function refreshMarkazOptions(){
+      const t = tehsilSel.value;
+      const opts = (t ? cache.markaz.filter(m => m.tehsil === t) : cache.markaz)
+        .map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+      markazSel.innerHTML = `<option value="">All</option>${opts}`;
+    }
+    tehsilSel.addEventListener("change", refreshMarkazOptions);
+    refreshMarkazOptions();
+  }
+
+  document.getElementById("missForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    checkMissingConsumption(new FormData(e.target));
+  });
+}
+
+async function checkMissingConsumption(fd){
+  const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
+  const isTr = currentProfile.role === "tr";
+  const isAeo = currentProfile.role === "aeo";
+  const date = fd.get("date");
+  const tehsil = fd.get("tehsil");
+  const markazId = fd.get("markaz_id");
+  const wing = fd.get("wing");
+  const statusBox = document.getElementById("missStatus");
+  statusBox.innerHTML = "";
+
+  if(isTr && !currentProfile.tehsil){
+    toast("Your account has no tehsil set - contact your admin to fix this in A-I-DB.", "bad");
+    return;
+  }
+
+  // Resolve the in-scope school list (also used to render every school's
+  // name/markaz/wing, not just the ones missing).
+  let q = sb.from("schools").select("id,school_name,emis_code,wing,markaz!inner(name,tehsil)").eq("active", true);
+  if(isAeo){
+    q = q.eq("markaz_id", currentProfile.markaz_id);
+  } else if(currentProfile.role === "school_user"){
+    q = q.eq("id", currentProfile.school_id);
+  } else if(isTr){
+    q = q.eq("markaz.tehsil", currentProfile.tehsil);
+    if(markazId) q = q.eq("markaz_id", markazId);
+  } else if(isAdmin){
+    if(tehsil) q = q.eq("markaz.tehsil", tehsil);
+    if(markazId) q = q.eq("markaz_id", markazId);
+  }
+  if(wing) q = q.eq("wing", wing);
+
+  const { data: schools, error: schoolErr } = await q;
+  if(schoolErr){ toast(schoolErr.message, "bad"); return; }
+  if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }
+  schools.sort((a,b) => (a.emis_code||"").localeCompare(b.emis_code||""));
+  const schoolIds = schools.map(s => s.id);
+
+  document.getElementById("missCard").style.display = "";
+  const tbody = document.querySelector("#missTable tbody");
+  tbody.innerHTML = `<tr><td colspan="7">Loading…</td></tr>`;
+
+  const { data: missing, error: missErr } = await sb.rpc("fn_missing_consumption", { p_school_ids: schoolIds, p_date: date });
+  if(missErr){ tbody.innerHTML = `<tr><td colspan="7" class="err">${esc(missErr.message)}</td></tr>`; return; }
+
+  const missingBySchool = {};
+  (missing || []).forEach(r => {
+    missingBySchool[r.school_id] = missingBySchool[r.school_id] || [];
+    missingBySchool[r.school_id].push(r.product_name);
+  });
+  const flaggedSchools = schools.filter(s => missingBySchool[s.id]?.length);
+
+  document.getElementById("missTitle").textContent =
+    `${flaggedSchools.length} of ${schools.length} schools missing an entry for ${date}`;
+  statusBox.innerHTML = missing?.length
+    ? ""
+    : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">No scheduled product is missing an entry for this date in scope - or nothing was scheduled at all on this date.</p>`;
+
+  if(!flaggedSchools.length){
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--ink-soft)">Nothing missing for this date.</td></tr>`;
+    lastMissing = { rows: [], date };
+    return;
+  }
+
+  const rows = flaggedSchools.map((s, i) => ({
+    sr: i+1, tehsil: s.markaz?.tehsil, markaz: s.markaz?.name,
+    emis: s.emis_code, school: s.school_name, wing: s.wing,
+    missing: missingBySchool[s.id].join(", "),
+  }));
+  lastMissing = { rows, date };
+
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.sr}</td>
+      <td>${esc(r.tehsil)}</td>
+      <td>${esc(r.markaz)}</td>
+      <td>${esc(r.emis)}</td>
+      <td>${esc(r.school)}</td>
+      <td>${esc(r.wing)}</td>
+      <td><span class="pill pill-bad">${esc(r.missing)}</span></td>
+    </tr>
+  `).join("");
+
+  document.getElementById("missExportBtn").onclick = () => exportMissingCsv(lastMissing);
+}
+
+function exportMissingCsv(missing){
+  const { rows, date } = missing;
+  const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing","Missing Product(s)"];
+  const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, r.missing])];
+  const csv = csvRows.map(row => row.map(v => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  }).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `smp-missing-consumption-${date}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ===================== INVENTORY ADJUSTMENTS (admin-only) ===================== */
+function renderAdjustmentsSection(){
+  if(!["admin","super_admin"].includes(currentProfile.role)){
+    // Defensive - the nav card is admin-only already, and fn_create_adjustment
+    // itself checks fn_is_admin() server-side regardless.
+    currentSection = "missing";
+    renderPage();
+    return;
+  }
+  const content = document.getElementById("opsSectionContent");
   const schoolOpts = cache.schools.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
   const markazOpts = cache.markaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
   const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
@@ -172,7 +381,7 @@ async function renderPage(){
     }catch(err){ toast(err.message, "bad"); }
   });
 
-  await loadAdjustments();
+  loadAdjustments();
 }
 
 async function loadAdjustments(){
