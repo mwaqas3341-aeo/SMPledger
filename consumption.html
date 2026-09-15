@@ -50,6 +50,37 @@ function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 
+// A toast is easy to miss for something that needs the user to actually stop
+// and act - insufficient stock means the entry did NOT save, so this shows a
+// modal instead, names the product plainly, and points at where to fix the
+// real cause (an un-rationalized transfer) rather than just letting them
+// re-type a smaller (wrong) number to make the error go away.
+function showInsufficientStockModal({ productName, unitName, available, emisCode, schoolName }){
+  const existing = document.getElementById("insufficientModal");
+  if(existing) existing.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "insufficientModal";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>⚠ Insufficient ${esc(productName)} Stock</h3>
+      <p><b>${esc(schoolName)}</b> (EMIS ${esc(emisCode)}) only has <b>${fmt(available)} ${esc(unitName || "packs")}</b> of ${esc(productName)} available - not enough to save this entry.</p>
+      <div class="modal-note">
+        Do not enter a number larger than what's actually available just to save this - it will make every report using this school's balance wrong from this point on.
+        If stock was rationalized in from another school, go to <b>Stock Rationalization</b> and rationalize the required quantity from that EMIS code to <b>${esc(schoolName)}</b> first, then come back and enter the real consumption figure.
+      </div>
+      <div class="actions-row">
+        <button class="btn-secondary" id="insufficientCloseBtn" type="button">Close</button>
+        <a class="btn-primary" href="transfers.html?section=loans" style="text-decoration:none; display:inline-flex; align-items:center;">Go to Stock Rationalization</a>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("insufficientCloseBtn").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+}
+
 /* ===================== AUTH ===================== */
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
 
@@ -249,7 +280,20 @@ async function loadGridData(visibleSchoolIds){
         toast("Saved");
         await loadGridData(schoolIds);
       }catch(err){
-        toast(err.message, "bad");
+        const m = /Insufficient inventory\. Available quantity: ([\d.]+)/.exec(err.message || "");
+        if(m){
+          const product = cache.products.find(p => p.id === productId);
+          const school = cache.schools.find(s => s.id === schoolId);
+          showInsufficientStockModal({
+            productName: product?.product_name || "product",
+            unitName: product?.unit_name,
+            available: Number(m[1]),
+            emisCode: school?.emis_code,
+            schoolName: school?.school_name,
+          });
+        } else {
+          toast(err.message, "bad");
+        }
         await loadGridData(schoolIds); // revert the cell to the real stored value
       }
     });

@@ -76,7 +76,11 @@ boot();
 function showApp(){
   document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
     buildNav();
-  navigate("transfers");
+  // Allow deep-linking straight into a section, e.g. transfers.html?section=loans
+  // from the dashboard's "Stock Rationalization" card.
+  const requested = new URLSearchParams(window.location.search).get("section");
+  const validIds = SECTIONS.map(s => s.id);
+  navigate(validIds.includes(requested) ? requested : "transfers");
 }
 
 async function loadRefData(){
@@ -100,7 +104,7 @@ async function loadRefData(){
 /* ===================== NAV ===================== */
 const SECTIONS = [
   { id:"transfers", label:"Transfers" },
-  { id:"loans", label:"Rationalization" },
+  { id:"loans", label:"Stock Rationalization" },
   { id:"outstanding", label:"Outstanding Rationalization" },
 ];
 function buildNav(){
@@ -119,8 +123,6 @@ function buildNav(){
 async function navigate(id){
   currentSection = id;
   document.querySelectorAll("#navList .menu-card").forEach(el => el.classList.toggle("active", el.dataset.id === id));
-  const titleMap = Object.fromEntries(SECTIONS.map(s => [s.id, s.label]));
-  document.getElementById("pageTitleUnused").textContent = titleMap[id] || "";
   const content = document.getElementById("content");
   content.innerHTML = `<p style="color:var(--ink-soft)">Loading…</p>`;
   try{

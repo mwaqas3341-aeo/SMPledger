@@ -97,8 +97,9 @@ function showApp(){
 const MODULES = [
   { href:"inventory.html",   label:"Inventory Received",   desc:"Record and verify deliveries" },
   { href:"consumption.html", label:"Consumption",          desc:"Daily distribution by school" },
-  { href:"operations.html",  label:"Operations",           desc:"Post inventory adjustments" },
-  { href:"transfers.html",   label:"Transfers & Rationalization", desc:"Move stock between schools" },
+  { href:"operations.html",  label:"Operations",           desc:"Missing consumption & stock adjustments" },
+  { href:"transfers.html",   label:"Transfers",            desc:"Move stock between schools" },
+  { href:"transfers.html?section=loans", label:"Stock Rationalization", desc:"Rationalize surplus stock from one school to another" },
   { href:"report-generation.html", label:"Reports & Demand", desc:"Period reports and enrollment-based demand" },
   { href:"report-comparison.html", label:"Report Comparison", desc:"Company vs AEO data", roles:["admin","super_admin","tr"] },
 ];
