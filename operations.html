@@ -160,14 +160,17 @@ function renderMissingSection(){
   content.innerHTML = `
     <div class="card">
       <h3>Check missing consumption entries</h3>
-      <p class="sub">${scopeNote} Only products actually scheduled to be distributed on the chosen date (or specifically allowed via an exception) are checked - a product not due that day is never counted as "missing".</p>
+      <p class="sub">${scopeNote} Only days each product is actually scheduled to be distributed (or specifically allowed via an exception) are checked against - a day a product isn't due is never counted as "missing". Results are grouped by EMIS code, listing exactly which scheduled dates are missing for each product.</p>
       <form id="missForm" class="form-row">
-        <div><label>Date</label><input type="date" name="date" value="${todayStr()}" required/></div>
+        <div><label>From</label><input type="date" name="from" value="${daysAgoStr(6)}" required/></div>
+        <div><label>To</label><input type="date" name="to" value="${todayStr()}" required/></div>
         ${tehsilField}
         ${markazField}
         ${wingField}
+        <div><label>EMIS Code (optional)</label><input type="text" name="emis" placeholder="Narrow to one school"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Check</button></div>
       </form>
+      <div id="missRangeWarning"></div>
       <div id="missStatus"></div>
     </div>
     <div class="card" id="missCard" style="display:none;">
@@ -176,7 +179,7 @@ function renderMissingSection(){
         <button class="btn-secondary" id="missExportBtn" type="button">Download CSV</button>
       </div>
       <div class="table-wrap"><table id="missTable"><thead><tr>
-        <th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th><th>Missing</th>
+        <th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th><th>Product</th><th>Missing Dates</th><th>Count</th>
       </tr></thead><tbody></tbody></table></div>
     </div>
   `;
@@ -200,16 +203,31 @@ function renderMissingSection(){
   });
 }
 
+function daysAgoStr(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function dateRangeArr(from, to){
+  const dates = []; let d = new Date(from); const end = new Date(to);
+  while(d <= end){ dates.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  return dates;
+}
+
 async function checkMissingConsumption(fd){
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
   const isTr = currentProfile.role === "tr";
   const isAeo = currentProfile.role === "aeo";
-  const date = fd.get("date");
+  const from = fd.get("from"), to = fd.get("to");
   const tehsil = fd.get("tehsil");
   const markazId = fd.get("markaz_id");
   const wing = fd.get("wing");
+  const emis = (fd.get("emis") || "").trim();
   const statusBox = document.getElementById("missStatus");
+  const warnBox = document.getElementById("missRangeWarning");
   statusBox.innerHTML = "";
+
+  if(to < from){ toast('"To" must be on or after "From"', "bad"); return; }
+  const allDates = dateRangeArr(from, to);
+  warnBox.innerHTML = allDates.length > 31
+    ? `<div style="margin-top:12px;background:var(--warn-bg);color:var(--warn-fg);padding:10px 12px;border-radius:8px;font-size:12.5px;">This is a ${allDates.length}-day range - results may take a moment and the missing-dates list per school can get long.</div>`
+    : "";
 
   if(isTr && !currentProfile.tehsil){
     toast("Your account has no tehsil set - contact your admin to fix this in A-I-DB.", "bad");
@@ -231,6 +249,7 @@ async function checkMissingConsumption(fd){
     if(markazId) q = q.eq("markaz_id", markazId);
   }
   if(wing) q = q.eq("wing", wing);
+  if(emis) q = q.eq("emis_code", emis);
 
   const { data: schools, error: schoolErr } = await q;
   if(schoolErr){ toast(schoolErr.message, "bad"); return; }
@@ -240,36 +259,52 @@ async function checkMissingConsumption(fd){
 
   document.getElementById("missCard").style.display = "";
   const tbody = document.querySelector("#missTable tbody");
-  tbody.innerHTML = `<tr><td colspan="7">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="9">Loading…</td></tr>`;
 
-  const { data: missing, error: missErr } = await sb.rpc("fn_missing_consumption", { p_school_ids: schoolIds, p_date: date });
-  if(missErr){ tbody.innerHTML = `<tr><td colspan="7" class="err">${esc(missErr.message)}</td></tr>`; return; }
+  const { data: missing, error: missErr } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: schoolIds, p_from: from, p_to: to });
+  if(missErr){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(missErr.message)}</td></tr>`; return; }
 
-  const missingBySchool = {};
+  // Group by school + product, collecting each missing scheduled date -
+  // this is the "date-wise, EMIS-wise" view: every row below is one
+  // school's one product, with the exact dates it's missing in this period.
+  const grouped = {};
   (missing || []).forEach(r => {
-    missingBySchool[r.school_id] = missingBySchool[r.school_id] || [];
-    missingBySchool[r.school_id].push(r.product_name);
+    const key = `${r.school_id}|${r.product_id}`;
+    if(!grouped[key]) grouped[key] = { school_id:r.school_id, product_name:r.product_name, dates:[] };
+    grouped[key].dates.push(r.missing_date);
   });
-  const flaggedSchools = schools.filter(s => missingBySchool[s.id]?.length);
+  const groupRows = Object.values(grouped);
+  const flaggedSchoolIds = new Set(groupRows.map(g => g.school_id));
 
   document.getElementById("missTitle").textContent =
-    `${flaggedSchools.length} of ${schools.length} schools missing an entry for ${date}`;
-  statusBox.innerHTML = missing?.length
+    `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)}`;
+  statusBox.innerHTML = groupRows.length
     ? ""
-    : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">No scheduled product is missing an entry for this date in scope - or nothing was scheduled at all on this date.</p>`;
+    : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">No scheduled product is missing an entry in this period for this scope.</p>`;
 
-  if(!flaggedSchools.length){
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--ink-soft)">Nothing missing for this date.</td></tr>`;
-    lastMissing = { rows: [], date };
+  if(!groupRows.length){
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">Nothing missing in this period.</td></tr>`;
+    lastMissing = { rows: [], from, to };
     return;
   }
 
-  const rows = flaggedSchools.map((s, i) => ({
-    sr: i+1, tehsil: s.markaz?.tehsil, markaz: s.markaz?.name,
-    emis: s.emis_code, school: s.school_name, wing: s.wing,
-    missing: missingBySchool[s.id].join(", "),
-  }));
-  lastMissing = { rows, date };
+  const schoolById = Object.fromEntries(schools.map(s => [s.id, s]));
+  groupRows.sort((a,b) => {
+    const sa = schoolById[a.school_id], sb2 = schoolById[b.school_id];
+    return (sa.emis_code||"").localeCompare(sb2.emis_code||"") || a.product_name.localeCompare(b.product_name);
+  });
+
+  const rows = groupRows.map((g, i) => {
+    const s = schoolById[g.school_id];
+    return {
+      sr: i+1, tehsil: s.markaz?.tehsil, markaz: s.markaz?.name,
+      emis: s.emis_code, school: s.school_name, wing: s.wing,
+      product: g.product_name,
+      dates: g.dates.map(fmtDMY).join(", "),
+      count: g.dates.length,
+    };
+  });
+  lastMissing = { rows, from, to };
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -279,17 +314,21 @@ async function checkMissingConsumption(fd){
       <td>${esc(r.emis)}</td>
       <td>${esc(r.school)}</td>
       <td>${esc(r.wing)}</td>
-      <td><span class="pill pill-bad">${esc(r.missing)}</span></td>
+      <td>${esc(r.product)}</td>
+      <td><span class="pill pill-bad">${esc(r.dates)}</span></td>
+      <td>${r.count}</td>
     </tr>
   `).join("");
 
   document.getElementById("missExportBtn").onclick = () => exportMissingCsv(lastMissing);
 }
 
+function fmtDMY(d){ const dt = new Date(d + "T00:00:00"); const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return `${dt.getDate()}-${months[dt.getMonth()]}-${dt.getFullYear()}`; }
+
 function exportMissingCsv(missing){
-  const { rows, date } = missing;
-  const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing","Missing Product(s)"];
-  const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, r.missing])];
+  const { rows, from, to } = missing;
+  const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing","Product","Missing Dates","Count"];
+  const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, r.product, r.dates, r.count])];
   const csv = csvRows.map(row => row.map(v => {
     const s = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
@@ -298,7 +337,7 @@ function exportMissingCsv(missing){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `smp-missing-consumption-${date}.csv`;
+  a.download = `smp-missing-consumption-${from}-to-${to}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();

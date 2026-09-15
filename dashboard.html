@@ -232,6 +232,23 @@ async function loadOverview(){
   const biscuitLowRows = health.filter(r => r.biscuitLow).sort((a,b) => a.biscuitDays - b.biscuitDays);
   const zeroStockRows = health.filter(r => r.milkBal <= 0 || r.biscuitBal <= 0);
 
+  // ---- Missing consumption, today only (quick glance) - the full
+  // date-range / EMIS-wise breakdown lives on Operations > Missing Consumption. ----
+  const today = todayStr();
+  let missingRows = [], missingErr = null;
+  try{
+    const { data, error } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: scopedSchoolIds, p_from: today, p_to: today });
+    if(error) throw error;
+    missingRows = data || [];
+  }catch(err){ missingErr = err.message; }
+  const scopedById = Object.fromEntries(scoped.map(s => [s.id, s]));
+  const missingBySchool = {};
+  missingRows.forEach(r => {
+    missingBySchool[r.school_id] = missingBySchool[r.school_id] || [];
+    missingBySchool[r.school_id].push(r.product_name);
+  });
+  const missingSchoolIds = Object.keys(missingBySchool);
+
   box.innerHTML = `
     <div class="card">
       <h3>Overall</h3>
@@ -265,6 +282,35 @@ async function loadOverview(){
       </div>
       ${renderHealthTable("⚠ Milk under 6 days", milkLowRows, "milk")}
       ${renderHealthTable("⚠ Biscuits under 2 days", biscuitLowRows, "biscuit")}
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; flex-wrap:wrap; gap:10px;">
+        <h3 style="margin:0;">Missing Consumption (Today)</h3>
+        <a class="btn-secondary" href="operations.html" style="text-decoration:none;">Check a date range &rarr;</a>
+      </div>
+      <p class="sub">Schools with no consumption entry for a product that's actually scheduled today. For a date range or a CSV, use Operations &rarr; Missing Consumption.</p>
+      ${missingErr ? `<div class="err">${esc(missingErr)}</div>` : `
+      <div class="grid-4">
+        <div class="stat"><div class="n" style="color:${missingSchoolIds.length ? 'var(--bad-fg)' : 'inherit'}">${missingSchoolIds.length}</div><div class="l">Schools missing today</div></div>
+        <div class="stat"><div class="n">${scopedSchoolIds.length}</div><div class="l">Schools in scope</div></div>
+      </div>
+      ${missingSchoolIds.length ? `
+      <div class="table-wrap" style="margin-top:14px;"><table>
+        <thead><tr><th>EMIS</th><th>School</th><th>Markaz</th><th>Missing</th></tr></thead>
+        <tbody>${missingSchoolIds.slice(0,20).map(id => {
+          const s = scopedById[id];
+          return `<tr>
+            <td>${esc(s?.emis_code)}</td>
+            <td>${esc(s?.school_name)}</td>
+            <td>${esc(cache.markaz.find(m => m.id === s?.markaz_id)?.name)}</td>
+            <td><span class="pill pill-bad">${esc(missingBySchool[id].join(", "))}</span></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table></div>
+      ${missingSchoolIds.length > 20 ? `<div class="sub" style="margin-top:6px;">Showing first 20 of ${missingSchoolIds.length} - see Operations for the full list and CSV export.</div>` : ""}
+      ` : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">Nothing missing for today in this scope - or nothing was scheduled today at all.</p>`}
+      `}
     </div>`;
 }
 
