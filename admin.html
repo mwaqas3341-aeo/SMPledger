@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admin Panel — School Meal Program</title>
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css" />
+<style>
+  .dow-grid{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 4px; }
+  .dow-chip{ display:flex; align-items:center; gap:6px; background:var(--paper); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:12.5px; cursor:pointer; }
+  .dow-chip input{ margin:0; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div class="brand">
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Admin Panel</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
+    </div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </div>
+  <div id="content"></div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/*
+  Admin-only. Not linked anywhere for non-admins, and boot() below redirects
+  anyone who isn't admin/super_admin straight back to the dashboard before
+  any content renders - same belt-and-suspenders approach as Operations'
+  Adjustments section (client-side gate here, RLS as the real backstop:
+  products_write and schedule_exceptions_admin_write are both fn_is_admin()
+  only, so even a manually-forged request from a non-admin session fails).
+*/
+
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+const DOW_LABELS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+let currentUser = null, currentProfile = null;
+let cache = { products: [] };
+
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtDate(d){ if(!d) return "—"; return new Date(d + "T00:00:00").toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
+
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){
+    await sb.auth.signOut();
+    window.location.href = "index.html";
+    return;
+  }
+  if(!["admin","super_admin"].includes(profile.role)){
+    window.location.href = "dashboard.html";
+    return;
+  }
+  currentProfile = profile;
+  await loadRefData();
+  showApp();
+}
+boot();
+
+function showApp(){
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+  renderPage();
+}
+
+async function loadRefData(){
+  const { data: products } = await sb.from("products").select("id,product_name,unit_name,schedule_dow").eq("active", true).order("product_name");
+  cache.products = products || [];
+}
+
+/* ===================== SECTION NAV ===================== */
+const SECTIONS = [
+  { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
+];
+let currentSection = "schedule";
+
+function renderPage(){
+  const content = document.getElementById("content");
+  content.innerHTML = `<div class="menu-cards" id="adminSectionNav"></div><div id="adminSectionContent"></div>`;
+  const nav = document.getElementById("adminSectionNav");
+  SECTIONS.forEach(s => {
+    const a = document.createElement("a");
+    a.className = "menu-card" + (s.id === currentSection ? " active" : "");
+    a.innerHTML = `<span class="label">${esc(s.label)}</span><span class="desc">${esc(s.desc)}</span>`;
+    a.onclick = () => { currentSection = s.id; renderPage(); };
+    nav.appendChild(a);
+  });
+  renderScheduleSection();
+}
+
+/* ===================== CONSUMPTION SCHEDULE ===================== */
+function renderScheduleSection(){
+  const content = document.getElementById("adminSectionContent");
+  content.innerHTML = `
+    <div class="card">
+      <h3>Weekly schedule (default)</h3>
+      <p class="sub">The normal weekday pattern each product is distributed on - e.g. Milk on Mon/Tue/Wed, Biscuits on Thursday. This drives every "missing consumption" check across the app, so a day left unchecked here is never counted as missing.</p>
+      <div id="scheduleForms"></div>
+    </div>
+    <div class="card">
+      <h3>One-off exceptions</h3>
+      <p class="sub">Override a single date without touching the weekly pattern above - e.g. force a Milk day closed for a public holiday, or open an extra Biscuit day to make up for one that was missed.</p>
+      <form id="exceptionForm" class="form-row">
+        <div><label>Product</label><select name="product_id" required>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+        <div><label>Date</label><input type="date" name="exception_date" required value="${todayStr()}"/></div>
+        <div><label>Status</label><select name="status" required>
+          <option value="blocked">Blocked (not distributed this day)</option>
+          <option value="allowed">Allowed (distributed this day)</option>
+        </select></div>
+        <div style="grid-column:1/-1;"><label>Reason</label><input type="text" name="reason" placeholder="e.g. Eid holiday"/></div>
+        <div style="align-self:end;"><button class="btn-primary" type="submit">Add exception</button></div>
+      </form>
+      <div class="table-wrap" style="margin-top:16px;"><table id="exceptionTable"><thead><tr>
+        <th>Date</th><th>Product</th><th>Status</th><th>Reason</th><th></th>
+      </tr></thead><tbody><tr><td colspan="5" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+    </div>
+  `;
+
+  const formsBox = document.getElementById("scheduleForms");
+  cache.products.forEach(p => {
+    const dow = p.schedule_dow || [];
+    const row = document.createElement("form");
+    row.className = "form-row";
+    row.style.alignItems = "center";
+    row.dataset.productId = p.id;
+    row.innerHTML = `
+      <div style="min-width:140px;"><b>${esc(p.product_name)}</b></div>
+      <div class="dow-grid">
+        ${DOW_LABELS.map((label, i) => `
+          <label class="dow-chip">
+            <input type="checkbox" value="${i}" ${dow.includes(i) ? "checked" : ""}/> ${label}
+          </label>
+        `).join("")}
+      </div>
+      <div><button class="btn-primary" type="submit">Save</button></div>
+    `;
+    row.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const checked = Array.from(row.querySelectorAll('input[type="checkbox"]:checked')).map(c => Number(c.value));
+      try{
+        const { error } = await sb.from("products").update({ schedule_dow: checked }).eq("id", p.id);
+        if(error) throw error;
+        p.schedule_dow = checked;
+        toast(`${p.product_name} schedule updated`);
+      }catch(err){ toast(err.message, "bad"); }
+    });
+    formsBox.appendChild(row);
+  });
+
+  document.getElementById("exceptionForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try{
+      const { error } = await sb.from("schedule_exceptions").insert({
+        product_id: fd.get("product_id"),
+        exception_date: fd.get("exception_date"),
+        status: fd.get("status"),
+        reason: fd.get("reason") || null,
+        created_by: currentUser.id,
+      });
+      if(error) throw error;
+      toast("Exception added");
+      e.target.reset();
+      e.target.querySelector('[name="exception_date"]').value = todayStr();
+      await loadExceptions();
+    }catch(err){ toast(err.message, "bad"); }
+  });
+
+  loadExceptions();
+}
+
+async function loadExceptions(){
+  const tbody = document.querySelector("#exceptionTable tbody");
+  const { data, error } = await sb.from("schedule_exceptions")
+    .select("id, exception_date, status, reason, products(product_name)")
+    .order("exception_date", { ascending: false })
+    .limit(100);
+  if(error){ tbody.innerHTML = `<tr><td colspan="5" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(!data?.length){ tbody.innerHTML = `<tr><td colspan="5" style="color:var(--ink-soft)">No exceptions set.</td></tr>`; return; }
+  tbody.innerHTML = data.map(r => `
+    <tr>
+      <td>${fmtDate(r.exception_date)}</td>
+      <td>${esc(r.products?.product_name)}</td>
+      <td><span class="pill ${r.status === "blocked" ? "pill-bad" : "pill-ok"}">${esc(r.status)}</span></td>
+      <td>${esc(r.reason || "—")}</td>
+      <td><button class="link-btn" onclick="deleteException('${r.id}')">Remove</button></td>
+    </tr>
+  `).join("");
+}
+
+async function deleteException(id){
+  if(!confirm("Remove this exception? The date will revert to the normal weekly schedule.")) return;
+  try{
+    const { error } = await sb.from("schedule_exceptions").delete().eq("id", id);
+    if(error) throw error;
+    toast("Exception removed");
+    await loadExceptions();
+  }catch(err){ toast(err.message, "bad"); }
+}
+</script>
+</body>
+</html>

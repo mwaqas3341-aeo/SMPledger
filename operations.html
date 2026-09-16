@@ -276,6 +276,19 @@ async function checkMissingConsumption(fd){
   const groupRows = Object.values(grouped);
   const flaggedSchoolIds = new Set(groupRows.map(g => g.school_id));
 
+  // Markaz-wise summary - always computed (even when nothing's missing, so
+  // the CSV shows a clean 0-missing summary too), included as a second
+  // table in the same CSV download.
+  const markazAgg = {};
+  schools.forEach(s => {
+    const key = `${s.markaz?.tehsil}|${s.markaz?.name}`;
+    if(!markazAgg[key]) markazAgg[key] = { tehsil: s.markaz?.tehsil, markaz: s.markaz?.name, total: 0, missing: 0 };
+    markazAgg[key].total++;
+    if(flaggedSchoolIds.has(s.id)) markazAgg[key].missing++;
+  });
+  const markazSummary = Object.values(markazAgg).sort((a,b) =>
+    (a.tehsil||"").localeCompare(b.tehsil||"") || (a.markaz||"").localeCompare(b.markaz||""));
+
   document.getElementById("missTitle").textContent =
     `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)}`;
   statusBox.innerHTML = groupRows.length
@@ -284,7 +297,7 @@ async function checkMissingConsumption(fd){
 
   if(!groupRows.length){
     tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">Nothing missing in this period.</td></tr>`;
-    lastMissing = { rows: [], from, to };
+    lastMissing = { rows: [], from, to, markazSummary };
     return;
   }
 
@@ -304,7 +317,7 @@ async function checkMissingConsumption(fd){
       count: g.dates.length,
     };
   });
-  lastMissing = { rows, from, to };
+  lastMissing = { rows, from, to, markazSummary };
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -326,9 +339,19 @@ async function checkMissingConsumption(fd){
 function fmtDMY(d){ const dt = new Date(d + "T00:00:00"); const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return `${dt.getDate()}-${months[dt.getMonth()]}-${dt.getFullYear()}`; }
 
 function exportMissingCsv(missing){
-  const { rows, from, to } = missing;
+  const { rows, from, to, markazSummary } = missing;
   const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing","Product","Missing Dates","Count"];
   const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, r.product, r.dates, r.count])];
+
+  // Markaz-wise summary as a second table in the same CSV, separated by a
+  // blank row - opens fine in Excel/Sheets as one file with two blocks.
+  csvRows.push([]);
+  csvRows.push(["Markaz-wise Summary"]);
+  csvRows.push(["Tehsil","Markaz","Schools Missing","Total Schools In Scope","% Missing"]);
+  (markazSummary || []).forEach(m => {
+    csvRows.push([m.tehsil, m.markaz, m.missing, m.total, m.total ? Math.round((m.missing/m.total)*100) + "%" : "0%"]);
+  });
+
   const csv = csvRows.map(row => row.map(v => {
     const s = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
