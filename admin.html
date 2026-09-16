@@ -96,6 +96,7 @@ async function loadRefData(){
 /* ===================== SECTION NAV ===================== */
 const SECTIONS = [
   { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
+  { id:"report", label:"Missing Consumption Report", desc:"Auto-email the remaining-schools list on a schedule" },
   { id:"health", label:"System Health", desc:"Database keep-alive status" },
 ];
 let currentSection = "schedule";
@@ -112,7 +113,135 @@ function renderPage(){
     nav.appendChild(a);
   });
   if(currentSection === "health") renderHealthSection();
+  else if(currentSection === "report") renderReportSection();
   else renderScheduleSection();
+}
+
+/* ===================== MISSING CONSUMPTION REPORT (EMAIL) ===================== */
+function pktToUtc(hh, mm){ let h = (hh - 5 + 24) % 24; return { h, m: mm }; }
+function utcToPkt(hh, mm){ let h = (hh + 5) % 24; return { h, m: mm }; }
+function pad2(n){ return String(n).padStart(2, "0"); }
+
+async function renderReportSection(){
+  const content = document.getElementById("adminSectionContent");
+  content.innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
+
+  const { data: s, error } = await sb.from("missing_consumption_report_settings").select("*").eq("id", true).single();
+  if(error){ content.innerHTML = `<div class="card"><div class="err">${esc(error.message)}</div></div>`; return; }
+
+  const pkt = utcToPkt(s.send_hour_utc, s.send_minute_utc);
+  const recipients = s.recipients || [];
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Remaining Schools Auto Email</h3>
+      <p class="sub">Automatically emails the Missing Consumption report (schools + markaz-wise summary, same data as Operations &rarr; Missing Consumption) to configured recipients on a schedule, so nobody has to remember to check it manually.</p>
+
+      <div class="form-row" style="margin-top:14px;">
+        <div><label>Enabled</label>
+          <select id="repEnabled">
+            <option value="true" ${s.enabled ? "selected" : ""}>Enabled</option>
+            <option value="false" ${!s.enabled ? "selected" : ""}>Disabled</option>
+          </select>
+        </div>
+        <div><label>Sending Time (Pakistan Time - Asia/Karachi)</label>
+          <input type="time" id="repTime" value="${pad2(pkt.h)}:${pad2(pkt.m)}"/>
+        </div>
+        <div><label>Lookback (days checked each run)</label>
+          <input type="number" id="repLookback" min="1" max="31" value="${s.lookback_days}"/>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <label>Recipient Emails</label>
+        <div id="repRecipients" style="display:flex; flex-wrap:wrap; gap:8px; margin:8px 0;"></div>
+        <div style="display:flex; gap:8px;">
+          <input type="email" id="repNewEmail" placeholder="name@example.com" style="flex:1;"/>
+          <button class="btn-secondary" type="button" id="repAddEmailBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="actions-row" style="margin-top:18px;">
+        <button class="btn-primary" type="button" id="repSaveBtn">Save Settings</button>
+        <button class="btn-secondary" type="button" id="repSendNowBtn">Send Now</button>
+      </div>
+      <div id="repStatus"></div>
+    </div>
+
+    <div class="card">
+      <h3>Last Run</h3>
+      <div class="grid-4">
+        <div class="stat"><div class="n">${s.last_run_at ? fmtDateTime(s.last_run_at) : "—"}</div><div class="l">Last run (local time)</div></div>
+        <div class="stat"><div class="n" style="color:${s.last_run_status === 'sent' ? 'var(--ok-fg)' : (s.last_run_status ? 'var(--bad-fg)' : 'inherit')}">${esc(s.last_run_status || "Never run")}</div><div class="l">Status</div></div>
+        <div class="stat"><div class="n">${s.last_run_missing_count ?? "—"}</div><div class="l">Schools in last report</div></div>
+      </div>
+    </div>
+  `;
+
+  let currentRecipients = [...recipients];
+  function renderChips(){
+    document.getElementById("repRecipients").innerHTML = currentRecipients.length
+      ? currentRecipients.map(e => `<span class="pill pill-role">${esc(e)} <a href="#" data-email="${esc(e)}" style="margin-left:6px; text-decoration:none;" class="rem-chip">&times;</a></span>`).join("")
+      : `<span style="color:var(--ink-soft); font-size:12.5px;">No recipients configured yet - add at least one below.</span>`;
+    document.querySelectorAll(".rem-chip").forEach(el => el.addEventListener("click", (e) => {
+      e.preventDefault();
+      currentRecipients = currentRecipients.filter(x => x !== el.dataset.email);
+      renderChips();
+    }));
+  }
+  renderChips();
+
+  document.getElementById("repAddEmailBtn").addEventListener("click", () => {
+    const input = document.getElementById("repNewEmail");
+    const email = input.value.trim();
+    if(!email) return;
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ toast("Enter a valid email address", "bad"); return; }
+    if(currentRecipients.includes(email)){ toast("Already added", "bad"); return; }
+    currentRecipients.push(email);
+    input.value = "";
+    renderChips();
+  });
+
+  document.getElementById("repSaveBtn").addEventListener("click", async () => {
+    const [hh, mm] = document.getElementById("repTime").value.split(":").map(Number);
+    const utc = pktToUtc(hh, mm);
+    try{
+      const { error } = await sb.rpc("fn_set_report_schedule", {
+        p_enabled: document.getElementById("repEnabled").value === "true",
+        p_recipients: currentRecipients,
+        p_send_hour_utc: utc.h,
+        p_send_minute_utc: utc.m,
+        p_lookback_days: Number(document.getElementById("repLookback").value),
+      });
+      if(error) throw error;
+      toast("Settings saved");
+      renderReportSection();
+    }catch(err){ toast(err.message, "bad"); }
+  });
+
+  document.getElementById("repSendNowBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("repSendNowBtn");
+    const statusBox = document.getElementById("repStatus");
+    btn.disabled = true; btn.textContent = "Sending…";
+    statusBox.innerHTML = "";
+    try{
+      const { data: { session } } = await sb.auth.getSession();
+      const resp = await fetch(`${SMP_CONFIG.SUPABASE_URL}/functions/v1/send-missing-report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session.access_token}` },
+        body: JSON.stringify({ force: true }),
+      });
+      const result = await resp.json();
+      if(!resp.ok) throw new Error(result.error || "Send failed");
+      toast(`Sent - ${result.missing} of ${result.total} schools included`);
+      renderReportSection();
+    }catch(err){
+      statusBox.innerHTML = `<div class="err" style="margin-top:10px;">${esc(err.message)}</div>`;
+      toast("Send failed - see details below", "bad");
+    } finally {
+      btn.disabled = false; btn.textContent = "Send Now";
+    }
+  });
 }
 
 /* ===================== SYSTEM HEALTH ===================== */
