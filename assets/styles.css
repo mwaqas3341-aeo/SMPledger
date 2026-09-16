@@ -180,6 +180,13 @@ thead .col-group-milk, thead .col-group-biscuit{ background:var(--card); }
 .modal-box .modal-note{ font-size:12.5px; color:var(--ink-soft); background:var(--warn-bg); color:var(--warn-fg); padding:10px 12px; border-radius:8px; margin-bottom:16px; }
 .modal-box .actions-row{ margin-top:4px; justify-content:flex-end; }
 
+/* ---------- Inline save-state indicator (Consumption grid, etc) ---------- */
+.save-indicator{ display:inline-block; margin-left:6px; font-size:12px; font-weight:600; white-space:nowrap; vertical-align:middle; }
+.save-indicator.saving{ color:var(--ink-soft); font-weight:400; }
+.save-indicator.ok{ color:var(--ok-fg); }
+.save-indicator.bad{ color:var(--bad-fg); }
+@media (max-width:480px){ .save-indicator{ display:block; margin:4px 0 0; } }
+
 /* ---------- Mobile ---------- */
 @media (max-width: 860px){
   #content{ padding:16px 14px 60px; }

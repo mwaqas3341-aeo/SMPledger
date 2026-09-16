@@ -141,15 +141,14 @@ function renderMissingSection(){
   let scopeNote, tehsilField = "", markazField = "", wingField = "";
   if(isAdmin){
     const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
-    scopeNote = "Pick a tehsil to check, then optionally narrow to a markaz or wing. Leave tehsil unset to check the whole district.";
+    scopeNote = "Pick a tehsil to check, then a wing (Markaz can't be picked until a wing is chosen, since which markaz have schools of that wing depends on it). Leave tehsil unset to check the whole district.";
     tehsilField = `<div><label>Tehsil</label><select name="tehsil" id="missTehsil"><option value="">All</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>`;
-    markazField = `<div><label>Markaz</label><select name="markaz_id" id="missMarkaz"><option value="">All</option></select></div>`;
-    wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+    wingField = `<div><label>Wing</label><select name="wing" id="missWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+    markazField = `<div><label>Markaz</label><select name="markaz_id" id="missMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>`;
   } else if(isTr){
-    scopeNote = `Checks your tehsil${currentProfile.tehsil ? " (" + esc(currentProfile.tehsil) + ")" : ""} - narrow to a single markaz or wing if needed.`;
-    const tehsilMarkaz = cache.markaz.filter(m => m.tehsil === currentProfile.tehsil);
-    markazField = `<div><label>Markaz</label><select name="markaz_id"><option value="">All</option>${tehsilMarkaz.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")}</select></div>`;
-    wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+    scopeNote = `Checks your tehsil${currentProfile.tehsil ? " (" + esc(currentProfile.tehsil) + ")" : ""} - pick a wing to narrow to a single markaz.`;
+    wingField = `<div><label>Wing</label><select name="wing" id="missWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
+    markazField = `<div><label>Markaz</label><select name="markaz_id" id="missMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>`;
   } else if(isAeo){
     scopeNote = "Checks the schools in your own markaz.";
     wingField = `<div><label>Wing</label><select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>`;
@@ -165,8 +164,8 @@ function renderMissingSection(){
         <div><label>From</label><input type="date" name="from" value="${daysAgoStr(6)}" required/></div>
         <div><label>To</label><input type="date" name="to" value="${todayStr()}" required/></div>
         ${tehsilField}
-        ${markazField}
         ${wingField}
+        ${markazField}
         <div><label>EMIS Code (optional)</label><input type="text" name="emis" placeholder="Narrow to one school"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Check</button></div>
       </form>
@@ -184,16 +183,22 @@ function renderMissingSection(){
     </div>
   `;
 
-  if(isAdmin){
-    const tehsilSel = document.getElementById("missTehsil");
+  if(isAdmin || isTr){
+    const tehsilSel = document.getElementById("missTehsil"); // absent for TR - fine, guarded below
+    const wingSel = document.getElementById("missWing");
     const markazSel = document.getElementById("missMarkaz");
     function refreshMarkazOptions(){
-      const t = tehsilSel.value;
-      const opts = (t ? cache.markaz.filter(m => m.tehsil === t) : cache.markaz)
-        .map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
-      markazSel.innerHTML = `<option value="">All</option>${opts}`;
+      const t = tehsilSel ? tehsilSel.value : currentProfile.tehsil;
+      const w = wingSel.value;
+      const markazIdsWithWing = w ? new Set(cache.schools.filter(s => s.wing === w).map(s => s.markaz_id)) : null;
+      const list = cache.markaz.filter(m => (!t || m.tehsil === t) && (!markazIdsWithWing || markazIdsWithWing.has(m.id)));
+      markazSel.disabled = !w;
+      markazSel.innerHTML = w
+        ? `<option value="">All</option>${list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")}`
+        : `<option value="">All (pick a Wing to narrow)</option>`;
     }
-    tehsilSel.addEventListener("change", refreshMarkazOptions);
+    if(tehsilSel) tehsilSel.addEventListener("change", refreshMarkazOptions);
+    wingSel.addEventListener("change", () => { markazSel.value = ""; refreshMarkazOptions(); });
     refreshMarkazOptions();
   }
 

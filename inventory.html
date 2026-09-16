@@ -139,15 +139,16 @@ function renderJurisdictionFilter(container, onApply){
     return;
   }
   const districts = [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort();
+  const wings = [...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort();
   container.innerHTML = `
     <div class="card">
       <h3>Filter by jurisdiction</h3>
-      <p class="sub">Narrow the view below by District, Tehsil, or Markaz.</p>
+      <p class="sub">District and Tehsil narrow the area; Wing must be picked before Markaz becomes selectable, since which Markaz have schools of that Wing depends on it.</p>
       <div class="form-row">
         <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
         <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
-        <div><label>Markaz</label><select id="jfMarkaz"><option value="">All</option></select></div>
-        <div><label>Wing</label><select id="jfWing"><option value="">All</option>${[...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort().map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
       </div>
     </div>
   `;
@@ -159,19 +160,26 @@ function renderJurisdictionFilter(container, onApply){
     tEl.innerHTML = `<option value="">All</option>` + tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
   }
   function refreshMarkaz(){
-    const d = dEl.value, t = tEl.value;
-    const list = cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t));
-    mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+    const d = dEl.value, t = tEl.value, w = wEl.value;
+    const markazIdsWithWing = w
+      ? new Set(cache.schools.filter(s => s.wing === w).map(s => s.markaz_id))
+      : null;
+    const list = cache.markaz.filter(m =>
+      (!d || m.district === d) && (!t || m.tehsil === t) && (!markazIdsWithWing || markazIdsWithWing.has(m.id)));
+    mEl.disabled = !w;
+    mEl.innerHTML = w
+      ? `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")
+      : `<option value="">All (pick a Wing to narrow)</option>`;
   }
   function apply(){
-    const d = dEl.value, t = tEl.value, mId = mEl.value, wing = wEl.value;
+    const d = dEl.value, t = tEl.value, mId = wEl.value ? mEl.value : "", wing = wEl.value;
     const markazIds = new Set(cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
     onApply(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id));
   }
   refreshTehsil(); refreshMarkaz();
   dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); apply(); });
   tEl.addEventListener("change", () => { refreshMarkaz(); apply(); });
-  wEl.addEventListener("change", apply);
+  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); apply(); });
   mEl.addEventListener("change", apply);
   apply();
 }

@@ -141,22 +141,27 @@ async function renderOverview(content){
       <form id="dashFilterForm" class="form-row">
         <div><label>Tehsil</label><select id="dashTehsil"><option value="">All</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
         <div><label>Wing</label><select id="dashWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
-        <div><label>Markaz</label><select name="markaz_id" id="dashMarkaz"><option value="">All</option></select></div>
+        <div><label>Markaz</label><select name="markaz_id" id="dashMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
       </form>
     </div>
     <div id="dashResults"><p style="color:var(--ink-soft)">Loading…</p></div>`;
 
-  const tEl = document.getElementById("dashTehsil"), mEl = document.getElementById("dashMarkaz");
+  const tEl = document.getElementById("dashTehsil"), wEl = document.getElementById("dashWing"), mEl = document.getElementById("dashMarkaz");
   function refreshMarkazOptions(){
-    const t = tEl.value;
-    const list = cache.markaz.filter(m => !t || m.tehsil === t);
-    mEl.innerHTML = `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+    const t = tEl.value, w = wEl.value;
+    const markazIdsWithWing = w ? new Set(cache.schools.filter(s => s.wing === w).map(s => s.markaz_id)) : null;
+    const list = cache.markaz.filter(m => (!t || m.tehsil === t) && (!markazIdsWithWing || markazIdsWithWing.has(m.id)));
+    mEl.disabled = !w;
+    mEl.innerHTML = w
+      ? `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")
+      : `<option value="">All (pick a Wing to narrow)</option>`;
   }
   // AEO/TR default their tehsil filter to their own scope, matching every other page's convention.
   if(!isAdmin && currentProfile.tehsil) tEl.value = currentProfile.tehsil;
   refreshMarkazOptions();
   tEl.addEventListener("change", refreshMarkazOptions);
+  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkazOptions(); });
 
   document.getElementById("dashFilterForm").addEventListener("submit", (e) => { e.preventDefault(); loadOverview(); });
   await loadOverview();
