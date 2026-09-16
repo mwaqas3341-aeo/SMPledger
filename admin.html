@@ -96,6 +96,7 @@ async function loadRefData(){
 /* ===================== SECTION NAV ===================== */
 const SECTIONS = [
   { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
+  { id:"health", label:"System Health", desc:"Database keep-alive status" },
 ];
 let currentSection = "schedule";
 
@@ -110,8 +111,32 @@ function renderPage(){
     a.onclick = () => { currentSection = s.id; renderPage(); };
     nav.appendChild(a);
   });
-  renderScheduleSection();
+  if(currentSection === "health") renderHealthSection();
+  else renderScheduleSection();
 }
+
+/* ===================== SYSTEM HEALTH ===================== */
+async function renderHealthSection(){
+  const content = document.getElementById("adminSectionContent");
+  content.innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
+  const { data, error } = await sb.from("system_heartbeat").select("last_beat_at, beat_count").eq("id", true).single();
+  if(error){ content.innerHTML = `<div class="card"><div class="err">${esc(error.message)}</div></div>`; return; }
+
+  const hoursAgo = (Date.now() - new Date(data.last_beat_at).getTime()) / 36e5;
+  const healthy = hoursAgo < 30; // job runs daily - anything under ~30h is on schedule
+  content.innerHTML = `
+    <div class="card">
+      <h3>Database keep-alive</h3>
+      <p class="sub">Supabase's free tier pauses a project after 7 days with no database activity. A daily job (pg_cron, 03:00 UTC) writes a real update to keep this project active - well under that threshold with margin to spare.</p>
+      <div class="grid-4" style="margin-top:14px;">
+        <div class="stat"><div class="n" style="color:${healthy ? 'var(--ok-fg)' : 'var(--bad-fg)'}">${healthy ? "Healthy" : "Check needed"}</div><div class="l">Status</div></div>
+        <div class="stat"><div class="n">${fmtDateTime(data.last_beat_at)}</div><div class="l">Last ping</div></div>
+        <div class="stat"><div class="n">${data.beat_count}</div><div class="l">Total pings</div></div>
+      </div>
+      ${!healthy ? `<p style="color:var(--bad-fg); font-size:12.5px; margin-top:12px;">Last ping was over 30 hours ago - worth checking the pg_cron job is still scheduled and active.</p>` : ""}
+    </div>`;
+}
+function fmtDateTime(ts){ return new Date(ts).toLocaleString(undefined, { year:"numeric", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" }); }
 
 /* ===================== CONSUMPTION SCHEDULE ===================== */
 function renderScheduleSection(){
