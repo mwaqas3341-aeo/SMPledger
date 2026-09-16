@@ -92,7 +92,14 @@ async function loadRefData(){
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
   ]);
   cache.markaz = markaz || [];
-  cache.products = products || [];
+  // Milk first, then Biscuit - matches the convention every other page uses
+  // (and matters here since the Rationalization form now shows one quantity
+  // field per product in this order, not a dropdown).
+  cache.products = (products || []).sort((a, b) => {
+    const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    return am - bm;
+  });
 
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id").eq("active", true).order("emis_code");
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
@@ -219,6 +226,13 @@ async function renderTransfers(content){
 }
 
 /* ===================== LOANS ===================== */
+function productQtyFields(){
+  return cache.products.map(p => `
+    <div><label>Quantity of ${esc(p.product_name)} ${esc(p.unit_name || "packs")} Rationalized</label>
+      <input type="number" min="0" step="0.01" name="qty_${p.id}" placeholder="0" />
+    </div>`).join("");
+}
+
 async function renderLoans(content){
   const { data: loans, error } = await sb.from("inventory_loans")
     .select("*, from:schools!inventory_loans_from_school_id_fkey(school_name), to:schools!inventory_loans_to_school_id_fkey(school_name), products(product_name,unit_name)")
@@ -228,14 +242,13 @@ async function renderLoans(content){
   content.innerHTML = `
     <div class="card">
       <h3>New rationalization</h3>
-      <div class="sub">Stock moves temporarily and is expected back — track it here through to return.</div>
+      <div class="sub">Stock moves temporarily and is expected back — track it here through to return. Enter a quantity for either or both products; a rationalization record is created for each product you fill in.</div>
       <form id="loanForm">
         <div class="form-row">
           <div><label>Markaz</label><select name="markaz_id" required><option value="">Select…</option>${markazOptions()}</select></div>
-          <div><label>Product</label><select name="product_id" required>${productOptions()}</select></div>
           <div><label>From School (lender)</label><select name="from_school_id" required></select></div>
           <div><label>To School (borrower)</label><select name="to_school_id" required></select></div>
-          <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
+          ${productQtyFields()}
           <div><label>Rationalization Date</label><input type="date" name="loan_date" required value="${todayStr()}"/></div>
           <div><label>Expected Return Date</label><input type="date" name="expected_return_date" /></div>
           <div><label>Reason</label><input name="reason" /></div>
@@ -256,21 +269,38 @@ async function renderLoans(content){
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
-    try{
+    const entries = cache.products
+      .map(p => ({ product: p, qty: Number(fd.get(`qty_${p.id}`) || 0) }))
+      .filter(x => x.qty > 0);
+
+    if(!entries.length){
+      toast("Enter a quantity for at least one product", "bad");
+      return;
+    }
+
+    const results = await Promise.all(entries.map(async ({ product, qty }) => {
       const { error } = await sb.rpc("fn_create_loan", {
         p_markaz_id: fd.get("markaz_id"),
-        p_product_id: fd.get("product_id"),
+        p_product_id: product.id,
         p_from_school_id: fd.get("from_school_id"),
         p_to_school_id: fd.get("to_school_id"),
-        p_quantity: Number(fd.get("quantity")),
+        p_quantity: qty,
         p_loan_date: fd.get("loan_date"),
         p_reason: fd.get("reason") || null,
         p_expected_return_date: fd.get("expected_return_date") || null,
       });
-      if(error) throw error;
-      toast("Rationalization created");
-      navigate("loans");
-    }catch(err){ toast(err.message, "bad"); }
+      return { product, ok: !error, message: error?.message };
+    }));
+
+    // Each product is an independent record under the hood (same pattern as
+    // My Receipts' checkbox entry), so report success/failure per product
+    // rather than all-or-nothing - one product's failure (e.g. insufficient
+    // stock) shouldn't hide that the other one actually saved.
+    const ok = results.filter(r => r.ok);
+    const bad = results.filter(r => !r.ok);
+    if(ok.length) toast(`Rationalized: ${ok.map(r => r.product.product_name).join(", ")}`);
+    bad.forEach(r => toast(`${r.product.product_name}: ${r.message}`, "bad"));
+    navigate("loans");
   });
 }
 function loanStatusPill(status){
