@@ -312,13 +312,18 @@ function renderDemandSection(){
   content.innerHTML = `
     <div class="card">
       <h3>Demand / Required quantities</h3>
-      <p class="sub">${scopeNote} Enrolment is fetched fresh from the Integrated Dashboard's enrolment source right when you generate this - nothing is stored. Adjust the "required until" date to cover more or fewer days; there's no fixed period.</p>
+      <p class="sub">${scopeNote} Enrolment is fetched fresh from the Integrated Dashboard's enrolment source right when you generate this - nothing is stored.</p>
       <form id="demandForm" class="form-row">
         ${tehsilField}
         <div><label>Wing</label><select name="wing" id="demandWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Mode</label><select name="mode" id="demandMode"><option value="all">All schools in scope</option><option value="single">Single school</option></select></div>
         <div id="demandSchoolField" class="hidden"><label>School</label><select name="school_id"><option value="">Select…</option></select></div>
-        <div><label>Required until</label><input type="date" name="until" value="${daysAgoStr(-13)}" required/></div>
+        <div><label>Demand for</label><select name="weeks" required>
+          <option value="1">1 week</option>
+          <option value="2" selected>2 weeks</option>
+          <option value="3">3 weeks</option>
+          <option value="4">4 weeks</option>
+        </select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Generate demand</button></div>
       </form>
       <div id="demandStatus"></div>
@@ -326,7 +331,7 @@ function renderDemandSection(){
     <div class="card" id="demandCard" style="display:none;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
         <h3 style="margin:0;">Demand report</h3>
-        <button class="btn-secondary" id="demandExportBtn" type="button">Export Excel</button>
+        <button class="btn-secondary" id="demandExportBtn" type="button" disabled>Export Excel</button>
       </div>
       <div id="demandHeader"></div>
       <div class="table-wrap"><table id="demandTable"><thead></thead><tbody></tbody></table></div>
@@ -371,8 +376,10 @@ async function generateDemand(fd){
   const wing = fd.get("wing");
   const mode = fd.get("mode");
   const singleSchoolId = fd.get("school_id");
-  const until = fd.get("until");
+  const weeks = Number(fd.get("weeks"));
   const statusBox = document.getElementById("demandStatus");
+  const exportBtn = document.getElementById("demandExportBtn");
+  exportBtn.disabled = true;
 
   if(isAdmin && !tehsil){ toast("Select a tehsil first", "bad"); return; }
   if(isTr && !tehsil){ toast("Your account has no tehsil set - contact your admin to fix this in A-I-DB.", "bad"); return; }
@@ -381,7 +388,13 @@ async function generateDemand(fd){
   const today = todayStr();
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
   const from = tomorrow.toISOString().slice(0,10);
-  if(until < from){ toast('"Required until" must be after today', "bad"); return; }
+  // "Demand for N weeks" means exactly N*7 days starting tomorrow - e.g.
+  // 2 weeks = 14 days (tomorrow through 14 days out), matching what a
+  // fixed weeks-based reorder period actually means rather than a
+  // freely-picked end date.
+  const untilDate = new Date(tomorrow);
+  untilDate.setDate(untilDate.getDate() + (weeks * 7) - 1);
+  const until = untilDate.toISOString().slice(0,10);
 
   // Resolve schools in scope.
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
@@ -469,7 +482,8 @@ async function generateDemand(fd){
 
   lastDemand = { rows, from, until, tehsil, mode, milkRequiredDays, biscuitRequiredDays };
   renderDemandTable(rows, milkRequiredDays, biscuitRequiredDays, from, until, tehsil);
-  document.getElementById("demandExportBtn").onclick = () => exportDemandExcel(lastDemand);
+  exportBtn.disabled = false;
+  exportBtn.onclick = () => exportDemandExcel(lastDemand);
 }
 
 function renderDemandTable(rows, milkDays, biscuitDays, from, until, tehsil){
