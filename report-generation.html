@@ -408,11 +408,11 @@ async function generateDemand(fd){
   // against our own schools list (which is inherently primary-scoped, so
   // no separate school-category filtering is needed on the enrolment side).
   // Demand is meant to reflect only the primary-section students SMP
-  // actually feeds - so classes 6-10 are excluded from the total even when
+  // actually feeds - so classes 6-12 are excluded from the total even when
   // the source data happens to include them for a given EMIS (some primary
   // schools carry a small attached middle/secondary section in the raw
   // enrolment source; that section isn't part of SMP's own distribution).
-  const EXCLUDED_GRADES = new Set(["6", "7", "8", "9", "10"]);
+  const EXCLUDED_GRADES = new Set(["6", "7", "8", "9", "10", "11", "12"]);
   let enrolmentByEmis = {};
   try{
     const res = await fetch(ENROLMENT_URL, { cache: "no-store" });
@@ -424,7 +424,7 @@ async function generateDemand(fd){
         .reduce((sum, g) => sum + Number(g.male_students || 0) + Number(g.female_students || 0), 0);
       enrolmentByEmis[s.emis_code] = total;
     });
-    statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">Enrolment fetched live just now (source last updated ${fmtDMY(enrolData.scraped_at)}) - classes 6-10 excluded from the totals below.</p>`;
+    statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">Enrolment fetched live just now (source last updated ${fmtDMY(enrolData.scraped_at)}) - classes 6-12 excluded from the totals below.</p>`;
   }catch(err){
     tbody.innerHTML = `<tr><td class="err">Could not fetch enrolment data: ${esc(err.message)}</td></tr>`;
     statusBox.innerHTML = "";
