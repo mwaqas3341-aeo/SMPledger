@@ -481,12 +481,17 @@ function showEditReceiptModal(existing, school, product, onSaved){
 }
 
 async function loadReceiptsTable(schoolIds){
-  const { data, error } = await sb
-    .from("school_receipts")
+  // Same fix as the Dashboard 400 bug: a large schoolIds array (admin/TR
+  // viewing a whole tehsil, 700+ IDs) makes .in() build a URL long enough
+  // to be rejected outright. Below a safe size, filter exactly; above it,
+  // skip the explicit filter and let RLS return the correct scope on its
+  // own - school_receipts_select already limits rows to what this person
+  // can see, which is exactly what an unnarrowed schoolIds list means anyway.
+  let q = sb.from("school_receipts")
     .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, status, school_id, product_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name)")
-    .in("school_id", schoolIds)
-    .eq("status", "active")
-    .order("receipt_date", { ascending: false });
+    .eq("status", "active");
+  if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
+  const { data, error } = await q.order("receipt_date", { ascending: false });
 
   const tbody = document.querySelector("#receiptsTable tbody");
   if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
@@ -548,15 +553,16 @@ async function renderCompanyDataBody(visibleSchoolIds){
 }
 
 async function loadCompanyTable(schoolIds){
-  const { data, error } = await sb
-    .from("company_invoice_items")
+  // Same fix as loadReceiptsTable above (and the earlier Dashboard 400 bug):
+  // skip the explicit .in() above a safe size and let RLS scope it instead.
+  let q = sb.from("company_invoice_items")
     .select(`
       id, quantity, aeo_verification_status, aeo_verification_remarks,
-      schools(emis_code, school_name, markaz_id), products(product_name, unit_name),
+      school_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name),
       company_invoices(invoice_number, invoice_date, delivery_date, status)
-    `)
-    .in("school_id", schoolIds)
-    .order("created_at", { ascending: false });
+    `);
+  if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
+  const { data, error } = await q.order("created_at", { ascending: false });
 
   const tbody = document.querySelector("#companyTable tbody");
   if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }

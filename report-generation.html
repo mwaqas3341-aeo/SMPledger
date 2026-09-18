@@ -504,10 +504,11 @@ async function generateDemand(fd){
   // its own consumption, or it can never accumulate enough to actually
   // return what it borrowed. A Permanent Transfer is the opposite by
   // design (not expected back), so it never adds to demand here.
-  const { data: owedRows, error: owedErr } = await sb.from("v_outstanding_loans")
-    .select("to_school_id, product_id, outstanding_quantity")
-    .in("to_school_id", schoolIds)
-    .gt("outstanding_quantity", 0);
+  // Same URL-length fix as elsewhere: skip the explicit filter above a safe
+  // size and let RLS (inventory_loans_select, via fn_can_write_markaz) scope it.
+  let owedQuery = sb.from("v_outstanding_loans").select("to_school_id, product_id, outstanding_quantity").gt("outstanding_quantity", 0);
+  if(schoolIds.length <= 150) owedQuery = owedQuery.in("to_school_id", schoolIds);
+  const { data: owedRows, error: owedErr } = await owedQuery;
   if(owedErr){ tbody.innerHTML = `<tr><td class="err">${esc(owedErr.message)}</td></tr>`; return; }
   const owedBy = {};
   (owedRows || []).forEach(l => {
@@ -667,11 +668,18 @@ async function generateReport(fd){
   const tbody = document.querySelector("#reportTable tbody");
   tbody.innerHTML = `<tr><td>Loading…</td></tr>`;
 
+  // Same fix as the Dashboard/Inventory 400 bug: a large schoolIds array
+  // (a whole tehsil, 700+ IDs) makes .in() build a URL too long to accept.
+  // consumption_select's RLS already scopes rows to what this person can
+  // see, which is exactly what an unnarrowed schoolIds list means anyway.
+  let consumptionQuery = sb.from("consumption").select("school_id, product_id, consumption_date, quantity")
+    .gte("consumption_date", from).lte("consumption_date", to).eq("status", "active");
+  if(schoolIds.length <= 150) consumptionQuery = consumptionQuery.in("school_id", schoolIds);
+
   const [{ data: summary, error: sumErr }, { data: dailyRows, error: dayErr },
          { data: exceptions, error: exErr }, { data: aeoDir, error: aeoErr }] = await Promise.all([
     sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: to }),
-    sb.from("consumption").select("school_id, product_id, consumption_date, quantity")
-      .in("school_id", schoolIds).gte("consumption_date", from).lte("consumption_date", to).eq("status", "active"),
+    consumptionQuery,
     sb.from("schedule_exceptions").select("exception_date, product_id, status").gte("exception_date", from).lte("exception_date", to),
     currentProfile.role === "aeo" ? Promise.resolve({ data: null, error: null }) : sb.rpc("fn_aeo_directory", { p_markaz_ids: markazIds }),
   ]);
@@ -917,10 +925,11 @@ async function exportExcel(report){
 // so no extra authorization logic needed here.
 async function addComparisonSheet(wb, schools, from, to){
   const schoolIds = schools.map(s => s.id);
-  const { data, error } = await sb.from("v_company_vs_aeo_comparison").select("*")
-    .gte("delivery_date", from).lte("delivery_date", to)
-    .in("school_id", schoolIds)
-    .order("delivery_date", { ascending: false });
+  // Same URL-length fix as elsewhere: skip the explicit filter above a safe
+  // size and let RLS (already correct per the comment above) scope it.
+  let q = sb.from("v_company_vs_aeo_comparison").select("*").gte("delivery_date", from).lte("delivery_date", to);
+  if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
+  const { data, error } = await q.order("delivery_date", { ascending: false });
   if(error) throw error;
 
   const schoolById = Object.fromEntries(schools.map(s => [s.id, s]));
