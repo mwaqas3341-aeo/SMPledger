@@ -248,123 +248,86 @@ async function renderMyReceipts(content){
 
 async function renderMyReceiptsBody(visibleSchoolIds){
   const mount = document.getElementById("receiptsMount");
-  const visibleSchools = cache.schools.filter(s => visibleSchoolIds.includes(s.id));
-  const schoolOpts = visibleSchools.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
+  const visibleSchools = sortSchoolsStandard(cache.schools.filter(s => visibleSchoolIds.includes(s.id)));
+  const [milk, biscuit] = cache.products;
 
-  // One invoice can cover both products for the same school/date - checkboxes
-  // let the AEO pick either or both, each with its own quantity, all saved
-  // under the one invoice number entered below.
-  const productChecks = cache.products.map(p => `
-    <div class="product-check" data-product-id="${p.id}">
-      <label style="display:flex;align-items:center;gap:6px;font-weight:600;">
-        <input type="checkbox" class="productCheckbox" value="${p.id}" style="width:auto;" checked/> ${esc(p.product_name)}
-      </label>
-      <input type="number" class="productQty" data-product-id="${p.id}" min="0" step="0.01" placeholder="Quantity" required/>
-    </div>
+  // Grid entry (same pattern as the Consumption grid) instead of a
+  // single-school picker - every school in scope gets its own row, and each
+  // product has its own Delivery Date column since different schools'
+  // deliveries for the same product often land on different actual dates,
+  // not one shared date for the whole batch.
+  const productCols = cache.products.map(p => `
+    <th colspan="3">${esc(p.product_name)}</th>
+  `).join("");
+  const productSubCols = cache.products.map(p => `
+    <th>Qty</th><th>Date</th><th>Invoice #</th>
   `).join("");
 
   mount.innerHTML = `
     <div class="card">
       <h3>Add inventory received</h3>
-      <p class="sub">Select one or both products - both share the same invoice number and date when a single delivery covers both.</p>
-      <form id="receiptForm" class="form-row">
-        <div><label>School</label><select name="school_id" required><option value="">Select…</option>${schoolOpts}</select></div>
-        <div><label>Date received</label><input type="date" name="receipt_date" value="${todayStr()}" required/></div>
-        <div><label>Invoice / reference no.</label><input type="text" name="invoice_number" placeholder="As shown on delivery slip"/></div>
-        <div><label>Collected by</label><input type="text" name="collected_by" placeholder="Optional"/></div>
-        <div style="grid-column:1/-1;">
-          <label>Products received</label>
-          <div class="product-check-row">${productChecks}</div>
-        </div>
-        <div style="grid-column:1/-1;"><label>Remarks</label><input type="text" name="remarks" placeholder="Optional"/></div>
-        <div style="align-self:end;"><button class="btn-primary" type="submit">Save receipt</button></div>
-      </form>
+      <p class="sub">Enter a quantity for any school/product - it saves immediately (same as Consumption). Each product has its own delivery date per school, since deliveries don't all land on the same day.</p>
+      <div class="table-wrap"><table id="receiptGrid"><thead>
+        <tr><th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>${productCols}</tr>
+        <tr>${productSubCols}</tr>
+      </thead><tbody>
+        ${visibleSchools.map((s, i) => {
+          const mk = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
+          const cells = cache.products.map(p => `
+            <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" style="width:75px;padding:5px 6px;"/>
+              <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
+            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
+            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" placeholder="Optional" style="width:100px;padding:5px 6px;"/></td>
+          `).join("");
+          return `<tr><td>${i+1}</td><td>${esc(mk)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
+        }).join("")}
+      </tbody></table></div>
     </div>
     <div class="card">
       <h3>Receipts already entered</h3>
       <p class="sub">Sorted by date (most recent first), then by EMIS code.</p>
       <div class="table-wrap"><table id="receiptsTable"><thead><tr>
-        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Collected by</th><th>Remarks</th>
-      </tr></thead><tbody><tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Collected by</th><th>Remarks</th>
+      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
-  // Toggle each product's quantity field with its checkbox.
-  mount.querySelectorAll(".product-check").forEach(row => {
-    const checkbox = row.querySelector(".productCheckbox");
-    const qtyInput = row.querySelector(".productQty");
-    function sync(){
-      qtyInput.disabled = !checkbox.checked;
-      qtyInput.required = checkbox.checked;
-      qtyInput.style.opacity = checkbox.checked ? "1" : ".4";
-    }
-    checkbox.addEventListener("change", sync);
-    sync();
-  });
+  mount.querySelectorAll(".receiptQty").forEach(inp => {
+    inp.addEventListener("change", async () => {
+      const schoolId = inp.dataset.school, productId = inp.dataset.product;
+      const qty = inp.value;
+      const ind = document.getElementById(`rind-${schoolId}-${productId}`);
+      if(!qty){ ind.className = ""; ind.textContent = ""; return; }
 
-  document.getElementById("receiptForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const checkedProducts = Array.from(mount.querySelectorAll(".productCheckbox:checked")).map(cb => cb.value);
+      const dateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-product="${productId}"]`);
+      const invoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-product="${productId}"]`);
 
-    if(!checkedProducts.length){ toast("Select at least one product", "bad"); return; }
-
-    const shared = {
-      p_school_id: fd.get("school_id"),
-      p_receipt_date: fd.get("receipt_date"),
-      p_invoice_number: fd.get("invoice_number") || null,
-      p_collected_by: fd.get("collected_by") || null,
-      p_remarks: fd.get("remarks") || null,
-    };
-    if(!shared.p_school_id){ toast("Select a school", "bad"); return; }
-
-    // Both the receipt row and its ledger entry are written atomically
-    // inside this RPC (SECURITY DEFINER), which also enforces
-    // fn_can_write_school itself - a direct table insert here would be
-    // rejected by RLS for anyone but an admin (school_receipts' only
-    // write policy is admin-only). Called once per checked product, all
-    // sharing the same invoice number/date/school entered above.
-    let savedCount = 0;
-    let certifiedCount = 0;
-    const failures = [];
-    for(const productId of checkedProducts){
-      const qtyInput = mount.querySelector(`.productQty[data-product-id="${productId}"]`);
-      const qty = qtyInput.value;
-      if(!qty){ failures.push(`${productId}: quantity required`); continue; }
-      const { data, error } = await sb.rpc("fn_create_school_receipt", {
-        ...shared,
-        p_product_id: productId,
-        p_quantity_received: qty,
-      });
-      if(error){
-        const dupe = error.code === "23505" || /duplicate key/i.test(error.message);
-        const productName = cache.products.find(p => p.id === productId)?.product_name || productId;
-        failures.push(dupe
-          ? `${productName}: a receipt for this school, product, date, and invoice number already exists`
-          : `${productName}: ${error.message}`);
-      } else {
-        savedCount++;
-        if(data?.[0]?.auto_certified) certifiedCount++;
+      ind.className = "save-indicator saving";
+      ind.textContent = "Saving…";
+      inp.disabled = true;
+      try{
+        const { data, error } = await sb.rpc("fn_create_school_receipt", {
+          p_school_id: schoolId,
+          p_product_id: productId,
+          p_receipt_date: dateInput.value,
+          p_quantity_received: qty,
+          p_invoice_number: invoiceInput.value || null,
+          p_collected_by: null,
+          p_remarks: null,
+        });
+        if(error) throw error;
+        ind.className = "save-indicator ok";
+        ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified" : "✓ Saved";
+        inp.disabled = false;
+        loadReceiptsTable(visibleSchoolIds);
+      }catch(err){
+        inp.disabled = false;
+        const dupe = err.code === "23505" || /duplicate key/i.test(err.message || "");
+        ind.className = "save-indicator bad";
+        ind.textContent = dupe ? "✗ Already saved for this date/invoice" : "✗ Not saved";
+        toast(err.message, "bad");
       }
-    }
-
-    if(savedCount){
-      toast(`Saved ${savedCount} product${savedCount > 1 ? "s" : ""}`
-        + (certifiedCount ? ` — ${certifiedCount} auto-certified against matching company data` : ""));
-    }
-    if(failures.length) toast(failures.join(" · "), "bad");
-
-    if(savedCount){
-      e.target.reset();
-      mount.querySelectorAll(".productCheckbox").forEach(cb => cb.checked = true);
-      mount.querySelectorAll(".product-check").forEach(row => {
-        const checkbox = row.querySelector(".productCheckbox");
-        const qtyInput = row.querySelector(".productQty");
-        qtyInput.disabled = false; qtyInput.required = true; qtyInput.style.opacity = "1"; qtyInput.value = "";
-      });
-      e.target.querySelector('[name="receipt_date"]').value = todayStr();
-      await loadReceiptsTable(visibleSchoolIds);
-    }
+    });
   });
 
   await loadReceiptsTable(visibleSchoolIds);
@@ -373,13 +336,13 @@ async function renderMyReceiptsBody(visibleSchoolIds){
 async function loadReceiptsTable(schoolIds){
   const { data, error } = await sb
     .from("school_receipts")
-    .select("receipt_date, quantity_received, invoice_number, collected_by, remarks, status, schools(emis_code, school_name), products(product_name, unit_name)")
+    .select("receipt_date, quantity_received, invoice_number, collected_by, remarks, status, schools(emis_code, school_name, markaz_id), products(product_name, unit_name)")
     .in("school_id", schoolIds)
     .eq("status", "active")
     .order("receipt_date", { ascending: false });
 
   const tbody = document.querySelector("#receiptsTable tbody");
-  if(error){ tbody.innerHTML = `<tr><td colspan="8" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }
 
   // Requested sort: date descending, then EMIS code ascending within each date.
   const rows = (data || []).sort((a, b) => {
@@ -387,11 +350,12 @@ async function loadReceiptsTable(schoolIds){
     return (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || "");
   });
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="8" style="color:var(--ink-soft)">No receipts entered yet.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No receipts entered yet.</td></tr>`; return; }
 
   tbody.innerHTML = rows.map(r => `
     <tr>
       <td>${fmtDate(r.receipt_date)}</td>
+      <td>${esc(cache.markaz.find(m => m.id === r.schools?.markaz_id)?.name || "—")}</td>
       <td>${esc(r.schools?.emis_code)}</td>
       <td>${esc(r.schools?.school_name)}</td>
       <td>${esc(r.products?.product_name)}</td>
@@ -416,8 +380,8 @@ async function renderCompanyDataBody(visibleSchoolIds){
       <h3>Company-provided delivery data</h3>
       <p class="sub">Uploaded by admins from vendor invoices. Mark each row Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
-        <th>Invoice date</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Certify</th>
-      </tr></thead><tbody><tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Invoice date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Certify</th>
+      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
   await loadCompanyTable(visibleSchoolIds);
@@ -428,17 +392,17 @@ async function loadCompanyTable(schoolIds){
     .from("company_invoice_items")
     .select(`
       id, quantity, aeo_verification_status, aeo_verification_remarks,
-      schools(emis_code, school_name), products(product_name, unit_name),
+      schools(emis_code, school_name, markaz_id), products(product_name, unit_name),
       company_invoices(invoice_number, invoice_date, delivery_date, status)
     `)
     .in("school_id", schoolIds)
     .order("created_at", { ascending: false });
 
   const tbody = document.querySelector("#companyTable tbody");
-  if(error){ tbody.innerHTML = `<tr><td colspan="8" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }
 
   const rows = (data || []).filter(r => r.company_invoices?.status !== "void");
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="8" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
 
   const statusPill = (s) => s === "received" ? '<span class="pill pill-ok">Received</span>'
     : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
@@ -447,6 +411,7 @@ async function loadCompanyTable(schoolIds){
   tbody.innerHTML = rows.map(r => `
     <tr data-id="${r.id}">
       <td>${fmtDate(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date)}</td>
+      <td>${esc(cache.markaz.find(m => m.id === r.schools?.markaz_id)?.name || "—")}</td>
       <td>${esc(r.schools?.emis_code)}</td>
       <td>${esc(r.schools?.school_name)}</td>
       <td>${esc(r.products?.product_name)}</td>
