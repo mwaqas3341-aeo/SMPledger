@@ -499,6 +499,22 @@ async function generateDemand(fd){
     summaryBy[r.school_id][r.product_id] = r;
   });
 
+  // A school that borrowed stock via Rationalization still owes it back to
+  // the lending school - so its demand needs an extra allowance on top of
+  // its own consumption, or it can never accumulate enough to actually
+  // return what it borrowed. A Permanent Transfer is the opposite by
+  // design (not expected back), so it never adds to demand here.
+  const { data: owedRows, error: owedErr } = await sb.from("v_outstanding_loans")
+    .select("to_school_id, product_id, outstanding_quantity")
+    .in("to_school_id", schoolIds)
+    .gt("outstanding_quantity", 0);
+  if(owedErr){ tbody.innerHTML = `<tr><td class="err">${esc(owedErr.message)}</td></tr>`; return; }
+  const owedBy = {};
+  (owedRows || []).forEach(l => {
+    owedBy[l.to_school_id] = owedBy[l.to_school_id] || {};
+    owedBy[l.to_school_id][l.product_id] = (owedBy[l.to_school_id][l.product_id] || 0) + Number(l.outstanding_quantity);
+  });
+
   const allDates = dateRange(from, until);
   const { data: exceptions } = await sb.from("schedule_exceptions").select("exception_date, product_id, status")
     .gte("exception_date", from).lte("exception_date", until);
@@ -516,11 +532,13 @@ async function generateDemand(fd){
     const bAvail = Number((summaryBy[s.id]||{})[biscuit?.id]?.opening || 0);
     const mRequired = enrolment != null ? enrolment * milkRequiredDays : null;
     const bRequired = enrolment != null ? enrolment * biscuitRequiredDays : null;
+    const mOwed = (owedBy[s.id]||{})[milk?.id] || 0;
+    const bOwed = (owedBy[s.id]||{})[biscuit?.id] || 0;
     return {
       school: s, enrolment, mAvail, bAvail,
-      mRequired, bRequired,
-      mDemand: mRequired != null ? mRequired - mAvail : null,
-      bDemand: bRequired != null ? bRequired - bAvail : null,
+      mRequired, bRequired, mOwed, bOwed,
+      mDemand: mRequired != null ? (mRequired - mAvail + mOwed) : null,
+      bDemand: bRequired != null ? (bRequired - bAvail + bOwed) : null,
     };
   });
 
@@ -542,16 +560,16 @@ function renderDemandTable(rows, milkDays, biscuitDays, from, until, tehsil){
     <tr>
       <th rowspan="2">Sr#</th><th rowspan="2">EMIS</th><th rowspan="2">School</th><th rowspan="2">Markaz</th>
       <th rowspan="2">Enrolment</th>
-      <th colspan="3" class="milk-col">Milk</th>
-      <th colspan="3" class="biscuit-col">Biscuits</th>
+      <th colspan="4" class="milk-col">Milk</th>
+      <th colspan="4" class="biscuit-col">Biscuits</th>
     </tr>
     <tr>
-      <th class="milk-col">Available</th><th class="milk-col">Required</th><th class="milk-col">Demand</th>
-      <th class="biscuit-col">Available</th><th class="biscuit-col">Required</th><th class="biscuit-col">Demand</th>
+      <th class="milk-col">Available</th><th class="milk-col">Required</th><th class="milk-col">Owed (Rationalized In)</th><th class="milk-col">Demand</th>
+      <th class="biscuit-col">Available</th><th class="biscuit-col">Required</th><th class="biscuit-col">Owed (Rationalized In)</th><th class="biscuit-col">Demand</th>
     </tr>
   `;
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">No schools to show.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="13" style="color:var(--ink-soft)">No schools to show.</td></tr>`; return; }
 
   tbody.innerHTML = rows.map((r, i) => {
     const missing = r.enrolment == null;
@@ -563,9 +581,11 @@ function renderDemandTable(rows, milkDays, biscuitDays, from, until, tehsil){
       <td>${missing ? '<span class="pill pill-warn">Not found</span>' : fmt(r.enrolment)}</td>
       <td class="milk-col">${fmt(r.mAvail)}</td>
       <td class="milk-col">${missing ? "—" : fmt(r.mRequired)}</td>
+      <td class="milk-col">${r.mOwed ? `<span class="pill pill-warn">${fmt(r.mOwed)}</span>` : "—"}</td>
       <td class="milk-col">${missing ? "—" : `<b>${fmt(r.mDemand)}</b>`}</td>
       <td class="biscuit-col">${fmt(r.bAvail)}</td>
       <td class="biscuit-col">${missing ? "—" : fmt(r.bRequired)}</td>
+      <td class="biscuit-col">${r.bOwed ? `<span class="pill pill-warn">${fmt(r.bOwed)}</span>` : "—"}</td>
       <td class="biscuit-col">${missing ? "—" : `<b>${fmt(r.bDemand)}</b>`}</td>
     </tr>`;
   }).join("");
@@ -573,12 +593,12 @@ function renderDemandTable(rows, milkDays, biscuitDays, from, until, tehsil){
 
 function exportDemandExcel(demand){
   const { rows, from, until, tehsil } = demand;
-  const header = ["Sr#","EMIS","School","Markaz","Enrolment","Milk Available","Milk Required","Milk Demand","Biscuit Available","Biscuit Required","Biscuit Demand"];
+  const header = ["Sr#","EMIS","School","Markaz","Enrolment","Milk Available","Milk Required","Milk Owed (Rationalized In)","Milk Demand","Biscuit Available","Biscuit Required","Biscuit Owed (Rationalized In)","Biscuit Demand"];
   const data = rows.map((r, i) => [
     i+1, r.school.emis_code, r.school.school_name, r.school.markaz?.name,
     r.enrolment ?? "Not found",
-    r.mAvail, r.mRequired ?? "", r.mDemand ?? "",
-    r.bAvail, r.bRequired ?? "", r.bDemand ?? "",
+    r.mAvail, r.mRequired ?? "", r.mOwed || 0, r.mDemand ?? "",
+    r.bAvail, r.bRequired ?? "", r.bOwed || 0, r.bDemand ?? "",
   ]);
   const ws = XLSX.utils.aoa_to_sheet([
     [`DEMAND${tehsil ? " - TEHSIL " + tehsil.toUpperCase() : ""}`],

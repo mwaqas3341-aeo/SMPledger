@@ -146,7 +146,7 @@ const MODULES = [
   { href:"inventory.html",   label:"Inventory Received",   desc:"Record and verify deliveries" },
   { href:"consumption.html", label:"Consumption",          desc:"Daily distribution by school" },
   { href:"operations.html",  label:"Operations",           desc:"Missing consumption & stock adjustments" },
-  { href:"transfers.html",   label:"Transfers",            desc:"Move stock between schools" },
+  { href:"transfers.html",   label:"Permanent Transfer of Stock", desc:"Move stock permanently between schools - no return expected" },
   { href:"transfers.html?section=loans", label:"Stock Rationalization", desc:"Rationalize surplus stock from one school to another" },
   { href:"report-generation.html", label:"Reports & Demand", desc:"Period reports and enrollment-based demand" },
   { href:"report-comparison.html", label:"Report Comparison", desc:"Company vs AEO data", roles:["admin","super_admin","tr"] },
@@ -349,7 +349,7 @@ async function loadOverview(){
         <div class="stat"><div class="n" style="color:${milkLowRows.length ? 'var(--bad-fg)' : 'inherit'}">${milkLowRows.length}</div><div class="l">Milk &lt; 6 days</div></div>
         <div class="stat"><div class="n" style="color:${biscuitLowRows.length ? 'var(--bad-fg)' : 'inherit'}">${biscuitLowRows.length}</div><div class="l">Biscuits &lt; 2 days</div></div>
         <div class="stat"><div class="n">${zeroStockRows.length}</div><div class="l">Zero or negative stock</div></div>
-        <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Outstanding rationalization</div></div>
+        <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Rationalization of Stock (not yet returned)</div></div>
       </div>
       ${renderHealthTable("⚠ Milk under 6 days", milkLowRows, "milk")}
       ${renderHealthTable("⚠ Biscuits under 2 days", biscuitLowRows, "biscuit")}

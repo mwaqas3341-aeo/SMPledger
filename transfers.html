@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SMP Transfers &amp; Rationalization — School Meal Program</title>
+<title>SMP Permanent Transfer &amp; Rationalization of Stock — School Meal Program</title>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
@@ -15,7 +15,7 @@
     <div class="brand">
       <div>
         <div class="eyebrow">SMP · Punjab SED</div>
-        <h2>Transfers & Rationalization</h2>
+        <h2>Permanent Transfer &amp; Rationalization of Stock</h2>
       </div>
       <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
     </div>
@@ -110,7 +110,7 @@ async function boot(){
     return;
   }
   if(!["admin","super_admin","tr","aeo"].includes(profile.role)){
-    alert("Transfers and rationalization are managed by AEOs and administrators.");
+    alert("Permanent Transfer of Stock and Rationalization of Stock are managed by AEOs and administrators.");
     window.location.href = "dashboard.html";
     return;
   }
@@ -154,9 +154,9 @@ async function loadRefData(){
 
 /* ===================== NAV ===================== */
 const SECTIONS = [
-  { id:"transfers", label:"Transfers" },
+  { id:"transfers", label:"Permanent Transfer of Stock" },
   { id:"loans", label:"Stock Rationalization" },
-  { id:"outstanding", label:"Outstanding Rationalization" },
+  { id:"outstanding", label:"Rationalization of Stock" },
 ];
 function buildNav(){
   const nav = document.getElementById("navList");
@@ -220,7 +220,7 @@ async function renderTransfers(content){
 
   content.innerHTML = `
     <div class="card">
-      <h3>Permanent transfer</h3>
+      <h3>Permanent Transfer of Stock</h3>
       <div class="sub">Stock permanently moves from one school to another — no return expected.</div>
       <form id="transferForm">
         <div class="form-row">
@@ -232,11 +232,11 @@ async function renderTransfers(content){
           <div><label>Date</label><input type="date" name="transfer_date" required value="${todayStr()}"/></div>
           <div><label>Reason</label><input name="reason" /></div>
         </div>
-        <div class="actions-row"><button class="btn-primary" type="submit">Create transfer</button></div>
+        <div class="actions-row"><button class="btn-primary" type="submit">Create Permanent Transfer of Stock</button></div>
       </form>
     </div>
     <div class="card">
-      <h3>Recent transfers</h3>
+      <h3>Recent Permanent Transfers of Stock</h3>
       <div class="table-wrap"><table>
         <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>From</th><th>To</th><th>Qty</th><th>Status</th></tr></thead>
         <tbody>${(transfers||[]).map(t => `
@@ -269,7 +269,7 @@ async function renderTransfers(content){
         p_reason: fd.get("reason") || null,
       });
       if(error) throw error;
-      toast("Transfer created");
+      toast("Permanent Transfer of Stock created");
       navigate("transfers");
     }catch(err){ toast(err.message, "bad"); }
   });
@@ -398,8 +398,8 @@ async function renderOutstanding(content){
 
   content.innerHTML = `
     <div class="card">
-      <h3>Outstanding rationalization</h3>
-      <div class="sub">Rationalization not yet fully returned.</div>
+      <h3>Rationalization of Stock</h3>
+      <div class="sub">Stock rationalized to another school and not yet fully returned.</div>
       <div class="table-wrap"><table>
         <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>From</th><th>To</th><th>Quantity</th><th>Returned</th><th>Outstanding</th><th>Expected Return</th><th>Status</th></tr></thead>
         <tbody>${(data||[]).map(l => `
