@@ -50,6 +50,39 @@ function toast(msg, kind){
 // then EMIS code A-Z within each markaz. Sorted client-side (not via an
 // .order() on the query) because the sort key lives on the markaz table,
 // not on schools - and every page already has cache.markaz loaded.
+// ---- Jurisdiction scoping (single source of truth, mirrors the DB) ----
+// A person's access is: their home markaz PLUS any additional markaz they
+// hold charge of (A-I-DB scope_value when scope_type=Markaz), or - for a
+// TR - their whole tehsil, optionally narrowed to one wing (A-I-DB
+// scope_value '<TEHSIL>:<WING>'). Both used to be dropped, which is why
+// additional-charge markaz were invisible and wing-restricted people saw
+// the whole tehsil. RLS enforces the same rule server-side; this exists so
+// the UI shows exactly what the person can actually act on.
+function myMarkazIds(){
+  return [currentProfile.markaz_id, ...(currentProfile.extra_markaz_ids || [])].filter(Boolean);
+}
+function scopeSchoolsQuery(q){
+  if(currentProfile.role === "aeo"){
+    const ids = myMarkazIds();
+    q = ids.length ? q.in("markaz_id", ids) : q.eq("markaz_id", "00000000-0000-0000-0000-000000000000");
+  } else if(currentProfile.role === "school_user"){
+    q = q.eq("id", currentProfile.school_id);
+  } else if(currentProfile.role === "tr" && currentProfile.tehsil){
+    q = q.eq("markaz.tehsil", currentProfile.tehsil);
+    if(currentProfile.wing_scope) q = q.eq("wing", currentProfile.wing_scope);
+  }
+  return q;
+}
+function scopeMarkazQuery(q){
+  if(currentProfile.role === "aeo"){
+    const ids = myMarkazIds();
+    q = ids.length ? q.in("id", ids) : q.eq("id", "00000000-0000-0000-0000-000000000000");
+  } else if(currentProfile.role === "tr" && currentProfile.tehsil){
+    q = q.eq("tehsil", currentProfile.tehsil);
+  }
+  return q;
+}
+
 function sortSchoolsStandard(schools){
   const markazName = {};
   (cache.markaz || []).forEach(m => { markazName[m.id] = m.name || ""; });
@@ -123,12 +156,11 @@ function showApp(){
 }
 
 async function loadRefData(){
-  let markazQuery = sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name");
-  if(currentProfile.role === "aeo") markazQuery = markazQuery.eq("id", currentProfile.markaz_id);
-  if(currentProfile.role === "tr" && currentProfile.tehsil) markazQuery = markazQuery.eq("tehsil", currentProfile.tehsil);
-  let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing").eq("active", true).order("emis_code");
-  if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
-  if(currentProfile.role === "tr" && currentProfile.tehsil) schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(tehsil)").eq("active", true).eq("markaz.tehsil", currentProfile.tehsil).order("emis_code");
+  const markazQuery = scopeMarkazQuery(sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name"));
+  // markaz!inner is always joined so the TR tehsil/wing scope can filter on it.
+  const schoolsQuery = scopeSchoolsQuery(
+    sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(tehsil)").eq("active", true)
+  );
   const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
     markazQuery,
     schoolsQuery,

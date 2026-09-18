@@ -60,6 +60,39 @@ function toast(msg, kind){
   document.getElementById("toastArea").appendChild(el);
   setTimeout(() => el.remove(), 4200);
 }
+// ---- Jurisdiction scoping (single source of truth, mirrors the DB) ----
+// A person's access is: their home markaz PLUS any additional markaz they
+// hold charge of (A-I-DB scope_value when scope_type=Markaz), or - for a
+// TR - their whole tehsil, optionally narrowed to one wing (A-I-DB
+// scope_value '<TEHSIL>:<WING>'). Both used to be dropped, which is why
+// additional-charge markaz were invisible and wing-restricted people saw
+// the whole tehsil. RLS enforces the same rule server-side; this exists so
+// the UI shows exactly what the person can actually act on.
+function myMarkazIds(){
+  return [currentProfile.markaz_id, ...(currentProfile.extra_markaz_ids || [])].filter(Boolean);
+}
+function scopeSchoolsQuery(q){
+  if(currentProfile.role === "aeo"){
+    const ids = myMarkazIds();
+    q = ids.length ? q.in("markaz_id", ids) : q.eq("markaz_id", "00000000-0000-0000-0000-000000000000");
+  } else if(currentProfile.role === "school_user"){
+    q = q.eq("id", currentProfile.school_id);
+  } else if(currentProfile.role === "tr" && currentProfile.tehsil){
+    q = q.eq("markaz.tehsil", currentProfile.tehsil);
+    if(currentProfile.wing_scope) q = q.eq("wing", currentProfile.wing_scope);
+  }
+  return q;
+}
+function scopeMarkazQuery(q){
+  if(currentProfile.role === "aeo"){
+    const ids = myMarkazIds();
+    q = ids.length ? q.in("id", ids) : q.eq("id", "00000000-0000-0000-0000-000000000000");
+  } else if(currentProfile.role === "tr" && currentProfile.tehsil){
+    q = q.eq("tehsil", currentProfile.tehsil);
+  }
+  return q;
+}
+
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -345,8 +378,12 @@ function renderDemandSection(){
     const tehsil = isAdmin ? document.getElementById("demandTehsil")?.value : (isTr ? currentProfile.tehsil : null);
     const wing = document.getElementById("demandWing")?.value;
     let q = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
-    if(currentProfile.role === "aeo") q = q.eq("markaz_id", currentProfile.markaz_id);
-    else if(tehsil) q = q.eq("markaz.tehsil", tehsil);
+    if(currentProfile.role === "aeo" || currentProfile.role === "school_user") q = scopeSchoolsQuery(q);
+    else if(tehsil){
+      q = q.eq("markaz.tehsil", tehsil);
+      // A wing-restricted TR never sees the other wing, whatever the filter says.
+      if(currentProfile.role === "tr" && currentProfile.wing_scope) q = q.eq("wing", currentProfile.wing_scope);
+    }
     else { schoolSel.innerHTML = `<option value="">Select a tehsil first…</option>`; return; }
     if(wing) q = q.eq("wing", wing);
     const { data } = await q;
@@ -405,9 +442,11 @@ async function generateDemand(fd){
   if(mode === "single"){
     schoolsQuery = schoolsQuery.eq("id", singleSchoolId);
   } else if(currentProfile.role === "aeo"){
-    schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+    schoolsQuery = scopeSchoolsQuery(schoolsQuery);
   } else {
     schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);
+    // A wing-restricted TR never sees the other wing, whatever the filter says.
+    if(currentProfile.role === "tr" && currentProfile.wing_scope) schoolsQuery = schoolsQuery.eq("wing", currentProfile.wing_scope);
   }
   if(wing && mode !== "single") schoolsQuery = schoolsQuery.eq("wing", wing);
   const { data: schools, error: schoolErr } = await schoolsQuery;
@@ -584,9 +623,11 @@ async function generateReport(fd){
 
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
   if(currentProfile.role === "aeo"){
-    schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
+    schoolsQuery = scopeSchoolsQuery(schoolsQuery);
   } else {
     schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);
+    // A wing-restricted TR never sees the other wing, whatever the filter says.
+    if(currentProfile.role === "tr" && currentProfile.wing_scope) schoolsQuery = schoolsQuery.eq("wing", currentProfile.wing_scope);
   }
   if(wing) schoolsQuery = schoolsQuery.eq("wing", wing);
   const { data: schools, error: schoolErr } = await schoolsQuery;
@@ -641,7 +682,12 @@ async function generateReport(fd){
   const aeoByMarkaz = {};
   (aeoDir || []).forEach(r => { aeoByMarkaz[r.markaz_id] = r; });
   if(currentProfile.role === "aeo"){
-    aeoByMarkaz[currentProfile.markaz_id] = { aeo_name: currentProfile.full_name, aeo_cell_no: currentProfile.cell_no };
+    // The AEO is the responsible officer for their home markaz AND for any
+    // markaz they hold additional charge of, so name them against all of them
+    // rather than leaving the additional-charge rows blank.
+    myMarkazIds().forEach(id => {
+      aeoByMarkaz[id] = { aeo_name: currentProfile.full_name, aeo_cell_no: currentProfile.cell_no };
+    });
   }
 
   lastReport = { schools, summaryBy, dailyBy, aeoByMarkaz, allowedDatesByProduct, from, to, tehsil };
