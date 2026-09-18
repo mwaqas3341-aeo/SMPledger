@@ -391,9 +391,10 @@ function renderHealthTable(title, rows, highlight){
     <div style="margin-top:18px;">
       <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">${esc(title)}</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>EMIS</th><th>School</th><th>Enrolment</th><th>Milk Balance</th><th>Milk Days</th><th>Biscuit Balance</th><th>Biscuit Days</th></tr></thead>
+        <thead><tr><th>Markaz</th><th>EMIS</th><th>School</th><th>Enrolment</th><th>Milk Balance</th><th>Milk Days</th><th>Biscuit Balance</th><th>Biscuit Days</th></tr></thead>
         <tbody>${rows.slice(0,100).map(r => `
           <tr>
+            <td>${esc(cache.markaz.find(m => m.id === r.school.markaz_id)?.name || "—")}</td>
             <td>${esc(r.school.emis_code)}</td>
             <td>${esc(r.school.school_name)}</td>
             <td>${r.enrolment != null ? fmt(r.enrolment) : '<span class="pill pill-warn">Not found</span>'}</td>

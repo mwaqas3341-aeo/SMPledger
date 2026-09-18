@@ -401,10 +401,11 @@ async function renderOutstanding(content){
       <h3>Outstanding rationalization</h3>
       <div class="sub">Rationalization not yet fully returned.</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Product</th><th>From</th><th>To</th><th>Quantity</th><th>Returned</th><th>Outstanding</th><th>Expected Return</th><th>Status</th></tr></thead>
+        <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>From</th><th>To</th><th>Quantity</th><th>Returned</th><th>Outstanding</th><th>Expected Return</th><th>Status</th></tr></thead>
         <tbody>${(data||[]).map(l => `
           <tr>
             <td>${fmtDate(l.loan_date)}</td>
+            <td>${esc(cache.markaz.find(m => m.id === schoolById[l.from_school_id]?.markaz_id)?.name || "—")}</td>
             <td>${esc(productById[l.product_id]?.product_name || "—")}</td>
             <td>${esc(schoolById[l.from_school_id]?.school_name || "—")}</td>
             <td>${esc(schoolById[l.to_school_id]?.school_name || "—")}</td>
@@ -413,7 +414,7 @@ async function renderOutstanding(content){
             <td><strong>${Number(l.outstanding_quantity).toFixed(2)}</strong></td>
             <td>${fmtDate(l.expected_return_date)}</td>
             <td>${loanStatusPill(l.status)}</td>
-          </tr>`).join("") || `<tr><td colspan="9" style="color:var(--ink-soft)">No outstanding rationalization.</td></tr>`}
+          </tr>`).join("") || `<tr><td colspan="10" style="color:var(--ink-soft)">No outstanding rationalization.</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
