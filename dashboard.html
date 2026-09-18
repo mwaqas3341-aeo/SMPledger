@@ -207,13 +207,21 @@ async function loadOverview(){
   const outstandingLoans = (loanRows||[]).filter(l => ["pending","approved","partially_returned"].includes(l.status)).length;
 
   // ---- Enrolment, fetched fresh right now - never stored - to compute
-  // days-of-stock-remaining per school (same logic as the Demand sheet). ----
+  // days-of-stock-remaining per school (same logic as the Demand sheet,
+  // including the same classes 6-12 exclusion - kept in sync so the two
+  // pages never disagree on what "enrolment" means for a school). ----
+  const EXCLUDED_GRADES = new Set(["6", "7", "8", "9", "10", "11", "12"]);
   let enrolmentByEmis = {}, enrolmentError = null;
   try{
     const res = await fetch(ENROLMENT_URL, { cache: "no-store" });
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const enrolData = await res.json();
-    (enrolData.schools || []).forEach(s => { enrolmentByEmis[s.emis_code] = s.total_school_students; });
+    (enrolData.schools || []).forEach(s => {
+      const total = (s.grades || [])
+        .filter(g => !EXCLUDED_GRADES.has(String(g.grade_name).trim()))
+        .reduce((sum, g) => sum + Number(g.male_students || 0) + Number(g.female_students || 0), 0);
+      enrolmentByEmis[s.emis_code] = total;
+    });
   }catch(err){
     enrolmentError = err.message;
   }
