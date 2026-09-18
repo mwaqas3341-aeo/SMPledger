@@ -174,9 +174,9 @@ async function renderPage(){
     <div class="grid-4" id="statCards"></div>
     <div class="card">
       <div class="table-wrap"><table id="compTable"><thead><tr>
-        <th>Delivery date</th><th>EMIS</th><th>School</th><th>Product</th><th>Invoice #</th>
+        <th>Delivery date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Invoice #</th>
         <th>Company qty</th><th>AEO qty</th><th>Difference</th><th>Status</th><th>AEO Certification</th>
-      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+      </tr></thead><tbody><tr><td colspan="11" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
@@ -417,14 +417,14 @@ async function loadComparison(fd){
   const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value, selWing = wEl.value;
   const selEmis = (document.getElementById("jfEmis")?.value || "").trim();
   const tbody = document.querySelector("#compTable tbody");
-  tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">Loading…</td></tr>`;
 
   let query = sb.from("v_company_vs_aeo_comparison").select("*")
     .gte("delivery_date", from).lte("delivery_date", to)
     .order("delivery_date", { ascending: false });
   const { data, error } = await query;
 
-  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="11" class="err">${esc(error.message)}</td></tr>`; return; }
 
   const schoolById = Object.fromEntries(cache.schools.map(s => [s.id, s]));
   const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
@@ -460,7 +460,7 @@ async function loadComparison(fd){
     <div class="stat"><div class="n">${companyOnly}</div><div class="l">Company provided, AEO didn't</div></div>
   `;
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
 
   const pillFor = (status) => {
     if(status === "Matched") return '<span class="pill pill-ok">Matched</span>';
@@ -483,6 +483,7 @@ async function loadComparison(fd){
     const diff = Number(r.difference);
     return `<tr>
       <td>${fmtDate(r.delivery_date)}</td>
+      <td>${esc(cache.markaz.find(m => m.id === r.school?.markaz_id)?.name || "—")}</td>
       <td>${esc(r.school?.emis_code)}</td>
       <td>${esc(r.school?.school_name)}</td>
       <td>${esc(r.product?.product_name)}</td>

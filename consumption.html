@@ -303,9 +303,11 @@ async function loadGridData(visibleSchoolIds){
     bySchool[r.school_id][r.product_id] = r;
   });
 
-  // Header: Sr#, EMIS, School, then Opening/Received/Consumed/Remaining per product.
+  // Header: Sr#, Markaz, EMIS, School, then Opening/Received/Consumed/Remaining
+  // per product. Markaz is shown so an AEO holding additional charge can always
+  // tell which markaz a row belongs to before entering against it.
   thead.innerHTML = `<tr>
-    <th rowspan="2">Sr#</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
+    <th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
     ${cache.products.map(p => `<th colspan="4" class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">${esc(p.product_name)}</th>`).join("")}
   </tr><tr>
     ${cache.products.map(p => `
@@ -331,7 +333,8 @@ async function loadGridData(visibleSchoolIds){
         <td class="${cls}">${fmt(r.remaining)}</td>
       `;
     }).join("");
-    return `<tr><td>${i+1}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
+    const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
+    return `<tr><td>${i+1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
   }).join("");
 
   tbody.querySelectorAll(".consumed-input").forEach(inp => {

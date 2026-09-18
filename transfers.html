@@ -190,7 +190,13 @@ function markazOptions(){ return cache.markaz.map(m => `<option value="${m.id}">
 function productOptions(){ return cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} (${esc(p.unit_name)})</option>`).join(""); }
 function schoolOptionsFor(markazId){
   const list = markazId ? cache.schools.filter(s => s.markaz_id === markazId) : cache.schools;
-  return list.map(s => `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}</option>`).join("");
+  // When no markaz is picked yet the list can span several markaz (an AEO with
+  // additional charge, or a TR), so name the markaz on each option - moving
+  // stock to the wrong school is not easily undone.
+  return list.map(s => {
+    const mk = cache.markaz.find(m => m.id === s.markaz_id)?.name;
+    return `<option value="${s.id}">${esc(s.school_name)} — ${esc(s.emis_code)}${mk ? ` (${esc(mk)})` : ""}</option>`;
+  }).join("");
 }
 function wireMarkazSchoolFilters(form){
   const markazSel = form.querySelector('select[name="markaz_id"]');
@@ -279,7 +285,7 @@ function productQtyFields(){
 
 async function renderLoans(content){
   const { data: loans, error } = await sb.from("inventory_loans")
-    .select("*, from:schools!inventory_loans_from_school_id_fkey(school_name), to:schools!inventory_loans_to_school_id_fkey(school_name), products(product_name,unit_name)")
+    .select("*, from:schools!inventory_loans_from_school_id_fkey(school_name,markaz_id), to:schools!inventory_loans_to_school_id_fkey(school_name), products(product_name,unit_name)")
     .order("loan_date", { ascending:false }).limit(50);
   if(error) throw error;
 
@@ -303,8 +309,8 @@ async function renderLoans(content){
     <div class="card">
       <h3>Recent rationalization records</h3>
       <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Product</th><th>From</th><th>To</th><th>Qty</th><th>Returned</th><th>Status</th><th></th></tr></thead>
-        <tbody>${(loans||[]).map(l => loanRow(l)).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No rationalization records yet.</td></tr>`}</tbody>
+        <thead><tr><th>Date</th><th>Markaz</th><th>Product</th><th>From</th><th>To</th><th>Qty</th><th>Returned</th><th>Status</th><th></th></tr></thead>
+        <tbody>${(loans||[]).map(l => loanRow(l)).join("") || `<tr><td colspan="9" style="color:var(--ink-soft)">No rationalization records yet.</td></tr>`}</tbody>
       </table></div>
     </div>`;
 
@@ -355,6 +361,7 @@ function loanRow(l){
   const outstanding = Number(l.quantity) - Number(l.returned_quantity);
   return `<tr>
     <td>${fmtDate(l.loan_date)}</td>
+    <td>${esc(cache.markaz.find(m => m.id === l.from?.markaz_id)?.name || "—")}</td>
     <td>${esc(l.products?.product_name || "—")}</td>
     <td>${esc(l.from?.school_name || "—")}</td>
     <td>${esc(l.to?.school_name || "—")}</td>

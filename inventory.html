@@ -133,7 +133,13 @@ async function loadRefData(){
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
   ]);
   cache.markaz = markaz || [];
-  cache.products = products || [];
+  // Milk first, then Biscuit - matches the requested column order in the
+  // receipts grid (and the convention every other page already uses).
+  cache.products = (products || []).sort((a, b) => {
+    const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    return am - bm;
+  });
 
   // "His schools" - the AEO's own markaz plus any additional charge; a TR's
   // whole tehsil (narrowed to their wing where A-I-DB sets one). Admins see all.
@@ -249,35 +255,33 @@ async function renderMyReceipts(content){
 async function renderMyReceiptsBody(visibleSchoolIds){
   const mount = document.getElementById("receiptsMount");
   const visibleSchools = sortSchoolsStandard(cache.schools.filter(s => visibleSchoolIds.includes(s.id)));
-  const [milk, biscuit] = cache.products;
+  const [milk, biscuit] = cache.products; // sorted milk-first in loadRefData
 
   // Grid entry (same pattern as the Consumption grid) instead of a
-  // single-school picker - every school in scope gets its own row, and each
-  // product has its own Delivery Date column since different schools'
-  // deliveries for the same product often land on different actual dates,
-  // not one shared date for the whole batch.
-  const productCols = cache.products.map(p => `
-    <th colspan="3">${esc(p.product_name)}</th>
-  `).join("");
-  const productSubCols = cache.products.map(p => `
-    <th>Qty</th><th>Date</th><th>Invoice #</th>
-  `).join("");
+  // single-school picker - every school in scope gets its own row. Column
+  // order within each product is Date -> Invoice # -> Qty (matches the
+  // order they're actually decided in); Milk's block comes before
+  // Biscuit's. Invoice # is required - it's the join key the system uses
+  // to compare what a school actually received against what the company
+  // says it delivered.
+  const productCols = cache.products.map(p => `<th colspan="3">${esc(p.product_name)}</th>`).join("");
+  const productSubCols = cache.products.map(() => `<th>Date</th><th>Invoice #</th><th>Qty</th>`).join("");
 
   mount.innerHTML = `
     <div class="card">
       <h3>Add inventory received</h3>
-      <p class="sub">Enter a quantity for any school/product - it saves immediately (same as Consumption). Each product has its own delivery date per school, since deliveries don't all land on the same day.</p>
+      <p class="sub">Enter Date, then Invoice #, then Quantity for any school/product - it saves as soon as Quantity is entered (same as Consumption). Milk's Date and Invoice # copy into Biscuit's automatically, but Biscuit's stay editable if its actual delivery differs.</p>
       <div class="table-wrap"><table id="receiptGrid"><thead>
         <tr><th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>${productCols}</tr>
         <tr>${productSubCols}</tr>
       </thead><tbody>
         ${visibleSchools.map((s, i) => {
           const mk = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
-          const cells = cache.products.map(p => `
+          const cells = cache.products.map((p, pi) => `
+            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
+            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
             <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" style="width:75px;padding:5px 6px;"/>
               <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
-            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
-            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" placeholder="Optional" style="width:100px;padding:5px 6px;"/></td>
           `).join("");
           return `<tr><td>${i+1}</td><td>${esc(mk)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
         }).join("")}
@@ -287,62 +291,205 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       <h3>Receipts already entered</h3>
       <p class="sub">Sorted by date (most recent first), then by EMIS code.</p>
       <div class="table-wrap"><table id="receiptsTable"><thead><tr>
-        <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Collected by</th><th>Remarks</th>
-      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Collected by</th><th>Remarks</th><th></th>
+      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
-  mount.querySelectorAll(".receiptQty").forEach(inp => {
-    inp.addEventListener("change", async () => {
-      const schoolId = inp.dataset.school, productId = inp.dataset.product;
-      const qty = inp.value;
-      const ind = document.getElementById(`rind-${schoolId}-${productId}`);
-      if(!qty){ ind.className = ""; ind.textContent = ""; return; }
-
-      const dateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-product="${productId}"]`);
-      const invoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-product="${productId}"]`);
-
-      ind.className = "save-indicator saving";
-      ind.textContent = "Saving…";
-      inp.disabled = true;
-      try{
-        const { data, error } = await sb.rpc("fn_create_school_receipt", {
-          p_school_id: schoolId,
-          p_product_id: productId,
-          p_receipt_date: dateInput.value,
-          p_quantity_received: qty,
-          p_invoice_number: invoiceInput.value || null,
-          p_collected_by: null,
-          p_remarks: null,
-        });
-        if(error) throw error;
-        ind.className = "save-indicator ok";
-        ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified" : "✓ Saved";
-        inp.disabled = false;
-        loadReceiptsTable(visibleSchoolIds);
-      }catch(err){
-        inp.disabled = false;
-        const dupe = err.code === "23505" || /duplicate key/i.test(err.message || "");
-        ind.className = "save-indicator bad";
-        ind.textContent = dupe ? "✗ Already saved for this date/invoice" : "✗ Not saved";
-        toast(err.message, "bad");
-      }
+  // Milk's Date/Invoice copy into Biscuit's for the same school as soon as
+  // Milk's is entered - most deliveries share both, and this only ever
+  // copies from the first product's fields, so Biscuit stays independently
+  // editable afterward without being fought over.
+  if(cache.products.length > 1){
+    mount.querySelectorAll('.receiptDate[data-first="true"]').forEach(el => {
+      el.addEventListener("change", () => {
+        const other = mount.querySelector(`.receiptDate[data-school="${el.dataset.school}"][data-first="false"]`);
+        if(other) other.value = el.value;
+      });
     });
+    mount.querySelectorAll('.receiptInvoice[data-first="true"]').forEach(el => {
+      el.addEventListener("input", () => {
+        const other = mount.querySelector(`.receiptInvoice[data-school="${el.dataset.school}"][data-first="false"]`);
+        if(other) other.value = el.value;
+      });
+    });
+  }
+
+  mount.querySelectorAll(".receiptQty").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const ind = document.getElementById(`rind-${inp.dataset.school}-${inp.dataset.product}`);
+      ind.className = ""; ind.textContent = "";
+    });
+    inp.addEventListener("change", () => trySaveReceipt(inp, visibleSchoolIds));
   });
 
   await loadReceiptsTable(visibleSchoolIds);
 }
 
+async function trySaveReceipt(inp, visibleSchoolIds){
+  const schoolId = inp.dataset.school, productId = inp.dataset.product;
+  const qty = inp.value;
+  const ind = document.getElementById(`rind-${schoolId}-${productId}`);
+  const mount = document.getElementById("receiptsMount");
+  if(qty === ""){ ind.className = ""; ind.textContent = ""; return; }
+
+  const dateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-product="${productId}"]`);
+  const invoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-product="${productId}"]`);
+  const school = cache.schools.find(s => s.id === schoolId);
+  const product = cache.products.find(p => p.id === productId);
+
+  // Invoice # is required - it's what the system matches against company
+  // data to compare what was actually delivered.
+  if(!invoiceInput.value.trim()){
+    toast("Invoice # is required before a quantity can be saved", "bad");
+    invoiceInput.focus();
+    return;
+  }
+
+  // Zero is a real, save-able answer (a delivery genuinely didn't arrive),
+  // but it's also the easiest number to enter by mistake - confirm intent
+  // rather than silently accepting it.
+  if(Number(qty) === 0){
+    if(!confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${dateInput.value})? Confirm only if this school genuinely received none.`)){
+      return;
+    }
+  }
+
+  // A second entry for the same school/product/date - same invoice or a
+  // different one - is unusual enough to confirm rather than silently
+  // create, and common enough (a correction, or a genuine second delivery)
+  // that the person should see what's already there before deciding.
+  const { data: existing } = await sb.from("school_receipts")
+    .select("id, quantity_received, invoice_number, collected_by, remarks")
+    .eq("school_id", schoolId).eq("product_id", productId).eq("receipt_date", dateInput.value)
+    .eq("status", "active").maybeSingle();
+
+  if(existing){
+    showDuplicateReceiptModal({
+      existing, school, product, date: dateInput.value,
+      onAddSecond: () => saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, visibleSchoolIds),
+      onEdit: () => showEditReceiptModal(existing, school, product, () => {
+        inp.value = ""; ind.className = ""; ind.textContent = "";
+        loadReceiptsTable(visibleSchoolIds);
+      }),
+    });
+    return;
+  }
+
+  await saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, visibleSchoolIds);
+}
+
+async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumber, visibleSchoolIds){
+  ind.className = "save-indicator saving";
+  ind.textContent = "Saving…";
+  inp.disabled = true;
+  try{
+    const { data, error } = await sb.rpc("fn_create_school_receipt", {
+      p_school_id: schoolId,
+      p_product_id: productId,
+      p_receipt_date: date,
+      p_quantity_received: qty,
+      p_invoice_number: invoiceNumber.trim(),
+      p_collected_by: null,
+      p_remarks: null,
+    });
+    if(error) throw error;
+    ind.className = "save-indicator ok";
+    ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified" : "✓ Saved";
+    inp.disabled = false;
+    inp.value = "";
+    loadReceiptsTable(visibleSchoolIds);
+  }catch(err){
+    inp.disabled = false;
+    const dupe = err.code === "23505" || /duplicate key/i.test(err.message || "");
+    ind.className = "save-indicator bad";
+    ind.textContent = dupe ? "✗ Same invoice already saved for this date" : "✗ Not saved";
+    toast(err.message, "bad");
+  }
+}
+
+function showDuplicateReceiptModal({ existing, school, product, date, onAddSecond, onEdit }){
+  const existingEl = document.getElementById("dupReceiptModal");
+  if(existingEl) existingEl.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "dupReceiptModal";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>⚠ Entry Already Exists</h3>
+      <p><b>${esc(school?.school_name)}</b> already has a ${esc(product?.product_name)} receipt on <b>${fmtDate(date)}</b>:</p>
+      <div class="modal-note">
+        Qty: <b>${fmt(existing.quantity_received)}</b> &middot; Invoice #: <b>${esc(existing.invoice_number) || "—"}</b>${existing.collected_by ? ` &middot; Collected by: ${esc(existing.collected_by)}` : ""}${existing.remarks ? ` &middot; ${esc(existing.remarks)}` : ""}
+      </div>
+      <p>Was there genuinely a second, separate delivery on this same date - or are you correcting the entry above?</p>
+      <div class="actions-row">
+        <button class="btn-secondary" id="dupCancelBtn" type="button">Cancel</button>
+        <button class="btn-secondary" id="dupEditBtn" type="button">Edit the existing entry</button>
+        <button class="btn-primary" id="dupAddBtn" type="button">Yes, add as a second delivery</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("dupCancelBtn").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+  document.getElementById("dupAddBtn").addEventListener("click", () => { close(); onAddSecond(); });
+  document.getElementById("dupEditBtn").addEventListener("click", () => { close(); onEdit(); });
+}
+
+function showEditReceiptModal(existing, school, product, onSaved){
+  const existingEl = document.getElementById("editReceiptModal");
+  if(existingEl) existingEl.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "editReceiptModal";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>Edit Receipt</h3>
+      <p>${esc(school?.school_name)} — ${esc(product?.product_name)}</p>
+      <form id="editReceiptForm" class="form-row" style="grid-template-columns:1fr;">
+        <div><label>Date</label><input type="date" name="receipt_date" value="${existing.receipt_date || todayStr()}" required/></div>
+        <div><label>Invoice #</label><input type="text" name="invoice_number" value="${esc(existing.invoice_number || "")}" required/></div>
+        <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity_received" value="${existing.quantity_received}" required/></div>
+        <div class="actions-row">
+          <button class="btn-secondary" id="editCancelBtn" type="button">Cancel</button>
+          <button class="btn-primary" type="submit">Save changes</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("editCancelBtn").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+  document.getElementById("editReceiptForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try{
+      const { error } = await sb.rpc("fn_update_school_receipt", {
+        p_receipt_id: existing.id,
+        p_quantity_received: fd.get("quantity_received"),
+        p_invoice_number: fd.get("invoice_number"),
+        p_receipt_date: fd.get("receipt_date"),
+      });
+      if(error) throw error;
+      toast("Receipt updated");
+      close();
+      onSaved();
+    }catch(err){ toast(err.message, "bad"); }
+  });
+}
+
 async function loadReceiptsTable(schoolIds){
   const { data, error } = await sb
     .from("school_receipts")
-    .select("receipt_date, quantity_received, invoice_number, collected_by, remarks, status, schools(emis_code, school_name, markaz_id), products(product_name, unit_name)")
+    .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, status, school_id, product_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name)")
     .in("school_id", schoolIds)
     .eq("status", "active")
     .order("receipt_date", { ascending: false });
 
   const tbody = document.querySelector("#receiptsTable tbody");
-  if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
 
   // Requested sort: date descending, then EMIS code ascending within each date.
   const rows = (data || []).sort((a, b) => {
@@ -350,7 +497,7 @@ async function loadReceiptsTable(schoolIds){
     return (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || "");
   });
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No receipts entered yet.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No receipts entered yet.</td></tr>`; return; }
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -363,8 +510,21 @@ async function loadReceiptsTable(schoolIds){
       <td>${esc(r.invoice_number) || "—"}</td>
       <td>${esc(r.collected_by) || "—"}</td>
       <td>${esc(r.remarks) || "—"}</td>
+      <td><button class="link-btn" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button></td>
     </tr>
   `).join("");
+}
+
+// Bridges a row in the already-entered table to the same edit modal used
+// from the grid's duplicate-date check, so corrections work from either place.
+async function editExistingReceipt(receiptId, schoolIds){
+  const { data: existing, error } = await sb.from("school_receipts")
+    .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, school_id, product_id")
+    .eq("id", receiptId).single();
+  if(error){ toast(error.message, "bad"); return; }
+  const school = cache.schools.find(s => s.id === existing.school_id);
+  const product = cache.products.find(p => p.id === existing.product_id);
+  showEditReceiptModal(existing, school, product, () => loadReceiptsTable(schoolIds));
 }
 
 /* ===================== SECTION: COMPANY DATA & CERTIFICATION ===================== */
