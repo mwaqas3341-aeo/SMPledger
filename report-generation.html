@@ -349,8 +349,12 @@ function renderDemandSection(){
     else if(tehsil) q = q.eq("markaz.tehsil", tehsil);
     else { schoolSel.innerHTML = `<option value="">Select a tehsil first…</option>`; return; }
     if(wing) q = q.eq("wing", wing);
-    const { data } = await q.order("emis_code");
-    schoolSel.innerHTML = `<option value="">Select…</option>` + (data||[]).map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)}</option>`).join("");
+    const { data } = await q;
+    // Markaz A-Z, then EMIS within each markaz - and label each option with
+    // its markaz so a long list stays readable once it's grouped that way.
+    const sorted = (data||[]).slice().sort((a,b) =>
+      (a.markaz?.name||"").localeCompare(b.markaz?.name||"") || (a.emis_code||"").localeCompare(b.emis_code||""));
+    schoolSel.innerHTML = `<option value="">Select…</option>` + sorted.map(s => `<option value="${s.id}">${esc(s.emis_code)} — ${esc(s.school_name)} (${esc(s.markaz?.name)})</option>`).join("");
   }
   document.getElementById("demandMode").addEventListener("change", (e) => {
     document.getElementById("demandSchoolField").classList.toggle("hidden", e.target.value !== "single");
@@ -409,7 +413,8 @@ async function generateDemand(fd){
   const { data: schools, error: schoolErr } = await schoolsQuery;
   if(schoolErr){ toast(schoolErr.message, "bad"); return; }
   if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }
-  schools.sort((a,b) => (a.emis_code||"").localeCompare(b.emis_code||""));
+  // Standard ordering: markaz name A-Z, then EMIS within each markaz.
+  schools.sort((a,b) => (a.markaz?.name||"").localeCompare(b.markaz?.name||"") || (a.emis_code||"").localeCompare(b.emis_code||""));
   const schoolIds = schools.map(s => s.id);
 
   document.getElementById("demandCard").style.display = "";

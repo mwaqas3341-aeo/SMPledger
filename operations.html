@@ -61,6 +61,19 @@ function toast(msg, kind){
   document.getElementById("toastArea").appendChild(el);
   setTimeout(() => el.remove(), 4200);
 }
+// Standard school ordering used everywhere in this app: markaz name A-Z,
+// then EMIS code A-Z within each markaz. Sorted client-side (not via an
+// .order() on the query) because the sort key lives on the markaz table,
+// not on schools - and every page already has cache.markaz loaded.
+function sortSchoolsStandard(schools){
+  const markazName = {};
+  (cache.markaz || []).forEach(m => { markazName[m.id] = m.name || ""; });
+  return (schools || []).slice().sort((a, b) =>
+    (markazName[a.markaz_id] || "").localeCompare(markazName[b.markaz_id] || "")
+    || (a.emis_code || "").localeCompare(b.emis_code || "")
+  );
+}
+
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
@@ -98,7 +111,7 @@ async function loadRefData(){
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
   ]);
   cache.markaz = markaz || [];
-  cache.schools = schools || [];
+  cache.schools = sortSchoolsStandard(schools);
   cache.products = products || [];
 }
 
@@ -259,7 +272,8 @@ async function checkMissingConsumption(fd){
   const { data: schools, error: schoolErr } = await q;
   if(schoolErr){ toast(schoolErr.message, "bad"); return; }
   if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }
-  schools.sort((a,b) => (a.emis_code||"").localeCompare(b.emis_code||""));
+  // Standard ordering: markaz name A-Z, then EMIS within each markaz.
+  schools.sort((a,b) => (a.markaz?.name||"").localeCompare(b.markaz?.name||"") || (a.emis_code||"").localeCompare(b.emis_code||""));
   const schoolIds = schools.map(s => s.id);
 
   document.getElementById("missCard").style.display = "";

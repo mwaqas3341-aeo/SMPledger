@@ -46,6 +46,19 @@ function toast(msg, kind){
   document.getElementById("toastArea").appendChild(el);
   setTimeout(() => el.remove(), 4200);
 }
+// Standard school ordering used everywhere in this app: markaz name A-Z,
+// then EMIS code A-Z within each markaz. Sorted client-side (not via an
+// .order() on the query) because the sort key lives on the markaz table,
+// not on schools - and every page already has cache.markaz loaded.
+function sortSchoolsStandard(schools){
+  const markazName = {};
+  (cache.markaz || []).forEach(m => { markazName[m.id] = m.name || ""; });
+  return (schools || []).slice().sort((a, b) =>
+    (markazName[a.markaz_id] || "").localeCompare(markazName[b.markaz_id] || "")
+    || (a.emis_code || "").localeCompare(b.emis_code || "")
+  );
+}
+
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
@@ -98,7 +111,7 @@ async function loadRefData(){
     sb.from("products").select("id,product_name").eq("active", true),
   ]);
   cache.markaz = markaz || [];
-  cache.schools = schools || [];
+  cache.schools = sortSchoolsStandard(schools);
   cache.products = products || [];
 }
 
@@ -120,6 +133,7 @@ async function renderPage(){
         <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${[...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort().map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
+        <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
         <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option></select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
       </form>
@@ -368,6 +382,7 @@ async function loadComparison(fd){
   const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter");
   const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing");
   const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value, selWing = wEl.value;
+  const selEmis = (document.getElementById("jfEmis")?.value || "").trim();
   const tbody = document.querySelector("#compTable tbody");
   tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr>`;
 
@@ -383,10 +398,16 @@ async function loadComparison(fd){
   const markazById = Object.fromEntries(cache.markaz.map(m => [m.id, m]));
 
   let rows = (data || []).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
-  if(selMarkazId) rows = rows.filter(r => r.school?.markaz_id === selMarkazId);
-  else if(selTehsil) rows = rows.filter(r => markazById[r.school?.markaz_id]?.tehsil === selTehsil);
-  else if(selDistrict) rows = rows.filter(r => markazById[r.school?.markaz_id]?.district === selDistrict);
-  if(selWing) rows = rows.filter(r => r.school?.wing === selWing);
+  // An EMIS code names exactly one school, so it overrides the geography
+  // and wing pickers rather than intersecting with them.
+  if(selEmis){
+    rows = rows.filter(r => (r.school?.emis_code || "").includes(selEmis));
+  } else {
+    if(selMarkazId) rows = rows.filter(r => r.school?.markaz_id === selMarkazId);
+    else if(selTehsil) rows = rows.filter(r => markazById[r.school?.markaz_id]?.tehsil === selTehsil);
+    else if(selDistrict) rows = rows.filter(r => markazById[r.school?.markaz_id]?.district === selDistrict);
+    if(selWing) rows = rows.filter(r => r.school?.wing === selWing);
+  }
   if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0);
 
   // date desc, EMIS asc within date - same convention as Inventory Received.

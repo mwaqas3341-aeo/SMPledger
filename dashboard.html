@@ -45,6 +45,19 @@ function toast(msg, kind){
   document.getElementById("toastArea").appendChild(el);
   setTimeout(() => el.remove(), 4200);
 }
+// Standard school ordering used everywhere in this app: markaz name A-Z,
+// then EMIS code A-Z within each markaz. Sorted client-side (not via an
+// .order() on the query) because the sort key lives on the markaz table,
+// not on schools - and every page already has cache.markaz loaded.
+function sortSchoolsStandard(schools){
+  const markazName = {};
+  (cache.markaz || []).forEach(m => { markazName[m.id] = m.name || ""; });
+  return (schools || []).slice().sort((a, b) =>
+    (markazName[a.markaz_id] || "").localeCompare(markazName[b.markaz_id] || "")
+    || (a.emis_code || "").localeCompare(b.emis_code || "")
+  );
+}
+
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -82,7 +95,7 @@ async function loadRefData(){
   if(currentProfile.role === "aeo") schoolsQuery = schoolsQuery.eq("markaz_id", currentProfile.markaz_id);
   if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
   const { data: schools } = await schoolsQuery;
-  cache.schools = schools || [];
+  cache.schools = sortSchoolsStandard(schools);
 }
 
 function showApp(){
@@ -142,6 +155,7 @@ async function renderOverview(content){
         <div><label>Tehsil</label><select id="dashTehsil"><option value="">All</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
         <div><label>Wing</label><select id="dashWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select name="markaz_id" id="dashMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
+        <div><label>EMIS Code</label><input type="text" id="dashEmis" placeholder="Search one school"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
       </form>
     </div>
@@ -171,19 +185,26 @@ async function loadOverview(){
   const tehsil = document.getElementById("dashTehsil").value || null;
   const wing = document.getElementById("dashWing").value || null;
   const markazId = document.getElementById("dashMarkaz").value || null;
+  const emis = (document.getElementById("dashEmis").value || "").trim();
   const box = document.getElementById("dashResults");
   box.innerHTML = `<p style="color:var(--ink-soft)">Calculating…</p>`;
 
   let scoped = cache.schools;
-  if(markazId) scoped = scoped.filter(s => s.markaz_id === markazId);
-  else if(tehsil) scoped = scoped.filter(s => cache.markaz.find(m => m.id === s.markaz_id)?.tehsil === tehsil);
-  if(wing) scoped = scoped.filter(s => s.wing === wing);
+  // An EMIS code names exactly one school, so it overrides the geography
+  // and wing pickers rather than intersecting with them.
+  if(emis){
+    scoped = scoped.filter(s => (s.emis_code || "").includes(emis));
+  } else {
+    if(markazId) scoped = scoped.filter(s => s.markaz_id === markazId);
+    else if(tehsil) scoped = scoped.filter(s => cache.markaz.find(m => m.id === s.markaz_id)?.tehsil === tehsil);
+    if(wing) scoped = scoped.filter(s => s.wing === wing);
+  }
   const scopedSchoolIds = scoped.map(s => s.id);
   if(scopedSchoolIds.length === 0){
     box.innerHTML = `<div class="card">No schools in scope.</div>`;
     return;
   }
-  const narrowed = !!(markazId || tehsil || wing); // whether we deliberately narrowed vs relying on RLS's full scope
+  const narrowed = !!(emis || markazId || tehsil || wing); // whether we deliberately narrowed vs relying on RLS's full scope
 
   // ---- Balances (as of now) ----
   // Only add an explicit school filter when deliberately narrowed - otherwise

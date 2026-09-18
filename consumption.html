@@ -46,6 +46,19 @@ function toast(msg, kind){
   document.getElementById("toastArea").appendChild(el);
   setTimeout(() => el.remove(), 4200);
 }
+// Standard school ordering used everywhere in this app: markaz name A-Z,
+// then EMIS code A-Z within each markaz. Sorted client-side (not via an
+// .order() on the query) because the sort key lives on the markaz table,
+// not on schools - and every page already has cache.markaz loaded.
+function sortSchoolsStandard(schools){
+  const markazName = {};
+  (cache.markaz || []).forEach(m => { markazName[m.id] = m.name || ""; });
+  return (schools || []).slice().sort((a, b) =>
+    (markazName[a.markaz_id] || "").localeCompare(markazName[b.markaz_id] || "")
+    || (a.emis_code || "").localeCompare(b.emis_code || "")
+  );
+}
+
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -122,7 +135,7 @@ async function loadRefData(){
     sb.from("products").select("id,product_name,unit_name").eq("active", true),
   ]);
   cache.markaz = markaz || [];
-  cache.schools = schools || [];
+  cache.schools = sortSchoolsStandard(schools);
   // Milk block first, then Biscuit (and anything else after), matching the
   // requested column order rather than plain alphabetical.
   cache.products = (products || []).sort((a, b) => {
@@ -149,10 +162,11 @@ function renderJurisdictionFilter(container, onApply){
         <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
+        <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
       </div>
     </div>
   `;
-  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing");
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing"), eEl = document.getElementById("jfEmis");
   function refreshTehsil(){
     const d = dEl.value;
     const tehsils = [...new Set(cache.markaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
@@ -175,6 +189,15 @@ function renderJurisdictionFilter(container, onApply){
   }
   function apply(){
     const d = dEl.value, t = tEl.value, mId = wEl.value ? mEl.value : "", wing = wEl.value;
+    const emis = (eEl.value || "").trim();
+    // An EMIS code identifies exactly one school, so when one is entered it
+    // overrides the geography/wing pickers entirely rather than intersecting
+    // with them - otherwise a valid code would return nothing whenever the
+    // dropdowns happened to be pointed elsewhere.
+    if(emis){
+      onApply(cache.schools.filter(s => (s.emis_code || "").includes(emis)).map(s => s.id));
+      return;
+    }
     const markazIds = new Set(cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
     onApply(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id));
   }
@@ -185,6 +208,7 @@ function renderJurisdictionFilter(container, onApply){
   // Markaz may not even belong to the new Wing's list.
   wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); apply(); });
   mEl.addEventListener("change", apply);
+  eEl.addEventListener("input", apply);
   apply();
 }
 
