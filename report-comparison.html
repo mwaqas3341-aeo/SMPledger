@@ -474,6 +474,7 @@ async function loadComparison(fd){
   // meaningful on rows where company data actually exists.
   const certPillFor = (status) => {
     if(!status) return "—";
+    if(status === "flagged_mismatch") return '<span class="pill pill-warn">⚠ Qty matches other invoice</span>';
     if(status.includes("not_received")) return '<span class="pill pill-bad">Not received</span>';
     if(status.includes("received")) return '<span class="pill pill-ok">Received</span>';
     return '<span class="pill pill-warn">Pending</span>';

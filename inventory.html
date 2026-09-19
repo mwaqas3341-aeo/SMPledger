@@ -395,7 +395,9 @@ async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumb
     });
     if(error) throw error;
     ind.className = "save-indicator ok";
-    ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified" : "✓ Saved";
+    ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified"
+      : data?.[0]?.flagged_mismatch ? "✓ Saved - ⚠ flagged for review"
+      : "✓ Saved";
     inp.disabled = false;
     inp.value = "";
     loadReceiptsTable(visibleSchoolIds);
@@ -466,14 +468,17 @@ function showEditReceiptModal(existing, school, product, onSaved){
     e.preventDefault();
     const fd = new FormData(e.target);
     try{
-      const { error } = await sb.rpc("fn_update_school_receipt", {
+      const { data, error } = await sb.rpc("fn_update_school_receipt", {
         p_receipt_id: existing.id,
         p_quantity_received: fd.get("quantity_received"),
         p_invoice_number: fd.get("invoice_number"),
         p_receipt_date: fd.get("receipt_date"),
       });
       if(error) throw error;
-      toast("Receipt updated");
+      const r = data?.[0];
+      toast(r?.auto_certified ? "Receipt updated - auto-certified against company data"
+        : r?.flagged_mismatch ? "Receipt updated - flagged for admin/TR review (quantity matches a different invoice)"
+        : "Receipt updated");
       close();
       onSaved();
     }catch(err){ toast(err.message, "bad"); }
@@ -570,8 +575,9 @@ async function loadCompanyTable(schoolIds){
   const rows = (data || []).filter(r => r.company_invoices?.status !== "void");
   if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
 
-  const statusPill = (s) => s === "received" ? '<span class="pill pill-ok">Received</span>'
+  const statusPill = (s, remarks) => s === "received" ? '<span class="pill pill-ok">Received</span>'
     : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
+    : s === "flagged_mismatch" ? `<span class="pill pill-warn" title="${esc(remarks || "")}">⚠ Qty matches other invoice</span>`
     : '<span class="pill pill-warn">Pending</span>';
 
   tbody.innerHTML = rows.map(r => `
@@ -583,7 +589,7 @@ async function loadCompanyTable(schoolIds){
       <td>${esc(r.products?.product_name)}</td>
       <td>${fmt(r.quantity)} ${esc(r.products?.unit_name || "")}</td>
       <td>${esc(r.company_invoices?.invoice_number) || "—"}</td>
-      <td class="status-cell">${statusPill(r.aeo_verification_status)}</td>
+      <td class="status-cell">${statusPill(r.aeo_verification_status, r.aeo_verification_remarks)}</td>
       <td>
         <button class="link-btn" data-action="received">Mark received</button>
         <button class="link-btn danger" data-action="not_received">Not received</button>
@@ -601,9 +607,14 @@ async function loadCompanyTable(schoolIds){
         remarks = prompt("Optional: note what's wrong (for rectification)") || null;
       }
       try{
-        const { error } = await sb.rpc("fn_verify_company_item", { p_item_id: id, p_status: status, p_remarks: remarks });
+        const { data, error } = await sb.rpc("fn_verify_company_item", { p_item_id: id, p_status: status, p_remarks: remarks });
         if(error) throw error;
-        toast(status === "received" ? "Marked received" : "Flagged as not received");
+        if(status === "received" && data?.[0]?.auto_created_receipt){
+          toast("Marked received - added to My Receipts automatically, no need to enter it separately");
+          await loadReceiptsTable(schoolIds);
+        } else {
+          toast(status === "received" ? "Marked received" : "Flagged as not received");
+        }
         await loadCompanyTable(schoolIds);
       }catch(err){ toast(err.message, "bad"); }
     });
