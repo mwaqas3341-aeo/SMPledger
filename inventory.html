@@ -286,7 +286,6 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       <p class="sub">Defaults to today. Pick an earlier date to review or correct that day's entries.</p>
       <div class="form-row">
         <div><label>Delivery date</label><input type="date" id="receiptDateInput" value="${selectedReceiptDate}" max="${todayStr()}"/></div>
-        <div style="align-self:end;"><button class="btn-primary" id="loadReceiptDateBtn" type="button">Load</button></div>
         <div style="align-self:end;"><button class="btn-secondary" id="receiptTodayBtn" type="button">Jump to today</button></div>
       </div>
     </div>
@@ -328,8 +327,10 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     </div>
   `;
 
-  document.getElementById("loadReceiptDateBtn").addEventListener("click", () => {
-    selectedReceiptDate = document.getElementById("receiptDateInput").value || todayStr();
+  // Selecting a date loads that date's entries right away - no separate
+  // "Load" click needed.
+  document.getElementById("receiptDateInput").addEventListener("change", (e) => {
+    selectedReceiptDate = e.target.value || todayStr();
     renderMyReceiptsBody(visibleSchoolIds);
   });
   document.getElementById("receiptTodayBtn").addEventListener("click", () => {
