@@ -260,7 +260,7 @@ async function renderGrid(){
     <div id="filterMount"></div>
     <div class="card">
       <h3>Schools — ${esc(selectedDate)}</h3>
-      <p class="sub">Click a Consumed cell to enter or correct that school's figure for the selected date. Values save immediately.</p>
+      <p class="sub">Enter figures for a school, then click Submit to save the whole row at once. A row with data already saved for this date is locked - click Edit to change it.</p>
       <div class="table-wrap"><table id="gridTable"><thead></thead><tbody>
         <tr><td colspan="20" style="color:var(--ink-soft)">Loading…</td></tr>
       </tbody></table></div>
@@ -309,6 +309,7 @@ async function loadGridData(visibleSchoolIds){
   thead.innerHTML = `<tr>
     <th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
     ${cache.products.map(p => `<th colspan="4" class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">${esc(p.product_name)}</th>`).join("")}
+    <th rowspan="2">Action</th>
   </tr><tr>
     ${cache.products.map(p => `
       <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Opening</th>
@@ -319,8 +320,14 @@ async function loadGridData(visibleSchoolIds){
   </tr>`;
 
   tbody.innerHTML = visibleSchools.map((s, i) => {
+    // A row with any recorded consumption for this date is treated as
+    // "already submitted" - locked (read-only) until Edit is clicked, so a
+    // saved figure can't be nudged by an accidental keystroke. A row with
+    // nothing recorded yet (a fresh day) starts unlocked for entry.
+    let hasData = false;
     const cells = cache.products.map(p => {
       const r = (bySchool[s.id] || {})[p.id] || { opening:0, received:0, consumed:0, remaining:0 };
+      if(Number(r.consumed) > 0) hasData = true;
       const cls = p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
       return `
         <td class="${cls}">${fmt(r.opening)}</td>
@@ -334,64 +341,99 @@ async function loadGridData(visibleSchoolIds){
       `;
     }).join("");
     const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
-    return `<tr><td>${i+1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
+    const actionCell = `<td>
+      <button class="btn-secondary row-action-btn" type="button" data-school="${s.id}" data-mode="${hasData ? "edit" : "submit"}">
+        ${hasData ? "Edit" : "Submit"}
+      </button>
+    </td>`;
+    return `<tr data-row-school="${s.id}"><td>${i+1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}${actionCell}</tr>`;
   }).join("");
 
-  tbody.querySelectorAll(".consumed-input").forEach(inp => {
-    inp.addEventListener("change", async () => {
-      const schoolId = inp.dataset.school;
-      const productId = inp.dataset.product;
-      const qty = Number(inp.value || 0);
-      const ind = document.getElementById(`ind-${schoolId}-${productId}`);
-      // Real save-state feedback, not just a toast that scrolls out of view -
-      // "Saving…" while the request is in flight, "✓ Saved" only once
-      // Supabase actually confirms it (never just because Save was clicked),
-      // and a clear retryable error state if it fails - the input keeps
-      // whatever the user typed so they don't have to retype it to retry.
-      ind.className = "save-indicator saving";
-      ind.textContent = "Saving…";
-      inp.disabled = true;
-      try{
-        const { error } = await sb.rpc("fn_upsert_consumption", {
-          p_school_id: schoolId,
-          p_product_id: productId,
-          p_consumption_date: selectedDate,
-          p_quantity: qty,
-        });
-        if(error) throw error;
-        ind.className = "save-indicator ok";
-        ind.textContent = "✓ Saved";
-        inp.disabled = false;
-        // Brief pause so the checkmark is actually seen before the grid
-        // refreshes (Opening/Remaining columns need the real recalculated
-        // values from the server, which a full reload gives us).
-        setTimeout(() => loadGridData(schoolIds), 900);
-      }catch(err){
-        inp.disabled = false;
-        const m = /Insufficient inventory\. Available quantity: ([\d.]+)/.exec(err.message || "");
-        if(m){
-          const product = cache.products.find(p => p.id === productId);
-          const school = cache.schools.find(s => s.id === schoolId);
-          showInsufficientStockModal({
-            productName: product?.product_name || "product",
-            unitName: product?.unit_name,
-            available: Number(m[1]),
-            emisCode: school?.emis_code,
-            schoolName: school?.school_name,
-          });
-          ind.className = "save-indicator bad";
-          ind.textContent = "✗ Not saved";
-        } else {
-          toast(err.message, "bad");
-          ind.className = "save-indicator bad";
-          ind.textContent = "✗ Not saved - retry";
-        }
-        // Deliberately NOT reloading the grid on failure - the value the
-        // user typed stays in the box so they can correct and resubmit
-        // without retyping from scratch.
-      }
-    });
+  // Locked rows start with disabled inputs - only Edit re-enables them.
+  tbody.querySelectorAll("tr").forEach(tr => {
+    const btn = tr.querySelector(".row-action-btn");
+    if(btn?.dataset.mode === "edit"){
+      tr.querySelectorAll(".consumed-input").forEach(inp => inp.disabled = true);
+    }
   });
+
+  tbody.querySelectorAll(".row-action-btn").forEach(btn => {
+    btn.addEventListener("click", () => handleRowAction(btn));
+  });
+}
+
+async function handleRowAction(btn){
+  const schoolId = btn.dataset.school;
+  const tr = document.querySelector(`tr[data-row-school="${schoolId}"]`);
+  const inputs = tr.querySelectorAll(".consumed-input");
+
+  if(btn.dataset.mode === "edit"){
+    // Unlock for editing - no save yet, just makes the cells writable again.
+    inputs.forEach(inp => inp.disabled = false);
+    btn.dataset.mode = "submit";
+    btn.textContent = "Submit";
+    inputs[0]?.focus();
+    return;
+  }
+
+  // Submit mode: save every product cell in this row for the selected date,
+  // in one deliberate action rather than saving on every keystroke/blur.
+  btn.disabled = true;
+  btn.textContent = "Submitting…";
+  let allOk = true;
+  for(const inp of inputs){
+    const ok = await saveConsumedCell(inp);
+    if(!ok) allOk = false;
+  }
+  btn.disabled = false;
+  if(allOk){
+    inputs.forEach(inp => inp.disabled = true);
+    btn.dataset.mode = "edit";
+    btn.textContent = "Edit";
+  } else {
+    btn.textContent = "Submit";
+  }
+}
+
+// Returns true on success, false on failure - lets the row-level Submit
+// button know whether it's safe to lock the row afterward.
+async function saveConsumedCell(inp){
+  const schoolId = inp.dataset.school;
+  const productId = inp.dataset.product;
+  const qty = Number(inp.value || 0);
+  const ind = document.getElementById(`ind-${schoolId}-${productId}`);
+  ind.className = "save-indicator saving";
+  ind.textContent = "Saving…";
+  try{
+    const { error } = await sb.rpc("fn_upsert_consumption", {
+      p_school_id: schoolId,
+      p_product_id: productId,
+      p_consumption_date: selectedDate,
+      p_quantity: qty,
+    });
+    if(error) throw error;
+    ind.className = "save-indicator ok";
+    ind.textContent = "✓ Saved";
+    return true;
+  }catch(err){
+    const m = /Insufficient inventory\. Available quantity: ([\d.]+)/.exec(err.message || "");
+    if(m){
+      const product = cache.products.find(p => p.id === productId);
+      const school = cache.schools.find(s => s.id === schoolId);
+      showInsufficientStockModal({
+        productName: product?.product_name || "product",
+        unitName: product?.unit_name,
+        available: Number(m[1]),
+        emisCode: school?.emis_code,
+        schoolName: school?.school_name,
+      });
+    } else {
+      toast(err.message, "bad");
+    }
+    ind.className = "save-indicator bad";
+    ind.textContent = "✗ Not saved - retry";
+    return false;
+  }
 }
 </script>
 </body>

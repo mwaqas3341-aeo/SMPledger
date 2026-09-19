@@ -252,10 +252,22 @@ async function renderMyReceipts(content){
   renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => renderMyReceiptsBody(schoolIds));
 }
 
+let selectedReceiptDate;
+
 async function renderMyReceiptsBody(visibleSchoolIds){
+  if(!selectedReceiptDate) selectedReceiptDate = todayStr();
   const mount = document.getElementById("receiptsMount");
   const visibleSchools = sortSchoolsStandard(cache.schools.filter(s => visibleSchoolIds.includes(s.id)));
   const [milk, biscuit] = cache.products; // sorted milk-first in loadRefData
+
+  // Same URL-length guard used elsewhere for a large schoolIds array.
+  let existingQuery = sb.from("school_receipts")
+    .select("school_id, product_id, quantity_received, invoice_number")
+    .eq("receipt_date", selectedReceiptDate).eq("status", "active");
+  if(visibleSchoolIds.length <= 150) existingQuery = existingQuery.in("school_id", visibleSchoolIds);
+  const { data: existingRows } = await existingQuery;
+  const existingByKey = {};
+  (existingRows || []).forEach(r => { existingByKey[`${r.school_id}|${r.product_id}`] = r; });
 
   // Grid entry (same pattern as the Consumption grid) instead of a
   // single-school picker - every school in scope gets its own row. Column
@@ -263,27 +275,47 @@ async function renderMyReceiptsBody(visibleSchoolIds){
   // order they're actually decided in); Milk's block comes before
   // Biscuit's. Invoice # is required - it's the join key the system uses
   // to compare what a school actually received against what the company
-  // says it delivered.
+  // says it delivered. Picking a date above pre-fills any entries already
+  // saved for that date, same as Consumption.
   const productCols = cache.products.map(p => `<th colspan="3">${esc(p.product_name)}</th>`).join("");
   const productSubCols = cache.products.map(() => `<th>Date</th><th>Invoice #</th><th>Qty</th>`).join("");
 
   mount.innerHTML = `
     <div class="card">
-      <h3>Add inventory received</h3>
-      <p class="sub">Enter Date, then Invoice #, then Quantity for any school/product - it saves as soon as Quantity is entered (same as Consumption). Milk's Date and Invoice # copy into Biscuit's automatically, but Biscuit's stay editable if its actual delivery differs.</p>
+      <h3>Date</h3>
+      <p class="sub">Defaults to today. Pick an earlier date to review or correct that day's entries.</p>
+      <div class="form-row">
+        <div><label>Delivery date</label><input type="date" id="receiptDateInput" value="${selectedReceiptDate}" max="${todayStr()}"/></div>
+        <div style="align-self:end;"><button class="btn-primary" id="loadReceiptDateBtn" type="button">Load</button></div>
+        <div style="align-self:end;"><button class="btn-secondary" id="receiptTodayBtn" type="button">Jump to today</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Inventory received — ${esc(selectedReceiptDate)}</h3>
+      <p class="sub">Enter Invoice # then Quantity, then click Submit for that school. A school with data already saved for this date is locked - click Edit to change it. Milk's Invoice # copies into Biscuit's automatically, but stays editable if it differs.</p>
       <div class="table-wrap"><table id="receiptGrid"><thead>
-        <tr><th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>${productCols}</tr>
+        <tr><th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>${productCols}<th rowspan="2">Action</th></tr>
         <tr>${productSubCols}</tr>
       </thead><tbody>
         ${visibleSchools.map((s, i) => {
           const mk = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
-          const cells = cache.products.map((p, pi) => `
-            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
-            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
-            <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" style="width:75px;padding:5px 6px;"/>
+          let hasData = false;
+          const cells = cache.products.map((p, pi) => {
+            const existing = existingByKey[`${s.id}|${p.id}`];
+            if(existing) hasData = true;
+            return `
+            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${selectedReceiptDate}" style="width:120px;padding:5px 6px;"/></td>
+            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${esc(existing?.invoice_number || "")}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
+            <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
               <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
-          `).join("");
-          return `<tr><td>${i+1}</td><td>${esc(mk)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}</tr>`;
+          `;
+          }).join("");
+          const actionCell = `<td>
+            <button class="btn-secondary row-action-btn" type="button" data-school="${s.id}" data-mode="${hasData ? "edit" : "submit"}">
+              ${hasData ? "Edit" : "Submit"}
+            </button>
+          </td>`;
+          return `<tr data-receipt-row-school="${s.id}"><td>${i+1}</td><td>${esc(mk)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}${actionCell}</tr>`;
         }).join("")}
       </tbody></table></div>
     </div>
@@ -295,6 +327,23 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
+
+  document.getElementById("loadReceiptDateBtn").addEventListener("click", () => {
+    selectedReceiptDate = document.getElementById("receiptDateInput").value || todayStr();
+    renderMyReceiptsBody(visibleSchoolIds);
+  });
+  document.getElementById("receiptTodayBtn").addEventListener("click", () => {
+    selectedReceiptDate = todayStr();
+    renderMyReceiptsBody(visibleSchoolIds);
+  });
+
+  // Locked rows (already have data for this date) start with disabled inputs.
+  mount.querySelectorAll("#receiptGrid tbody tr").forEach(tr => {
+    const btn = tr.querySelector(".row-action-btn");
+    if(btn?.dataset.mode === "edit"){
+      tr.querySelectorAll(".receiptDate, .receiptInvoice, .receiptQty").forEach(el => el.disabled = true);
+    }
+  });
 
   // Milk's Date/Invoice copy into Biscuit's for the same school as soon as
   // Milk's is entered - most deliveries share both, and this only ever
@@ -320,10 +369,46 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       const ind = document.getElementById(`rind-${inp.dataset.school}-${inp.dataset.product}`);
       ind.className = ""; ind.textContent = "";
     });
-    inp.addEventListener("change", () => trySaveReceipt(inp, visibleSchoolIds));
+  });
+
+  mount.querySelectorAll(".row-action-btn").forEach(btn => {
+    btn.addEventListener("click", () => handleReceiptRowAction(btn, visibleSchoolIds));
   });
 
   await loadReceiptsTable(visibleSchoolIds);
+}
+
+async function handleReceiptRowAction(btn, visibleSchoolIds){
+  const schoolId = btn.dataset.school;
+  const tr = mountReceiptRow(schoolId);
+  const fields = tr.querySelectorAll(".receiptDate, .receiptInvoice, .receiptQty");
+
+  if(btn.dataset.mode === "edit"){
+    // Unlock for editing - no save yet, just makes the cells writable again.
+    fields.forEach(el => el.disabled = false);
+    btn.dataset.mode = "submit";
+    btn.textContent = "Submit";
+    return;
+  }
+
+  // Submit mode: run every product's Qty cell in this row through the same
+  // validation/duplicate-check flow as before (just triggered by this
+  // button now, not by leaving the Qty field). A cell left blank is simply
+  // skipped - Submit only sends what was actually filled in.
+  btn.disabled = true;
+  btn.textContent = "Submitting…";
+  const qtyInputs = tr.querySelectorAll(".receiptQty");
+  for(const inp of qtyInputs){
+    if(inp.value !== "") await trySaveReceipt(inp, visibleSchoolIds);
+  }
+  btn.disabled = false;
+  fields.forEach(el => el.disabled = true);
+  btn.dataset.mode = "edit";
+  btn.textContent = "Edit";
+}
+
+function mountReceiptRow(schoolId){
+  return document.querySelector(`tr[data-receipt-row-school="${schoolId}"]`);
 }
 
 async function trySaveReceipt(inp, visibleSchoolIds){
