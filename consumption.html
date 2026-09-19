@@ -334,10 +334,12 @@ async function loadGridData(visibleSchoolIds){
         <td class="${cls}">${fmt(r.received)}</td>
         <td class="${cls}">
           <input type="number" min="0" step="0.01" class="consumed-input" style="width:80px;padding:5px 6px;"
-                 data-school="${s.id}" data-product="${p.id}" value="${r.consumed}" />
+                 data-school="${s.id}" data-product="${p.id}" data-opening="${r.opening}" data-received="${r.received}" value="${r.consumed}" />
           <span class="save-indicator" id="ind-${s.id}-${p.id}"></span>
+          <button type="button" class="link-btn danger delete-consumed-btn" id="del-${s.id}-${p.id}"
+                  data-school="${s.id}" data-product="${p.id}" style="display:${Number(r.consumed) > 0 ? "inline" : "none"};">Delete</button>
         </td>
-        <td class="${cls}">${fmt(r.remaining)}</td>
+        <td class="${cls}" id="rem-${s.id}-${p.id}">${fmt(r.remaining)}</td>
       `;
     }).join("");
     const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
@@ -360,6 +362,54 @@ async function loadGridData(visibleSchoolIds){
   tbody.querySelectorAll(".row-action-btn").forEach(btn => {
     btn.addEventListener("click", () => handleRowAction(btn));
   });
+  tbody.querySelectorAll(".delete-consumed-btn").forEach(btn => {
+    btn.addEventListener("click", () => handleDeleteConsumed(btn));
+  });
+}
+
+async function handleDeleteConsumed(btn){
+  const schoolId = btn.dataset.school, productId = btn.dataset.product;
+  const school = cache.schools.find(s => s.id === schoolId);
+  const product = cache.products.find(p => p.id === productId);
+  const inp = document.querySelector(`.consumed-input[data-school="${schoolId}"][data-product="${productId}"]`);
+  const currentQty = inp.value;
+
+  if(!confirm(`Delete the ${product?.product_name} consumption entry (${fmt(currentQty)}) for ${school?.school_name} on ${selectedDate}? This cannot be undone from here.`)) return;
+
+  btn.disabled = true;
+  try{
+    const { error } = await sb.rpc("fn_delete_consumption", {
+      p_school_id: schoolId, p_product_id: productId, p_consumption_date: selectedDate,
+    });
+    if(error) throw error;
+    toast("Entry deleted");
+    // Update just this cell and its row's Remaining locally - no full
+    // grid reload needed, since Opening/Received for this date don't change.
+    const opening = Number(inp.dataset.opening || 0);
+    const received = Number(inp.dataset.received || 0);
+    inp.value = "0";
+    inp.dataset.opening = opening;
+    inp.dataset.received = received;
+    const remCell = document.getElementById(`rem-${schoolId}-${productId}`);
+    if(remCell) remCell.textContent = fmt(opening + received);
+    const ind = document.getElementById(`ind-${schoolId}-${productId}`);
+    ind.className = ""; ind.textContent = "";
+    btn.style.display = "none";
+    // Row may now have no data left in either product - if so, unlock it
+    // for fresh entry instead of staying oddly locked over nothing.
+    const tr = document.querySelector(`tr[data-row-school="${schoolId}"]`);
+    const stillHasData = Array.from(tr.querySelectorAll(".consumed-input")).some(i => Number(i.value) > 0);
+    if(!stillHasData){
+      const rowBtn = tr.querySelector(".row-action-btn");
+      tr.querySelectorAll(".consumed-input").forEach(i => i.disabled = false);
+      rowBtn.dataset.mode = "submit";
+      rowBtn.textContent = "Submit";
+    }
+  }catch(err){
+    toast(err.message, "bad");
+  }finally{
+    btn.disabled = false;
+  }
 }
 
 async function handleRowAction(btn){
@@ -414,6 +464,15 @@ async function saveConsumedCell(inp){
     if(error) throw error;
     ind.className = "save-indicator ok";
     ind.textContent = "✓ Saved";
+    // Update this cell's Remaining and Delete button locally instead of
+    // reloading the whole grid - Opening/Received for this date don't
+    // change from a Consumed edit, so this is exact, not an approximation.
+    const opening = Number(inp.dataset.opening || 0);
+    const received = Number(inp.dataset.received || 0);
+    const remCell = document.getElementById(`rem-${schoolId}-${productId}`);
+    if(remCell) remCell.textContent = fmt(opening + received - qty);
+    const delBtn = document.getElementById(`del-${schoolId}-${productId}`);
+    if(delBtn) delBtn.style.display = qty > 0 ? "inline" : "none";
     return true;
   }catch(err){
     const m = /Insufficient inventory\. Available quantity: ([\d.]+)/.exec(err.message || "");

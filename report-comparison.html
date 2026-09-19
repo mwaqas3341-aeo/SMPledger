@@ -145,7 +145,13 @@ async function loadRefData(){
   ]);
   cache.markaz = markaz || [];
   cache.schools = sortSchoolsStandard(schools);
-  cache.products = products || [];
+  // Milk first, then Biscuit - matches the convention used everywhere else
+  // in the app (forms, tables, reports).
+  cache.products = (products || []).sort((a, b) => {
+    const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
+    return am - bm;
+  });
 }
 
 /* ===================== PAGE ===================== */

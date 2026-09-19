@@ -392,31 +392,54 @@ async function handleReceiptRowAction(btn, visibleSchoolIds){
   }
 
   // Submit mode: run every product's Qty cell in this row through the same
-  // validation/duplicate-check flow as before (just triggered by this
-  // button now, not by leaving the Qty field). A cell left blank is simply
-  // skipped - Submit only sends what was actually filled in.
+  // validation/duplicate-check flow as before, one product fully at a time
+  // (trySaveReceipt now genuinely waits for a duplicate-modal decision
+  // before returning, so Milk and Biscuit can never race or clobber each
+  // other's popup). A cell left blank is simply skipped.
   btn.disabled = true;
   btn.textContent = "Submitting…";
   const qtyInputs = tr.querySelectorAll(".receiptQty");
+  let anyAttempted = false, allOk = true;
   for(const inp of qtyInputs){
-    if(inp.value !== "") await trySaveReceipt(inp, visibleSchoolIds);
+    if(inp.value === "") continue;
+    anyAttempted = true;
+    const ok = await trySaveReceipt(inp, visibleSchoolIds);
+    if(!ok) allOk = false;
   }
   btn.disabled = false;
-  fields.forEach(el => el.disabled = true);
-  btn.dataset.mode = "edit";
-  btn.textContent = "Edit";
+  // One reload for the whole row, not one per product - this used to fire
+  // twice (once per product) for a row with both Milk and Biscuit filled in.
+  if(anyAttempted) await loadReceiptsTable(visibleSchoolIds);
+
+  if(allOk){
+    fields.forEach(el => el.disabled = true);
+    btn.dataset.mode = "edit";
+    btn.textContent = "Edit";
+  } else {
+    // Something failed or is still pending a modal decision - leave the
+    // row open rather than locking over an incomplete/failed submission.
+    btn.textContent = "Submit";
+  }
 }
 
 function mountReceiptRow(schoolId){
   return document.querySelector(`tr[data-receipt-row-school="${schoolId}"]`);
 }
 
+// Returns true/false once the FULL outcome is known - including, when a
+// duplicate exists, only after the user has actually made a choice in the
+// modal. This used to return as soon as the modal was shown (not once it
+// was resolved), so a row-level Submit that processes Milk then Biscuit
+// would open Biscuit's modal - a fixed, single DOM element - before the
+// user had touched Milk's, silently destroying it. That was the root
+// cause of edits only ever taking effect on Biscuits: Milk's modal was
+// being clobbered, invisibly, every time both products already had data.
 async function trySaveReceipt(inp, visibleSchoolIds){
   const schoolId = inp.dataset.school, productId = inp.dataset.product;
   const qty = inp.value;
   const ind = document.getElementById(`rind-${schoolId}-${productId}`);
   const mount = document.getElementById("receiptsMount");
-  if(qty === ""){ ind.className = ""; ind.textContent = ""; return; }
+  if(qty === ""){ ind.className = ""; ind.textContent = ""; return true; }
 
   const dateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-product="${productId}"]`);
   const invoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-product="${productId}"]`);
@@ -426,9 +449,9 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   // Invoice # is required - it's what the system matches against company
   // data to compare what was actually delivered.
   if(!invoiceInput.value.trim()){
-    toast("Invoice # is required before a quantity can be saved", "bad");
+    toast(`Invoice # is required for ${product?.product_name} before a quantity can be saved`, "bad");
     invoiceInput.focus();
-    return;
+    return false;
   }
 
   // Zero is a real, save-able answer (a delivery genuinely didn't arrive),
@@ -436,7 +459,7 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   // rather than silently accepting it.
   if(Number(qty) === 0){
     if(!confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${dateInput.value})? Confirm only if this school genuinely received none.`)){
-      return;
+      return false;
     }
   }
 
@@ -450,21 +473,41 @@ async function trySaveReceipt(inp, visibleSchoolIds){
     .eq("status", "active").maybeSingle();
 
   if(existing){
-    showDuplicateReceiptModal({
-      existing, school, product, date: dateInput.value,
-      onAddSecond: () => saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, visibleSchoolIds),
-      onEdit: () => showEditReceiptModal(existing, school, product, () => {
-        inp.value = ""; ind.className = ""; ind.textContent = "";
-        loadReceiptsTable(visibleSchoolIds);
-      }),
+    // Wrapped in a Promise so this call genuinely waits for the modal to
+    // be resolved (any of its three buttons) before returning - the row
+    // loop in handleReceiptRowAction processes one product fully before
+    // ever touching the next, so two modals can never coexist or clobber
+    // each other again.
+    return await new Promise((resolve) => {
+      showDuplicateReceiptModal({
+        existing, school, product, date: dateInput.value,
+        onAddSecond: async () => {
+          const ok = await saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, false);
+          resolve(ok);
+        },
+        onEdit: () => {
+          showEditReceiptModal(existing, school, product, () => {
+            inp.value = ""; ind.className = ""; ind.textContent = "";
+            loadReceiptsTable(visibleSchoolIds);
+          });
+          // Not saved via this input's own path (routed to the edit modal
+          // instead) - the row shouldn't be treated as freshly submitted.
+          resolve(false);
+        },
+        onCancel: () => resolve(false),
+      });
     });
-    return;
   }
 
-  await saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, visibleSchoolIds);
+  return await saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, false);
 }
 
-async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumber, visibleSchoolIds){
+// reloadTable=false by default now - handleReceiptRowAction reloads the
+// "already entered" table exactly once after the whole row is done,
+// instead of once per product saved (was a genuine duplicate-request: a
+// row with both Milk and Biscuit filled in used to reload that entire
+// table twice for one Submit click).
+async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumber, reloadTable){
   ind.className = "save-indicator saving";
   ind.textContent = "Saving…";
   inp.disabled = true;
@@ -485,17 +528,19 @@ async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumb
       : "✓ Saved";
     inp.disabled = false;
     inp.value = "";
-    loadReceiptsTable(visibleSchoolIds);
+    if(reloadTable) loadReceiptsTable(reloadTable === true ? [] : reloadTable);
+    return true;
   }catch(err){
     inp.disabled = false;
     const dupe = err.code === "23505" || /duplicate key/i.test(err.message || "");
     ind.className = "save-indicator bad";
     ind.textContent = dupe ? "✗ Same invoice already saved for this date" : "✗ Not saved";
     toast(err.message, "bad");
+    return false;
   }
 }
 
-function showDuplicateReceiptModal({ existing, school, product, date, onAddSecond, onEdit }){
+function showDuplicateReceiptModal({ existing, school, product, date, onAddSecond, onEdit, onCancel }){
   const existingEl = document.getElementById("dupReceiptModal");
   if(existingEl) existingEl.remove();
   const overlay = document.createElement("div");
@@ -517,11 +562,13 @@ function showDuplicateReceiptModal({ existing, school, product, date, onAddSecon
     </div>
   `;
   document.body.appendChild(overlay);
+  let resolved = false;
   const close = () => overlay.remove();
-  document.getElementById("dupCancelBtn").addEventListener("click", close);
-  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
-  document.getElementById("dupAddBtn").addEventListener("click", () => { close(); onAddSecond(); });
-  document.getElementById("dupEditBtn").addEventListener("click", () => { close(); onEdit(); });
+  const finish = (fn) => { if(resolved) return; resolved = true; close(); fn(); };
+  document.getElementById("dupCancelBtn").addEventListener("click", () => finish(onCancel || (() => {})));
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) finish(onCancel || (() => {})); });
+  document.getElementById("dupAddBtn").addEventListener("click", () => finish(onAddSecond));
+  document.getElementById("dupEditBtn").addEventListener("click", () => finish(onEdit));
 }
 
 function showEditReceiptModal(existing, school, product, onSaved){
@@ -605,7 +652,10 @@ async function loadReceiptsTable(schoolIds){
       <td>${esc(r.invoice_number) || "—"}</td>
       <td>${esc(r.collected_by) || "—"}</td>
       <td>${esc(r.remarks) || "—"}</td>
-      <td><button class="link-btn" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button></td>
+      <td>
+        <button class="link-btn" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button>
+        <button class="link-btn danger" onclick='deleteExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Delete</button>
+      </td>
     </tr>
   `).join("");
 }
@@ -620,6 +670,30 @@ async function editExistingReceipt(receiptId, schoolIds){
   const school = cache.schools.find(s => s.id === existing.school_id);
   const product = cache.products.find(p => p.id === existing.product_id);
   showEditReceiptModal(existing, school, product, () => loadReceiptsTable(schoolIds));
+}
+
+async function deleteExistingReceipt(receiptId, schoolIds){
+  const { data: existing, error } = await sb.from("school_receipts")
+    .select("id, receipt_date, quantity_received, invoice_number, school_id, product_id")
+    .eq("id", receiptId).single();
+  if(error){ toast(error.message, "bad"); return; }
+  const school = cache.schools.find(s => s.id === existing.school_id);
+  const product = cache.products.find(p => p.id === existing.product_id);
+
+  if(!confirm(`Delete the ${product?.product_name} receipt (Qty ${fmt(existing.quantity_received)}, Invoice #${existing.invoice_number || "—"}) for ${school?.school_name} on ${fmtDate(existing.receipt_date)}? This cannot be undone from here.`)) return;
+
+  try{
+    const { error: delErr } = await sb.rpc("fn_delete_school_receipt", { p_receipt_id: receiptId });
+    if(delErr) throw delErr;
+    toast("Receipt deleted");
+    await loadReceiptsTable(schoolIds);
+    // If the deleted entry was for the date currently shown in the grid
+    // above, refresh it too so the now-empty cell and unlocked row show
+    // immediately instead of still displaying the deleted values.
+    if(existing.receipt_date === selectedReceiptDate) await renderMyReceiptsBody(schoolIds);
+  }catch(err){
+    toast(err.message, "bad");
+  }
 }
 
 /* ===================== SECTION: COMPANY DATA & CERTIFICATION ===================== */
