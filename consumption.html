@@ -164,7 +164,7 @@ async function loadRefData(){
   const [{ data: markaz }, { data: schools }, { data: products }] = await Promise.all([
     markazQuery,
     schoolsQuery,
-    sb.from("products").select("id,product_name,unit_name").eq("active", true),
+    sb.from("products").select("id,product_name,unit_name,schedule_dow").eq("active", true),
   ]);
   cache.markaz = markaz || [];
   cache.schools = sortSchoolsStandard(schools);
@@ -297,6 +297,29 @@ async function loadGridData(visibleSchoolIds){
     return;
   }
 
+  // Only show a product's columns at all if it's actually scheduled for
+  // this date (schedule_dow, overridden by schedule_exceptions - same
+  // logic Missing Consumption and Report Generation already use). If
+  // Biscuits isn't due on a Monday, there's nothing to enter for it, so
+  // the columns don't appear rather than sitting there disabled/confusing.
+  const { data: exceptions } = await sb.from("schedule_exceptions")
+    .select("product_id, status").eq("exception_date", selectedDate);
+  const exceptionByProduct = {};
+  (exceptions || []).forEach(e => { exceptionByProduct[e.product_id] = e.status; });
+  const dow = new Date(selectedDate + "T00:00:00").getDay();
+  const scheduledProducts = cache.products.filter(p => {
+    const ex = exceptionByProduct[p.id];
+    if(ex === "blocked") return false;
+    if(ex === "allowed") return true;
+    return (p.schedule_dow || []).includes(dow);
+  });
+
+  if(!scheduledProducts.length){
+    thead.innerHTML = "";
+    tbody.innerHTML = `<tr><td style="color:var(--ink-soft)">No products are scheduled for consumption on ${esc(selectedDate)}.</td></tr>`;
+    return;
+  }
+
   // Pivot the long RPC result (one row per school+product) into a wide row per school.
   const bySchool = {};
   (data || []).forEach(r => {
@@ -305,14 +328,14 @@ async function loadGridData(visibleSchoolIds){
   });
 
   // Header: Sr#, Markaz, EMIS, School, then Opening/Received/Consumed/Remaining
-  // per product. Markaz is shown so an AEO holding additional charge can always
-  // tell which markaz a row belongs to before entering against it.
+  // per scheduled product. Markaz is shown so an AEO holding additional charge
+  // can always tell which markaz a row belongs to before entering against it.
   thead.innerHTML = `<tr>
     <th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
-    ${cache.products.map(p => `<th colspan="4" class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">${esc(p.product_name)}</th>`).join("")}
+    ${scheduledProducts.map(p => `<th colspan="4" class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">${esc(p.product_name)}</th>`).join("")}
     <th rowspan="2">Action</th>
   </tr><tr>
-    ${cache.products.map(p => `
+    ${scheduledProducts.map(p => `
       <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Opening</th>
       <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Received</th>
       <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Consumed</th>
@@ -326,7 +349,7 @@ async function loadGridData(visibleSchoolIds){
     // saved figure can't be nudged by an accidental keystroke. A row with
     // nothing recorded yet (a fresh day) starts unlocked for entry.
     let hasData = false;
-    const cells = cache.products.map(p => {
+    const cells = scheduledProducts.map(p => {
       const r = (bySchool[s.id] || {})[p.id] || { opening:0, received:0, consumed:0, remaining:0 };
       if(Number(r.consumed) > 0) hasData = true;
       const cls = p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
