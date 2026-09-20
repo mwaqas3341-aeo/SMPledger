@@ -230,7 +230,7 @@ function renderMissingSection(){
         <button class="btn-secondary" id="missExportBtn" type="button">Download CSV</button>
       </div>
       <div class="table-wrap"><table id="missTable"><thead><tr>
-        <th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th><th>Product</th><th>Missing Dates</th><th>Count</th>
+        <th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th>
       </tr></thead><tbody></tbody></table></div>
     </div>
   `;
@@ -314,23 +314,29 @@ async function checkMissingConsumption(fd){
   const schoolIds = schools.map(s => s.id);
 
   document.getElementById("missCard").style.display = "";
+  const thead = document.querySelector("#missTable thead");
   const tbody = document.querySelector("#missTable tbody");
   tbody.innerHTML = `<tr><td colspan="9">Loading…</td></tr>`;
 
   const { data: missing, error: missErr } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: schoolIds, p_from: from, p_to: to });
   if(missErr){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(missErr.message)}</td></tr>`; return; }
 
-  // Group by school + product, collecting each missing scheduled date -
-  // this is the "date-wise, EMIS-wise" view: every row below is one
-  // school's one product, with the exact dates it's missing in this period.
-  const grouped = {};
+  // Pivoted by date instead of one row per school+product with a
+  // comma-list of dates crammed into a cell: one row per school, one
+  // column per date that actually has something missing anywhere in this
+  // result set, and each date's cell names the product(s) missing that day
+  // for that school - so date and product are both visible at a glance
+  // without a separate "Product" column duplicating every row.
+  const missingBySchoolDate = {};
+  const dateSet = new Set();
   (missing || []).forEach(r => {
-    const key = `${r.school_id}|${r.product_id}`;
-    if(!grouped[key]) grouped[key] = { school_id:r.school_id, product_name:r.product_name, dates:[] };
-    grouped[key].dates.push(r.missing_date);
+    dateSet.add(r.missing_date);
+    missingBySchoolDate[r.school_id] = missingBySchoolDate[r.school_id] || {};
+    missingBySchoolDate[r.school_id][r.missing_date] = missingBySchoolDate[r.school_id][r.missing_date] || [];
+    missingBySchoolDate[r.school_id][r.missing_date].push(r.product_name);
   });
-  const groupRows = Object.values(grouped);
-  const flaggedSchoolIds = new Set(groupRows.map(g => g.school_id));
+  const pivotDates = [...dateSet].sort();
+  const flaggedSchoolIds = new Set(Object.keys(missingBySchoolDate));
 
   // Markaz-wise summary - always computed (even when nothing's missing, so
   // the CSV shows a clean 0-missing summary too), included as a second
@@ -347,33 +353,31 @@ async function checkMissingConsumption(fd){
 
   document.getElementById("missTitle").textContent =
     `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)}`;
-  statusBox.innerHTML = groupRows.length
+  statusBox.innerHTML = pivotDates.length
     ? ""
     : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">No scheduled product is missing an entry in this period for this scope.</p>`;
 
-  if(!groupRows.length){
-    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">Nothing missing in this period.</td></tr>`;
-    lastMissing = { rows: [], from, to, markazSummary };
+  if(!pivotDates.length){
+    thead.innerHTML = `<tr><th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--ink-soft)">Nothing missing in this period.</td></tr>`;
+    lastMissing = { rows: [], pivotDates: [], from, to, markazSummary };
     return;
   }
 
-  const schoolById = Object.fromEntries(schools.map(s => [s.id, s]));
-  groupRows.sort((a,b) => {
-    const sa = schoolById[a.school_id], sb2 = schoolById[b.school_id];
-    return (sa.emis_code||"").localeCompare(sb2.emis_code||"") || a.product_name.localeCompare(b.product_name);
-  });
+  thead.innerHTML = `<tr>
+    <th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th>
+    ${pivotDates.map(d => `<th>${fmtDMY(d)}</th>`).join("")}
+  </tr>`;
 
-  const rows = groupRows.map((g, i) => {
-    const s = schoolById[g.school_id];
-    return {
-      sr: i+1, tehsil: s.markaz?.tehsil, markaz: s.markaz?.name,
-      emis: s.emis_code, school: s.school_name, wing: s.wing,
-      product: g.product_name,
-      dates: g.dates.map(fmtDMY).join(", "),
-      count: g.dates.length,
-    };
-  });
-  lastMissing = { rows, from, to, markazSummary };
+  const schoolById = Object.fromEntries(schools.map(s => [s.id, s]));
+  const flaggedSchools = schools.filter(s => flaggedSchoolIds.has(s.id));
+
+  const rows = flaggedSchools.map((s, i) => ({
+    sr: i+1, tehsil: s.markaz?.tehsil, markaz: s.markaz?.name,
+    emis: s.emis_code, school: s.school_name, wing: s.wing,
+    byDate: pivotDates.map(d => (missingBySchoolDate[s.id][d] || []).join(", ")),
+  }));
+  lastMissing = { rows, pivotDates, from, to, markazSummary };
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -383,9 +387,7 @@ async function checkMissingConsumption(fd){
       <td>${esc(r.emis)}</td>
       <td>${esc(r.school)}</td>
       <td>${esc(r.wing)}</td>
-      <td>${esc(r.product)}</td>
-      <td><span class="pill pill-bad">${esc(r.dates)}</span></td>
-      <td>${r.count}</td>
+      ${r.byDate.map(v => `<td>${v ? `<span class="pill pill-bad">${esc(v)}</span>` : ""}</td>`).join("")}
     </tr>
   `).join("");
 
@@ -395,9 +397,9 @@ async function checkMissingConsumption(fd){
 function fmtDMY(d){ const dt = new Date(d + "T00:00:00"); const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return `${dt.getDate()}-${months[dt.getMonth()]}-${dt.getFullYear()}`; }
 
 function exportMissingCsv(missing){
-  const { rows, from, to, markazSummary } = missing;
-  const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing","Product","Missing Dates","Count"];
-  const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, r.product, r.dates, r.count])];
+  const { rows, pivotDates, from, to, markazSummary } = missing;
+  const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing", ...(pivotDates || []).map(fmtDMY)];
+  const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, ...r.byDate])];
 
   // Markaz-wise summary as a second table in the same CSV, separated by a
   // blank row - opens fine in Excel/Sheets as one file with two blocks.
