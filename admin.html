@@ -135,7 +135,7 @@ async function renderReportSection(){
   const { data: s, error } = await sb.from("missing_consumption_report_settings").select("*").eq("id", true).single();
   if(error){ content.innerHTML = `<div class="card"><div class="err">${esc(error.message)}</div></div>`; return; }
 
-  const pkt = utcToPkt(s.send_hour_utc, s.send_minute_utc);
+  const times = (s.send_times && s.send_times.length ? s.send_times : [{ hour: s.send_hour_utc, minute: s.send_minute_utc }]);
   const recipients = s.recipients || [];
 
   content.innerHTML = `
@@ -150,11 +150,18 @@ async function renderReportSection(){
             <option value="false" ${!s.enabled ? "selected" : ""}>Disabled</option>
           </select>
         </div>
-        <div><label>Sending Time (Pakistan Time - Asia/Karachi)</label>
-          <input type="time" id="repTime" value="${pad2(pkt.h)}:${pad2(pkt.m)}"/>
-        </div>
         <div><label>Lookback (days checked each run)</label>
           <input type="number" id="repLookback" min="1" max="31" value="${s.lookback_days}"/>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <label>Sending Times (Pakistan Time - Asia/Karachi)</label>
+        <p class="sub">Add as many times a day as needed - each one generates a fresh report and sends it independently.</p>
+        <div id="repTimes" style="display:flex; flex-wrap:wrap; gap:8px; margin:8px 0;"></div>
+        <div style="display:flex; gap:8px;">
+          <input type="time" id="repNewTime" style="flex:1;"/>
+          <button class="btn-secondary" type="button" id="repAddTimeBtn">Add</button>
         </div>
       </div>
 
@@ -184,6 +191,30 @@ async function renderReportSection(){
     </div>
   `;
 
+  let currentTimes = times.map(t => utcToPkt(t.hour, t.minute)); // work in PKT in the UI, convert back on save
+  function renderTimeChips(){
+    currentTimes.sort((a, b) => (a.h * 60 + a.m) - (b.h * 60 + b.m));
+    document.getElementById("repTimes").innerHTML = currentTimes.length
+      ? currentTimes.map((t, i) => `<span class="pill pill-role">${pad2(t.h)}:${pad2(t.m)} <a href="#" data-idx="${i}" style="margin-left:6px; text-decoration:none;" class="rem-time-chip">&times;</a></span>`).join("")
+      : `<span style="color:var(--ink-soft); font-size:12.5px;">No times configured yet - add at least one below.</span>`;
+    document.querySelectorAll(".rem-time-chip").forEach(el => el.addEventListener("click", (e) => {
+      e.preventDefault();
+      currentTimes.splice(Number(el.dataset.idx), 1);
+      renderTimeChips();
+    }));
+  }
+  renderTimeChips();
+
+  document.getElementById("repAddTimeBtn").addEventListener("click", () => {
+    const input = document.getElementById("repNewTime");
+    if(!input.value) return;
+    const [hh, mm] = input.value.split(":").map(Number);
+    if(currentTimes.some(t => t.h === hh && t.m === mm)){ toast("That time is already in the list", "bad"); return; }
+    currentTimes.push({ h: hh, m: mm });
+    input.value = "";
+    renderTimeChips();
+  });
+
   let currentRecipients = [...recipients];
   function renderChips(){
     document.getElementById("repRecipients").innerHTML = currentRecipients.length
@@ -209,14 +240,16 @@ async function renderReportSection(){
   });
 
   document.getElementById("repSaveBtn").addEventListener("click", async () => {
-    const [hh, mm] = document.getElementById("repTime").value.split(":").map(Number);
-    const utc = pktToUtc(hh, mm);
+    if(!currentTimes.length){ toast("Add at least one sending time", "bad"); return; }
+    const sendTimesUtc = currentTimes.map(t => {
+      const utc = pktToUtc(t.h, t.m);
+      return { hour: utc.h, minute: utc.m };
+    });
     try{
       const { error } = await sb.rpc("fn_set_report_schedule", {
         p_enabled: document.getElementById("repEnabled").value === "true",
         p_recipients: currentRecipients,
-        p_send_hour_utc: utc.h,
-        p_send_minute_utc: utc.m,
+        p_send_times: sendTimesUtc,
         p_lookback_days: Number(document.getElementById("repLookback").value),
       });
       if(error) throw error;
