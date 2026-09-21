@@ -303,8 +303,8 @@ async function renderMyReceiptsBody(visibleSchoolIds){
             const existing = existingByKey[`${s.id}|${p.id}`];
             if(existing) hasData = true;
             return `
-            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${selectedReceiptDate}" style="width:120px;padding:5px 6px;"/></td>
-            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${esc(existing?.invoice_number || "")}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
+            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${existing?.receipt_date || selectedReceiptDate}" placeholder="${pi === 0 ? "" : "Uses Milk's if blank"}" style="width:120px;padding:5px 6px;"/></td>
+            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${esc(existing?.invoice_number || "")}" placeholder="${pi === 0 ? "Required" : "Uses Milk's if blank"}" style="width:100px;padding:5px 6px;"/></td>
             <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
               <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
           `;
@@ -447,9 +447,23 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   const school = cache.schools.find(s => s.id === schoolId);
   const product = cache.products.find(p => p.id === productId);
 
+  // Biscuit's Date/Invoice aren't independently required - it's the same
+  // physical delivery as Milk's under one inventory receipt, so if
+  // Biscuit's own fields were left blank (rather than the auto-copy having
+  // already filled them in), fall back to Milk's values for this school
+  // instead of blocking the save.
+  let effectiveDate = dateInput.value, effectiveInvoice = invoiceInput.value.trim();
+  if(dateInput.dataset.first === "false" && (!effectiveDate || !effectiveInvoice)){
+    const milkDateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-first="true"]`);
+    const milkInvoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-first="true"]`);
+    if(!effectiveDate && milkDateInput?.value){ effectiveDate = milkDateInput.value; dateInput.value = effectiveDate; }
+    if(!effectiveInvoice && milkInvoiceInput?.value.trim()){ effectiveInvoice = milkInvoiceInput.value.trim(); invoiceInput.value = effectiveInvoice; }
+  }
+
   // Invoice # is required - it's what the system matches against company
-  // data to compare what was actually delivered.
-  if(!invoiceInput.value.trim()){
+  // data to compare what was actually delivered. (Biscuit already had its
+  // chance to inherit Milk's above - this only fires if neither has one.)
+  if(!effectiveInvoice){
     toast(`Invoice # is required for ${product?.product_name} before a quantity can be saved`, "bad");
     invoiceInput.focus();
     return false;
@@ -459,7 +473,7 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   // but it's also the easiest number to enter by mistake - confirm intent
   // rather than silently accepting it.
   if(Number(qty) === 0){
-    if(!confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${dateInput.value})? Confirm only if this school genuinely received none.`)){
+    if(!confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${effectiveDate})? Confirm only if this school genuinely received none.`)){
       return false;
     }
   }
@@ -470,7 +484,7 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   // that the person should see what's already there before deciding.
   const { data: existing } = await sb.from("school_receipts")
     .select("id, quantity_received, invoice_number, collected_by, remarks")
-    .eq("school_id", schoolId).eq("product_id", productId).eq("receipt_date", dateInput.value)
+    .eq("school_id", schoolId).eq("product_id", productId).eq("receipt_date", effectiveDate)
     .eq("status", "active").maybeSingle();
 
   if(existing){
@@ -481,9 +495,9 @@ async function trySaveReceipt(inp, visibleSchoolIds){
     // each other again.
     return await new Promise((resolve) => {
       showDuplicateReceiptModal({
-        existing, school, product, date: dateInput.value,
+        existing, school, product, date: effectiveDate,
         onAddSecond: async () => {
-          const ok = await saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, false);
+          const ok = await saveReceipt(inp, ind, schoolId, productId, effectiveDate, qty, effectiveInvoice, false);
           resolve(ok);
         },
         onEdit: () => {
@@ -500,7 +514,7 @@ async function trySaveReceipt(inp, visibleSchoolIds){
     });
   }
 
-  return await saveReceipt(inp, ind, schoolId, productId, dateInput.value, qty, invoiceInput.value, false);
+  return await saveReceipt(inp, ind, schoolId, productId, effectiveDate, qty, effectiveInvoice, false);
 }
 
 // reloadTable=false by default now - handleReceiptRowAction reloads the
