@@ -270,13 +270,16 @@ async function renderMyReceiptsBody(visibleSchoolIds){
   (existingRows || []).forEach(r => { existingByKey[`${r.school_id}|${r.product_id}`] = r; });
 
   // Grid entry (same pattern as the Consumption grid) instead of a
-  // single-school picker - every school in scope gets its own row. Column
-  // order within each product is Date -> Invoice # -> Qty (matches the
-  // order they're actually decided in); Milk's block comes before
-  // Biscuit's. Invoice # is required - it's the join key the system uses
-  // to compare what a school actually received against what the company
-  // says it delivered. Picking a date above pre-fills any entries already
-  // saved for that date, same as Consumption.
+  // single-school picker - every school in scope gets its own row. Milk
+  // and Biscuits are completely independent here: different suppliers can
+  // deliver on different dates under different invoice numbers, so each
+  // product gets its own Date/Invoice #/Qty columns - neither is ever
+  // assumed to share the other's date or invoice. Milk's block comes
+  // before Biscuit's. Invoice # is required per product - it's the join
+  // key the system uses to compare what a school actually received
+  // against what the company says it delivered, independently for each
+  // product. Picking a date above pre-fills any entries already saved for
+  // that date, same as Consumption.
   const productCols = cache.products.map(p => `<th colspan="3">${esc(p.product_name)}</th>`).join("");
   const productSubCols = cache.products.map(() => `<th>Date</th><th>Invoice #</th><th>Qty</th>`).join("");
 
@@ -291,7 +294,7 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     </div>
     <div class="card">
       <h3>Inventory received — ${esc(selectedReceiptDate)}</h3>
-      <p class="sub">Enter Invoice # then Quantity, then click Submit for that school. A school with data already saved for this date is locked - click Edit to change it. Milk's Invoice # copies into Biscuit's automatically, but stays editable if it differs.</p>
+      <p class="sub">Milk and Biscuits are entered completely independently - each has its own Date, Invoice #, and Quantity, since they can arrive from different suppliers on different dates under different invoices. Click Submit for that school; a school with data already saved for this date is locked - click Edit to change it.</p>
       <div class="table-wrap"><table id="receiptGrid"><thead>
         <tr><th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>${productCols}<th rowspan="2">Action</th></tr>
         <tr>${productSubCols}</tr>
@@ -299,12 +302,12 @@ async function renderMyReceiptsBody(visibleSchoolIds){
         ${visibleSchools.map((s, i) => {
           const mk = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
           let hasData = false;
-          const cells = cache.products.map((p, pi) => {
+          const cells = cache.products.map(p => {
             const existing = existingByKey[`${s.id}|${p.id}`];
             if(existing) hasData = true;
             return `
-            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${existing?.receipt_date || selectedReceiptDate}" placeholder="${pi === 0 ? "" : "Uses Milk's if blank"}" style="width:120px;padding:5px 6px;"/></td>
-            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" data-first="${pi === 0}" value="${esc(existing?.invoice_number || "")}" placeholder="${pi === 0 ? "Required" : "Uses Milk's if blank"}" style="width:100px;padding:5px 6px;"/></td>
+            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${existing?.receipt_date || selectedReceiptDate}" style="width:120px;padding:5px 6px;"/></td>
+            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" value="${esc(existing?.invoice_number || "")}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
             <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
               <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
           `;
@@ -346,24 +349,6 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     }
   });
 
-  // Milk's Date/Invoice copy into Biscuit's for the same school as soon as
-  // Milk's is entered - most deliveries share both, and this only ever
-  // copies from the first product's fields, so Biscuit stays independently
-  // editable afterward without being fought over.
-  if(cache.products.length > 1){
-    mount.querySelectorAll('.receiptDate[data-first="true"]').forEach(el => {
-      el.addEventListener("change", () => {
-        const other = mount.querySelector(`.receiptDate[data-school="${el.dataset.school}"][data-first="false"]`);
-        if(other) other.value = el.value;
-      });
-    });
-    mount.querySelectorAll('.receiptInvoice[data-first="true"]').forEach(el => {
-      el.addEventListener("input", () => {
-        const other = mount.querySelector(`.receiptInvoice[data-school="${el.dataset.school}"][data-first="false"]`);
-        if(other) other.value = el.value;
-      });
-    });
-  }
 
   mount.querySelectorAll(".receiptQty").forEach(inp => {
     inp.addEventListener("input", () => {
@@ -447,25 +432,21 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   const school = cache.schools.find(s => s.id === schoolId);
   const product = cache.products.find(p => p.id === productId);
 
-  // Biscuit's Date/Invoice aren't independently required - it's the same
-  // physical delivery as Milk's under one inventory receipt, so if
-  // Biscuit's own fields were left blank (rather than the auto-copy having
-  // already filled them in), fall back to Milk's values for this school
-  // instead of blocking the save.
-  let effectiveDate = dateInput.value, effectiveInvoice = invoiceInput.value.trim();
-  if(dateInput.dataset.first === "false" && (!effectiveDate || !effectiveInvoice)){
-    const milkDateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-first="true"]`);
-    const milkInvoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-first="true"]`);
-    if(!effectiveDate && milkDateInput?.value){ effectiveDate = milkDateInput.value; dateInput.value = effectiveDate; }
-    if(!effectiveInvoice && milkInvoiceInput?.value.trim()){ effectiveInvoice = milkInvoiceInput.value.trim(); invoiceInput.value = effectiveInvoice; }
-  }
+  // Milk and Biscuits are independent deliveries - different suppliers,
+  // different invoices, different dates - so each product's Date/Invoice #
+  // is required on its own; neither is ever assumed to share the other's.
+  const effectiveDate = dateInput.value, effectiveInvoice = invoiceInput.value.trim();
 
   // Invoice # is required - it's what the system matches against company
-  // data to compare what was actually delivered. (Biscuit already had its
-  // chance to inherit Milk's above - this only fires if neither has one.)
+  // data to compare what was actually delivered, independently per product.
   if(!effectiveInvoice){
     toast(`Invoice # is required for ${product?.product_name} before a quantity can be saved`, "bad");
     invoiceInput.focus();
+    return false;
+  }
+  if(!effectiveDate){
+    toast(`Date is required for ${product?.product_name} before a quantity can be saved`, "bad");
+    dateInput.focus();
     return false;
   }
 
