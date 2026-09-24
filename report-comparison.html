@@ -422,6 +422,7 @@ async function runImport(){
         school_id: r.school.id,
         product_id: product.id,
         quantity: r.qty,
+        unit: product.unit_name,
       }));
       const { error: itemErr } = await sb.from("company_invoice_items").insert(items);
       if(itemErr) throw itemErr;
