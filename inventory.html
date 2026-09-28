@@ -650,7 +650,7 @@ async function loadReceiptsTable(schoolIds){
       <td>${esc(r.collected_by) || "—"}</td>
       <td>${esc(r.remarks) || "—"}</td>
       <td>
-        <button class="link-btn" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button>
+        <button class="link-btn edit" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button>
         <button class="link-btn danger" onclick='deleteExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Delete</button>
       </td>
     </tr>

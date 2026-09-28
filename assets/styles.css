@@ -194,3 +194,21 @@ thead .col-group-milk, thead .col-group-biscuit{ background:var(--card); }
   .menu-cards{ padding:14px 14px 4px; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
   .item-row{ grid-template-columns:1fr 1fr; }
 }
+
+/* ---------- Action colours + locked/editable fields ---------- */
+:root{ --go:#1e8a3c; --edit:#e07b00; --lock-bg:#e6e8ec; --lock-fg:#8b93a1; --lock-line:#cfd3da; --open-bg:#fff8e6; --open-line:#e0a030; }
+
+/* Row buttons follow data-mode, so they recolour automatically when JS flips Submit <-> Edit. */
+.row-action-btn[data-mode="submit"]{ background:var(--go); color:#fff; }
+.row-action-btn[data-mode="edit"]{ background:var(--edit); color:#fff; }
+.link-btn.edit{ background:var(--edit); color:#fff; text-decoration:none; border-radius:6px; padding:4px 10px; }
+.link-btn.danger, .delete-consumed-btn{ background:var(--bad-fg); color:#fff; text-decoration:none; border-radius:6px; padding:4px 10px; }
+button:disabled{ opacity:.55; cursor:not-allowed; filter:none; }
+
+/* Locked = greyed out; open for entry = warm highlight. */
+input:disabled, select:disabled, textarea:disabled{
+  background:var(--lock-bg); color:var(--lock-fg); border-color:var(--lock-line); cursor:not-allowed; -webkit-text-fill-color:var(--lock-fg); opacity:1;
+}
+.consumed-input:not(:disabled), .receiptDate:not(:disabled), .receiptInvoice:not(:disabled), .receiptQty:not(:disabled){
+  background:var(--open-bg); border-color:var(--open-line);
+}
