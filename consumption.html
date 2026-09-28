@@ -128,65 +128,6 @@ function showInsufficientStockModal({ productName, unitName, available, emisCode
   overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
 }
 
-/* ===================== ENROLMENT CAP ===================== */
-// Consumption for one product on one day can never exceed the school's total enrolment on SIS
-// (same figure the dashboard uses: ECE to Class 5, grades 6+ excluded). Fetched once per page load.
-const ENROLMENT_URL = "https://raw.githubusercontent.com/mwaqas3341-aeo/SIS-online-Enrolment-Updater/main/data/layyah.json";
-const EXCLUDED_GRADES = new Set(["6","7","8","9","10","11","12"]);
-let enrolmentPromise = null;
-function getEnrolment(){
-  if(!enrolmentPromise){
-    enrolmentPromise = (async () => {
-      const res = await fetch(ENROLMENT_URL, { cache: "no-store" });
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const map = {};
-      (data.schools || []).forEach(x => {
-        map[x.emis_code] = (x.grades || [])
-          .filter(g => !EXCLUDED_GRADES.has(String(g.grade_name).trim()))
-          .reduce((t, g) => t + (Number(g.male_students) || 0) + (Number(g.female_students) || 0), 0);
-      });
-      return map;
-    })().catch(e => { enrolmentPromise = null; throw e; });
-  }
-  return enrolmentPromise;
-}
-// Returns null when fine, or {school, product, enrolment, qty} for the first entry that is over the cap.
-// If enrolment data can't be loaded (or the school isn't in it) entry is not blocked.
-async function findOverEnrolment(inputs){
-  let map;
-  try{ map = await getEnrolment(); }catch(e){ console.error("[SMP] enrolment unavailable:", e && e.message); return null; }
-  for(const inp of inputs){
-    const qty = Number(inp.value || 0);
-    const school = cache.schools.find(x => x.id === inp.dataset.school);
-    const enrolment = school ? map[school.emis_code] : undefined;
-    if(!(qty > 0) || !(enrolment > 0)) continue;   // missing or 0 enrolment = no reliable cap, do not block
-    if(qty > enrolment){
-      const product = cache.products.find(p => p.id === inp.dataset.product);
-      return { school, product, enrolment, qty, input: inp };
-    }
-  }
-  return null;
-}
-function showOverEnrolmentModal({ school, product, enrolment, qty }){
-  const existing = document.getElementById("overEnrolModal");
-  if(existing) existing.remove();
-  const overlay = document.createElement("div");
-  overlay.id = "overEnrolModal";
-  overlay.className = "modal-overlay";
-  overlay.innerHTML = `
-    <div class="modal-box">
-      <h3>⚠ Consumption exceeds enrolment</h3>
-      <p>On SIS, the total enrolment of <b>${esc(school.school_name)}</b> (EMIS ${esc(school.emis_code)}) is <b>${fmt(enrolment)}</b> students.</p>
-      <p>You entered <b>${fmt(qty)}</b> ${esc(product?.product_name || "packs")}. More than <b>${fmt(enrolment)}</b> students' worth cannot be added - please correct the figure. Nothing was saved.</p>
-      <div class="actions-row"><button class="btn-secondary" id="overEnrolCloseBtn" type="button">Close</button></div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  document.getElementById("overEnrolCloseBtn").addEventListener("click", close);
-  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
-}
-
 /* ===================== AUTH ===================== */
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
 
@@ -514,14 +455,6 @@ async function handleRowAction(btn){
   // in one deliberate action rather than saving on every keystroke/blur.
   btn.disabled = true;
   btn.textContent = "Submitting…";
-  // Check the whole row first so a violation never leaves a half-saved row.
-  const over = await findOverEnrolment(inputs);
-  if(over){
-    btn.disabled = false; btn.textContent = "Submit";
-    showOverEnrolmentModal(over);
-    over.input.focus();
-    return;
-  }
   let allOk = true;
   for(const inp of inputs){
     const ok = await saveConsumedCell(inp);
