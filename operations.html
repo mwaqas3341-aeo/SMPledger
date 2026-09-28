@@ -54,6 +54,7 @@ const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_AN
 let currentUser = null, currentProfile = null;
 let cache = { markaz:[], schools:[], products:[] };
 let lastMissing = null; // kept around for CSV export
+let lastMissingForm = null; // the filters of the last check, re-run for a fresh download
 const WING_OPTIONS = ["M-EE", "W-EE", "SE"];
 
 function toast(msg, kind){
@@ -281,8 +282,10 @@ async function checkMissingConsumption(fd){
   const statusBox = document.getElementById("missStatus");
   const warnBox = document.getElementById("missRangeWarning");
   statusBox.innerHTML = "";
+  lastMissing = null;
+  lastMissingForm = fd;
 
-  if(to < from){ toast('"To" must be on or after "From"', "bad"); return; }
+  if(to < from){ toast('"To" must be on or after "From"', "bad"); return false; }
   const allDates = dateRangeArr(from, to);
   warnBox.innerHTML = allDates.length > 31
     ? `<div style="margin-top:12px;background:var(--warn-bg);color:var(--warn-fg);padding:10px 12px;border-radius:8px;font-size:12.5px;">This is a ${allDates.length}-day range - results may take a moment and the missing-dates list per school can get long.</div>`
@@ -290,7 +293,7 @@ async function checkMissingConsumption(fd){
 
   if(isTr && !currentProfile.tehsil){
     toast("Your account has no tehsil set - contact your admin to fix this in A-I-DB.", "bad");
-    return;
+    return false;
   }
 
   // Resolve the in-scope school list (also used to render every school's
@@ -309,8 +312,8 @@ async function checkMissingConsumption(fd){
   if(emis) q = q.eq("emis_code", emis);
 
   const { data: schools, error: schoolErr } = await q;
-  if(schoolErr){ toast(schoolErr.message, "bad"); return; }
-  if(!schools?.length){ toast("No schools found for this scope", "bad"); return; }
+  if(schoolErr){ toast(schoolErr.message, "bad"); return false; }
+  if(!schools?.length){ toast("No schools found for this scope", "bad"); return false; }
   // Standard ordering: markaz name A-Z, then EMIS within each markaz.
   schools.sort((a,b) => (a.markaz?.name||"").localeCompare(b.markaz?.name||"") || (a.emis_code||"").localeCompare(b.emis_code||""));
   const schoolIds = schools.map(s => s.id);
@@ -320,8 +323,14 @@ async function checkMissingConsumption(fd){
   const tbody = document.querySelector("#missTable tbody");
   tbody.innerHTML = `<tr><td colspan="9">Loading…</td></tr>`;
 
-  const { data: missing, error: missErr } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: schoolIds, p_from: from, p_to: to });
-  if(missErr){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(missErr.message)}</td></tr>`; return; }
+  const missing = [];
+  for(let start = 0; ; start += 1000){
+    const { data: page, error: missErr } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: schoolIds, p_from: from, p_to: to }).range(start, start + 999);
+    if(missErr){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(missErr.message)}</td></tr>`; return false; }
+    missing.push(...(page || []));
+    if(!page || page.length < 1000) break;
+  }
+  const generatedAt = new Date();
 
   // Pivoted by date instead of one row per school+product with a
   // comma-list of dates crammed into a cell: one row per school, one
@@ -354,7 +363,7 @@ async function checkMissingConsumption(fd){
     (a.tehsil||"").localeCompare(b.tehsil||"") || (a.markaz||"").localeCompare(b.markaz||""));
 
   document.getElementById("missTitle").textContent =
-    `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)}`;
+    `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)} (checked ${generatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`;
   statusBox.innerHTML = pivotDates.length
     ? ""
     : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">No scheduled product is missing an entry in this period for this scope.</p>`;
@@ -362,8 +371,9 @@ async function checkMissingConsumption(fd){
   if(!pivotDates.length){
     thead.innerHTML = `<tr><th>Sr#</th><th>Tehsil</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th></tr>`;
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--ink-soft)">Nothing missing in this period.</td></tr>`;
-    lastMissing = { rows: [], pivotDates: [], from, to, markazSummary };
-    return;
+    lastMissing = { rows: [], pivotDates: [], from, to, markazSummary, generatedAt };
+    document.getElementById("missExportBtn").onclick = downloadFreshMissing;
+    return true;
   }
 
   thead.innerHTML = `<tr>
@@ -379,7 +389,7 @@ async function checkMissingConsumption(fd){
     emis: s.emis_code, school: s.school_name, wing: s.wing,
     byDate: pivotDates.map(d => (missingBySchoolDate[s.id][d] || []).join(", ")),
   }));
-  lastMissing = { rows, pivotDates, from, to, markazSummary };
+  lastMissing = { rows, pivotDates, from, to, markazSummary, generatedAt };
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -393,7 +403,28 @@ async function checkMissingConsumption(fd){
     </tr>
   `).join("");
 
-  document.getElementById("missExportBtn").onclick = () => exportMissingCsv(lastMissing);
+  document.getElementById("missExportBtn").onclick = downloadFreshMissing;
+  return true;
+}
+
+// The download always re-runs the check first, so the file reflects entries saved since the
+// on-screen table was generated (a stale table was being exported after AEOs had submitted).
+let downloadingMissing = false;
+async function downloadFreshMissing(){
+  if(downloadingMissing || !lastMissingForm) return;
+  downloadingMissing = true;
+  const btn = document.getElementById("missExportBtn");
+  const label = btn.textContent; btn.disabled = true; btn.textContent = "Refreshing…";
+  try{
+    const ok = await checkMissingConsumption(lastMissingForm);
+    if(ok && lastMissing) exportMissingCsv(lastMissing);
+    else toast("Could not refresh the report - nothing downloaded.", "bad");
+  }catch(err){
+    console.error("[SMP] missing report download failed:", err && err.message);
+    toast("Could not refresh the report - nothing downloaded.", "bad");
+  }finally{
+    downloadingMissing = false; btn.disabled = false; btn.textContent = label;
+  }
 }
 
 function fmtDMY(d){ const dt = new Date(d + "T00:00:00"); const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return `${dt.getDate()}-${months[dt.getMonth()]}-${dt.getFullYear()}`; }
@@ -401,7 +432,8 @@ function fmtDMY(d){ const dt = new Date(d + "T00:00:00"); const months=["Jan","F
 function exportMissingCsv(missing){
   const { rows, pivotDates, from, to, markazSummary } = missing;
   const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing", ...(pivotDates || []).map(fmtDMY)];
-  const csvRows = [header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, ...r.byDate])];
+  const gen = missing.generatedAt || new Date();
+  const csvRows = [[`Missing consumption report ${fmtDMY(from)} to ${fmtDMY(to)} - generated ${gen.toLocaleString()}`], [], header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, ...r.byDate])];
 
   // Markaz-wise summary as a second table in the same CSV, separated by a
   // blank row - opens fine in Excel/Sheets as one file with two blocks.
