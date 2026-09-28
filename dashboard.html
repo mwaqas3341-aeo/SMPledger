@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SMP Dashboard — School Meal Program</title>
+<script src="assets/safety.js"></script>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css" />
@@ -24,7 +25,7 @@
     </div>
   </div>
   <div class="menu-cards" id="moduleCards"></div>
-  <div id="content"></div>
+  <div id="content"><p style="color:var(--ink-soft)">Loading dashboard…</p></div>
 </div>
 
 <div class="toast-area" id="toastArea"></div>
@@ -101,42 +102,66 @@ function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDi
 document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
 
 async function boot(){
-  const { data: { session } } = await sb.auth.getSession();
-  if(!session){ window.location.href = "index.html"; return; }
-  currentUser = session.user;
-  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
-  if(error || !profile || !profile.active){
-    await sb.auth.signOut();
-    window.location.href = "index.html";
-    return;
+  try{
+    const { data: { session } } = await sb.auth.getSession();
+    if(!session){ window.location.href = "index.html"; return; }
+    currentUser = session.user;
+    const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+    if(error && !profile && /JWT|401|auth/i.test(error.message || "")){ await sb.auth.signOut(); window.location.href = "index.html"; return; }
+    if(error) throw error;
+    if(!profile || !profile.active){
+      await sb.auth.signOut();
+      window.location.href = "index.html";
+      return;
+    }
+    currentProfile = profile;
+    await loadRefData();
+    showApp();
+  }catch(err){
+    console.error("[SMP] boot failed:", err && err.message);
+    document.getElementById("content").innerHTML = `<div class="card"><div class="err">The dashboard could not be loaded (${esc((err && err.message) || "network error")}). Please check your connection and try again.</div>
+      <div class="actions-row" style="margin-top:10px;"><button class="btn-primary" type="button" onclick="location.reload()">Reload</button></div></div>`;
   }
-  currentProfile = profile;
-  await loadRefData();
-  showApp();
 }
 boot();
 
-async function loadRefData(){
-  const [{ data: markaz }, { data: products }] = await Promise.all([
+// The school master list is final and never grows, so markaz/products/schools are cached for the
+// browser session (per user) instead of being re-downloaded on every page load.
+const REF_TTL_MS = 30 * 60 * 1000;
+async function loadRefData(force){
+  const key = `smp_ref_v1_${currentProfile.id}`;
+  if(!force){
+    try{
+      const raw = sessionStorage.getItem(key);
+      if(raw){
+        const c = JSON.parse(raw);
+        if(c && Date.now() - c.ts < REF_TTL_MS && Array.isArray(c.schools) && c.schools.length){
+          cache.markaz = c.markaz; cache.products = c.products; cache.schools = c.schools;
+          return;
+        }
+      }
+    }catch(e){ /* cache is optional */ }
+  }
+  const schoolsQuery = () => scopeSchoolsQuery(
+    sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(tehsil)").eq("active", true)
+  );
+  const [mk, pr, sc] = await Promise.all([
     sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name"),
     sb.from("products").select("id,product_name,unit_name").eq("active", true).order("product_name"),
+    fetchAll(() => schoolsQuery().order("emis_code")).then(d => ({ data: d }), e => ({ error: e })),
   ]);
-  cache.markaz = markaz || [];
-  // Milk first, then Biscuit - matches the convention used everywhere else
-  // in the app (forms, tables, reports).
-  cache.products = (products || []).sort((a, b) => {
+  if(mk.error) throw mk.error;
+  if(pr.error) throw pr.error;
+  if(sc.error) throw sc.error;
+  cache.markaz = mk.data || [];
+  // Milk first, then Biscuit - matches the convention used everywhere else in the app.
+  cache.products = (pr.data || []).sort((a, b) => {
     const am = a.product_name.toLowerCase().includes("milk") ? 0 : 1;
     const bm = b.product_name.toLowerCase().includes("milk") ? 0 : 1;
     return am - bm;
   });
-
-  // markaz!inner is always joined so a TR's tehsil/wing scope can filter on it.
-  let schoolsQuery = scopeSchoolsQuery(
-    sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(tehsil)").eq("active", true)
-  );
-  if(currentProfile.role === "school_user") schoolsQuery = schoolsQuery.eq("id", currentProfile.school_id);
-  const { data: schools } = await schoolsQuery;
-  cache.schools = sortSchoolsStandard(schools);
+  cache.schools = sortSchoolsStandard(sc.data);
+  try{ sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), markaz: cache.markaz, products: cache.products, schools: cache.schools })); }catch(e){}
 }
 
 function showApp(){
@@ -183,212 +208,424 @@ async function renderOverviewSection(){
 /* ===================== OVERVIEW ===================== */
 const ENROLMENT_URL = "https://raw.githubusercontent.com/mwaqas3341-aeo/SIS-online-Enrolment-Updater/main/data/layyah.json";
 const WING_OPTIONS = ["M-EE", "W-EE", "SE"];
+const EXCLUDED_GRADES = new Set(["6", "7", "8", "9", "10", "11", "12"]);
+const PAGE_SIZE = 1000;                       // PostgREST's default row cap per request
+const CMP_STATUSES = ["Matched", "Short Received", "Excess Received", "AEO entered, company did not provide", "Company provided, AEO did not enter"];
+
+// Current filter selection. Dates are yyyy-mm-dd (inclusive on both ends); empty = overall.
+const F = { wing:"", tehsil:"", markaz:"", school:"", from:"", to:"" };
+const seqs = {};                              // per-section request counters: a late response never overwrites a newer one
+const memo = {};                              // fetched-once data reused across every filter change
+let markazById = {};
+
+function nextSeq(k){ return seqs[k] = (seqs[k] || 0) + 1; }
+function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+function dmy(d){ if(!d) return ""; const p = String(d).split("-"); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : String(d); }
+function tehsilOf(s){ return markazById[s.markaz_id]?.tehsil || s.markaz?.tehsil || ""; }
+function num(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
+
+// Reads every row of a query, past the 1000-row cap (build must return a fresh, ordered query each call).
+async function fetchAll(build){
+  const out = [];
+  for(let from = 0; ; from += PAGE_SIZE){
+    const { data, error } = await build().range(from, from + PAGE_SIZE - 1);
+    if(error) throw error;
+    out.push(...(data || []));
+    if(!data || data.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
+function getEnrolment(){
+  if(!memo.enrol){
+    memo.enrol = (async () => {
+      const res = await fetch(ENROLMENT_URL, { cache: "no-store" });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const map = {};
+      (data.schools || []).forEach(s => {
+        map[s.emis_code] = (s.grades || [])
+          .filter(g => !EXCLUDED_GRADES.has(String(g.grade_name).trim()))
+          .reduce((sum, g) => sum + num(g.male_students) + num(g.female_students), 0);
+      });
+      return map;
+    })().catch(e => { memo.enrol = null; throw e; });   // failed fetch is retried next time, not cached
+  }
+  return memo.enrol;
+}
+function getBalances(){
+  if(!memo.bal){
+    memo.bal = (async () => {
+      const rows = await fetchAll(() => sb.from("v_school_balances").select("*").order("school_id").order("product_id"));
+      const by = {};
+      rows.forEach(b => { (by[b.school_id] ||= {})[b.product_id] = num(b.balance); });
+      return by;
+    })().catch(e => { memo.bal = null; throw e; });
+  }
+  return memo.bal;
+}
+function getComparisonCounts(){
+  if(!memo.cmp){
+    memo.cmp = (async () => {
+      const results = await Promise.all(CMP_STATUSES.map(s =>
+        sb.from("v_company_vs_aeo_comparison").select("status", { count: "exact", head: true }).eq("status", s)));
+      const counts = {};
+      results.forEach((r, i) => { if(r.error) throw r.error; counts[CMP_STATUSES[i]] = r.count || 0; });
+      return counts;
+    })().catch(e => { memo.cmp = null; throw e; });
+  }
+  return memo.cmp;
+}
+
+function scopedSchools(){
+  return cache.schools.filter(s =>
+    (!F.wing || s.wing === F.wing) && (!F.tehsil || tehsilOf(s) === F.tehsil) &&
+    (!F.markaz || s.markaz_id === F.markaz) && (!F.school || s.id === F.school));
+}
+function periodError(){
+  if(F.from && F.to && F.from > F.to) return "“From” date is after “To” date - please correct the period.";
+  return "";
+}
+function scopeLabel(){
+  const bits = [];
+  if(F.school){ const s = cache.schools.find(x => x.id === F.school); bits.push(s ? `${s.emis_code} ${s.school_name}` : "School"); }
+  else if(F.markaz) bits.push(`Markaz ${markazById[F.markaz]?.name || ""}`);
+  else if(F.tehsil) bits.push(`Tehsil ${F.tehsil}`);
+  else bits.push("Overall (district)");
+  if(F.wing) bits.push(`Wing ${F.wing}`);
+  return bits.join(" · ");
+}
+function periodLabel(){
+  if(!F.from && !F.to) return "All dates";
+  return `${F.from ? dmy(F.from) : "beginning"} to ${F.to ? dmy(F.to) : "today"} (inclusive)`;
+}
+
+// Renders one dashboard section independently: a failure shows an inline error + Retry and never
+// touches the other sections. Stale responses (older than the latest request) are discarded.
+const sectionLoaders = {};
+async function runSection(id, key, fn, opts){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const bare = opts && opts.bare;
+  const my = nextSeq(key);
+  if(el.innerHTML.trim()) el.style.opacity = "0.55";
+  else el.innerHTML = bare ? `<p class="sub">Loading…</p>` : `<div class="card"><p class="sub" style="margin:0">Loading…</p></div>`;
+  try{
+    const html = await fn();
+    if(my !== seqs[key]) return;
+    el.innerHTML = html;
+  }catch(err){
+    if(my !== seqs[key]) return;
+    console.error(`[SMP] section "${key}" failed:`, err && err.message);
+    const box = `<div class="err">Could not load this section (${esc((err && err.message) || "unknown error")}). The rest of the dashboard is still usable.</div>
+      <div class="actions-row" style="margin-top:10px;"><button class="btn-secondary" type="button" data-retry="${key}">Retry</button></div>`;
+    el.innerHTML = bare ? box : `<div class="card">${box}</div>`;
+    const rb = el.querySelector("[data-retry]");
+    if(rb) rb.onclick = () => sectionLoaders[key] && sectionLoaders[key]();
+  }finally{
+    if(my === seqs[key]) el.style.opacity = "";
+  }
+}
 
 async function renderOverview(content){
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
-  const isTr = currentProfile.role === "tr";
-  const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
+  markazById = Object.fromEntries((cache.markaz || []).map(m => [m.id, m]));
+  if(!isAdmin && currentProfile.tehsil && !F.tehsil) F.tehsil = currentProfile.tehsil;
 
   content.innerHTML = `
     <div class="card">
-      <h3>Filters</h3>
-      <form id="dashFilterForm" class="form-row">
-        <div><label>Tehsil</label><select id="dashTehsil"><option value="">All</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
-        <div><label>Wing</label><select id="dashWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
-        <div><label>Markaz</label><select name="markaz_id" id="dashMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
-        <div><label>EMIS Code</label><input type="text" id="dashEmis" placeholder="Search one school"/></div>
-        <div style="align-self:end;"><button class="btn-primary" type="submit">Apply</button></div>
-      </form>
+      <h3>Filters &amp; Period</h3>
+      <div class="form-row">
+        <div><label>Wing</label><select id="fWing"></select></div>
+        <div><label>Tehsil</label><select id="fTehsil"></select></div>
+        <div><label>Markaz</label><select id="fMarkaz"></select></div>
+        <div><label>School</label><select id="fSchool"></select></div>
+        <div><label>From date</label><input type="date" id="fFrom"/></div>
+        <div><label>To date</label><input type="date" id="fTo"/></div>
+      </div>
+      <div class="actions-row" style="margin-top:12px;">
+        <button class="btn-secondary" type="button" id="resetPeriodBtn">Clear / Reset Period</button>
+        <button class="btn-secondary" type="button" id="resetFiltersBtn">Reset filters</button>
+        <button class="btn-secondary" type="button" id="refreshBtn">Refresh data</button>
+      </div>
+      <div id="dateMsg"></div>
     </div>
-    <div id="dashResults"><p style="color:var(--ink-soft)">Loading…</p></div>`;
 
-  const tEl = document.getElementById("dashTehsil"), wEl = document.getElementById("dashWing"), mEl = document.getElementById("dashMarkaz");
-  function refreshMarkazOptions(){
-    const t = tEl.value, w = wEl.value;
-    const markazIdsWithWing = w ? new Set(cache.schools.filter(s => s.wing === w).map(s => s.markaz_id)) : null;
-    const list = cache.markaz.filter(m => (!t || m.tehsil === t) && (!markazIdsWithWing || markazIdsWithWing.has(m.id)));
-    mEl.disabled = !w;
-    mEl.innerHTML = w
-      ? `<option value="">All</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")
-      : `<option value="">All (pick a Wing to narrow)</option>`;
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+        <div>
+          <h3 style="margin:0;">Milk &amp; Biscuits Summary</h3>
+          <p class="sub" id="summaryScope" style="margin:2px 0 0;"></p>
+        </div>
+        <div class="actions-row" style="margin:0;">
+          <button class="btn-secondary" type="button" id="dlCsvBtn">Download Received (CSV)</button>
+          <button class="btn-secondary" type="button" id="dlXlsxBtn">Download Received (Excel)</button>
+        </div>
+      </div>
+      <div id="secSummary"></div>
+    </div>
+    <div id="secCompare"></div>
+    <div id="secHealth"></div>
+    <div id="secMissing"></div>`;
+
+  sectionLoaders.summary = () => runSection("secSummary","summary",loadSummary,{bare:true});
+  sectionLoaders.compare = () => runSection("secCompare","compare",loadCompare);
+  sectionLoaders.health  = () => runSection("secHealth","health",loadHealth);
+  sectionLoaders.missing = () => runSection("secMissing","missing",loadMissing);
+
+  const $ = id => document.getElementById(id);
+  const refreshGeo = debounce(() => { runSection("secSummary","summary",loadSummary,{bare:true}); runSection("secHealth","health",loadHealth); runSection("secMissing","missing",loadMissing); }, 200);
+  const refreshDates = debounce(() => runSection("secSummary","summary",loadSummary,{bare:true}), 200);
+
+  function fillSelect(el, placeholder, items, current, disabled){
+    el.innerHTML = `<option value="">${esc(placeholder)}</option>` + items.map(i => `<option value="${esc(i.value)}">${esc(i.label)}</option>`).join("");
+    el.value = items.some(i => i.value === current) ? current : "";
+    el.disabled = !!disabled;
+    return el.value;
   }
-  // AEO/TR default their tehsil filter to their own scope, matching every other page's convention.
-  if(!isAdmin && currentProfile.tehsil) tEl.value = currentProfile.tehsil;
-  refreshMarkazOptions();
-  tEl.addEventListener("change", refreshMarkazOptions);
-  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkazOptions(); });
+  // Wing -> Tehsil -> Markaz -> School: each level only offers what exists under the levels above it.
+  function rebuildOptions(){
+    const inWing = cache.schools.filter(s => !F.wing || s.wing === F.wing);
+    $("fWing").innerHTML = `<option value="">All wings</option>` + WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("");
+    $("fWing").value = F.wing;
+    const tehsils = [...new Set(inWing.map(tehsilOf))].filter(Boolean).sort();
+    F.tehsil = fillSelect($("fTehsil"), "All tehsils", tehsils.map(t => ({ value:t, label:t })), F.tehsil);
+    const inTehsil = inWing.filter(s => !F.tehsil || tehsilOf(s) === F.tehsil);
+    const markazIds = [...new Set(inTehsil.map(s => s.markaz_id))];
+    const markazItems = markazIds.map(id => ({ value:id, label:markazById[id]?.name || "" })).sort((a,b) => a.label.localeCompare(b.label));
+    F.markaz = fillSelect($("fMarkaz"), F.wing ? "All markaz" : "All (pick a Wing to narrow)", markazItems, F.markaz, !F.wing);
+    const inMarkaz = inTehsil.filter(s => !F.markaz || s.markaz_id === F.markaz);
+    F.school = fillSelect($("fSchool"), "All schools", inMarkaz.map(s => ({ value:s.id, label:`${s.emis_code} — ${s.school_name}` })), F.school);
+  }
+  function syncSummaryHeader(){ $("summaryScope").textContent = `${scopeLabel()} · Period: ${periodLabel()}`; }
+  function validateDates(){
+    const msg = periodError();
+    $("dateMsg").innerHTML = msg ? `<div class="err">${esc(msg)}</div>` : "";
+    return !msg;
+  }
 
-  document.getElementById("dashFilterForm").addEventListener("submit", (e) => { e.preventDefault(); loadOverview(); });
-  await loadOverview();
+  $("fWing").addEventListener("change", e => { F.wing = e.target.value; F.markaz = ""; F.school = ""; rebuildOptions(); syncSummaryHeader(); refreshGeo(); });
+  $("fTehsil").addEventListener("change", e => { F.tehsil = e.target.value; F.markaz = ""; F.school = ""; rebuildOptions(); syncSummaryHeader(); refreshGeo(); });
+  $("fMarkaz").addEventListener("change", e => { F.markaz = e.target.value; F.school = ""; rebuildOptions(); syncSummaryHeader(); refreshGeo(); });
+  $("fSchool").addEventListener("change", e => { F.school = e.target.value; syncSummaryHeader(); refreshGeo(); });
+  const onDate = () => {
+    F.from = $("fFrom").value; F.to = $("fTo").value;
+    syncSummaryHeader();
+    if(validateDates()) refreshDates();
+  };
+  $("fFrom").addEventListener("change", onDate);
+  $("fTo").addEventListener("change", onDate);
+  $("resetPeriodBtn").addEventListener("click", () => { $("fFrom").value = ""; $("fTo").value = ""; onDate(); });
+  $("resetFiltersBtn").addEventListener("click", () => {
+    F.wing = ""; F.markaz = ""; F.school = ""; F.tehsil = (!isAdmin && currentProfile.tehsil) ? currentProfile.tehsil : "";
+    rebuildOptions(); syncSummaryHeader(); refreshGeo();
+  });
+  $("refreshBtn").addEventListener("click", () => {
+    ["bal","cmp","enrol"].forEach(k => delete memo[k]);
+    runSection("secSummary","summary",loadSummary,{bare:true}); runSection("secCompare","compare",loadCompare);
+    runSection("secHealth","health",loadHealth); runSection("secMissing","missing",loadMissing);
+  });
+  $("dlCsvBtn").addEventListener("click", () => downloadReceived("csv"));
+  $("dlXlsxBtn").addEventListener("click", () => downloadReceived("xlsx"));
+
+  rebuildOptions();
+  syncSummaryHeader();
+  runSection("secSummary","summary",loadSummary,{bare:true});
+  runSection("secCompare","compare",loadCompare);
+  runSection("secHealth","health",loadHealth);
+  runSection("secMissing","missing",loadMissing);
 }
 
-async function loadOverview(){
-  const tehsil = document.getElementById("dashTehsil").value || null;
-  const wing = document.getElementById("dashWing").value || null;
-  const markazId = document.getElementById("dashMarkaz").value || null;
-  const emis = (document.getElementById("dashEmis").value || "").trim();
-  const box = document.getElementById("dashResults");
-  box.innerHTML = `<p style="color:var(--ink-soft)">Calculating…</p>`;
-
-  let scoped = cache.schools;
-  // An EMIS code names exactly one school, so it overrides the geography
-  // and wing pickers rather than intersecting with them.
-  if(emis){
-    scoped = scoped.filter(s => (s.emis_code || "").includes(emis));
-  } else {
-    if(markazId) scoped = scoped.filter(s => s.markaz_id === markazId);
-    else if(tehsil) scoped = scoped.filter(s => cache.markaz.find(m => m.id === s.markaz_id)?.tehsil === tehsil);
-    if(wing) scoped = scoped.filter(s => s.wing === wing);
-  }
-  const scopedSchoolIds = scoped.map(s => s.id);
-  if(scopedSchoolIds.length === 0){
-    box.innerHTML = `<div class="card">No schools in scope.</div>`;
-    return;
-  }
-  const narrowed = !!(emis || markazId || tehsil || wing); // whether we deliberately narrowed vs relying on RLS's full scope
-
-  // ---- Balances (as of now) ----
-  // Only add an explicit school filter when deliberately narrowed - otherwise
-  // rely on RLS (security_invoker view). Passing all 741 school IDs in one
-  // .in() filter for the "everything" case produces a query string long
-  // enough to be rejected outright as a 400.
-  let balQuery = sb.from("v_school_balances").select("*");
-  if(narrowed) balQuery = balQuery.in("school_id", scopedSchoolIds);
-  const { data: balances, error: balErr } = await balQuery;
-  if(balErr){ box.innerHTML = `<div class="card"><div class="err">${esc(balErr.message)}</div></div>`; return; }
-
-  // ---- Comparison summary (scoped by RLS automatically) ----
-  const { data: cmpRows } = await sb.from("v_company_vs_aeo_comparison").select("status").limit(2000);
-  const cmpCounts = { "Matched":0, "Short Received":0, "Excess Received":0, "AEO entered, company did not provide":0, "Company provided, AEO did not enter":0 };
-  (cmpRows||[]).forEach(r => { cmpCounts[r.status] = (cmpCounts[r.status]||0) + 1; });
-
-  // ---- Outstanding rationalization (current status, not period-bound) ----
-  let loanQuery = sb.from("inventory_loans").select("id, status");
-  if(markazId) loanQuery = loanQuery.eq("markaz_id", markazId);
-  const { data: loanRows } = await loanQuery;
-  const outstandingLoans = (loanRows||[]).filter(l => ["pending","approved","partially_returned"].includes(l.status)).length;
-
-  // ---- Enrolment, fetched fresh right now - never stored - to compute
-  // days-of-stock-remaining per school (same logic as the Demand sheet,
-  // including the same classes 6-12 exclusion - kept in sync so the two
-  // pages never disagree on what "enrolment" means for a school). ----
-  const EXCLUDED_GRADES = new Set(["6", "7", "8", "9", "10", "11", "12"]);
-  let enrolmentByEmis = {}, enrolmentError = null;
-  try{
-    const res = await fetch(ENROLMENT_URL, { cache: "no-store" });
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const enrolData = await res.json();
-    (enrolData.schools || []).forEach(s => {
-      const total = (s.grades || [])
-        .filter(g => !EXCLUDED_GRADES.has(String(g.grade_name).trim()))
-        .reduce((sum, g) => sum + Number(g.male_students || 0) + Number(g.female_students || 0), 0);
-      enrolmentByEmis[s.emis_code] = total;
+/* ----- Section: four summary totals (server-side aggregation, one lightweight RPC) ----- */
+async function loadSummary(){
+  const err = periodError();
+  if(err) return `<div class="err">${esc(err)}</div>`;
+  const schools = scopedSchools();
+  let r = { milk_received:0, milk_consumed:0, biscuit_received:0, biscuit_consumed:0 };
+  if(schools.length){
+    const { data, error } = await sb.rpc("fn_dashboard_summary", {
+      p_from: F.from || null, p_to: F.to || null, p_wing: F.wing || null, p_tehsil: F.tehsil || null,
+      p_markaz_id: F.markaz || null, p_school_id: F.school || null,
     });
-  }catch(err){
-    enrolmentError = err.message;
+    if(error) throw error;
+    r = (Array.isArray(data) ? data[0] : data) || r;
   }
+  const card = (n, l) => `<div class="stat"><div class="n">${fmt(num(n))}</div><div class="l">${esc(l)}</div></div>`;
+  return `
+    <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">Milk</div>
+    <div class="grid-4">${card(r.milk_received,"Total Milk Packs Received")}${card(r.milk_consumed,"Total Milk Packs Consumed")}</div>
+    <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">Biscuits</div>
+    <div class="grid-4" style="margin-bottom:0;">${card(r.biscuit_received,"Total Biscuit Packs Received")}${card(r.biscuit_consumed,"Total Biscuit Packs Consumed")}</div>
+    <p class="sub" style="margin:12px 0 0;">${fmt(schools.length)} school(s) in this selection. Only active (non-void) records are counted; Milk and Biscuits are calculated independently.</p>`;
+}
+
+/* ----- Section: company vs AEO (not filter-dependent: fetched once, reused) ----- */
+async function loadCompare(){
+  const c = await getComparisonCounts();
+  return `
+    <div class="card">
+      <h3>Company vs AEO Comparison</h3>
+      <div class="grid-4">
+        <div class="stat"><div class="n">${c["Matched"]}</div><div class="l">Matched</div></div>
+        <div class="stat"><div class="n">${c["Short Received"]}</div><div class="l">Short</div></div>
+        <div class="stat"><div class="n">${c["Excess Received"]}</div><div class="l">Excess</div></div>
+        <div class="stat"><div class="n">${c["AEO entered, company did not provide"] + c["Company provided, AEO did not enter"]}</div><div class="l">Missing a record</div></div>
+      </div>
+    </div>`;
+}
+
+/* ----- Section: inventory health (balances + enrolment fetched once, filtered locally) ----- */
+async function loadHealth(){
+  const scoped = scopedSchools();
+  if(scoped.length === 0) return `<div class="card">No schools in scope.</div>`;
+  const wantLoans = () => {
+    let q = sb.from("inventory_loans").select("id", { count: "exact", head: true }).in("status", ["pending","approved","partially_returned"]);
+    if(F.markaz) q = q.eq("markaz_id", F.markaz);
+    return q;
+  };
+  const [balanceBy, enrol, loans] = await Promise.all([
+    getBalances(),
+    getEnrolment().then(map => ({ map }), e => ({ error: e.message })),
+    wantLoans().then(r => r, e => ({ error: e })),
+  ]);
+  const enrolmentError = enrol.error || null, enrolmentByEmis = enrol.map || {};
+  const outstandingLoans = (loans && !loans.error) ? (loans.count || 0) : null;
 
   const milk = cache.products.find(p => p.product_name.toLowerCase().includes("milk"));
   const biscuit = cache.products.find(p => p.product_name.toLowerCase().includes("biscuit"));
-  const balanceBy = {};
-  (balances||[]).forEach(b => { (balanceBy[b.school_id] ||= {})[b.product_id] = Number(b.balance); });
-
+  let milkTotal = 0, biscuitTotal = 0;
   const health = scoped.map(s => {
     const enrolment = enrolmentByEmis[s.emis_code];
     const milkBal = balanceBy[s.id]?.[milk?.id] ?? 0;
     const biscuitBal = balanceBy[s.id]?.[biscuit?.id] ?? 0;
+    milkTotal += milkBal; biscuitTotal += biscuitBal;
     const milkDays = enrolment ? milkBal / enrolment : null;
     const biscuitDays = enrolment ? biscuitBal / enrolment : null;
-    return {
-      school: s, enrolment, milkBal, biscuitBal, milkDays, biscuitDays,
-      milkLow: milkDays !== null && milkDays < 6,
-      biscuitLow: biscuitDays !== null && biscuitDays < 2,
-    };
+    return { school: s, enrolment, milkBal, biscuitBal, milkDays, biscuitDays,
+      milkLow: milkDays !== null && milkDays < 6, biscuitLow: biscuitDays !== null && biscuitDays < 2 };
   });
   const milkLowRows = health.filter(r => r.milkLow).sort((a,b) => a.milkDays - b.milkDays);
   const biscuitLowRows = health.filter(r => r.biscuitLow).sort((a,b) => a.biscuitDays - b.biscuitDays);
   const zeroStockRows = health.filter(r => r.milkBal <= 0 || r.biscuitBal <= 0);
 
-  // ---- Missing consumption, today only (quick glance) - the full
-  // date-range / EMIS-wise breakdown lives on Operations > Missing Consumption. ----
-  const today = todayStr();
-  let missingRows = [], missingErr = null;
-  try{
-    const { data, error } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: scopedSchoolIds, p_from: today, p_to: today });
-    if(error) throw error;
-    missingRows = data || [];
-  }catch(err){ missingErr = err.message; }
-  const scopedById = Object.fromEntries(scoped.map(s => [s.id, s]));
-  const missingBySchool = {};
-  missingRows.forEach(r => {
-    missingBySchool[r.school_id] = missingBySchool[r.school_id] || [];
-    missingBySchool[r.school_id].push(r.product_name);
-  });
-  const missingSchoolIds = Object.keys(missingBySchool);
-
-  box.innerHTML = `
-    <div class="card">
-      <h3>Overall</h3>
-      <div class="grid-4">
-        <div class="stat"><div class="n">${scopedSchoolIds.length}</div><div class="l">Schools in scope</div></div>
-        ${(balances||[]).length === 0 ? "" : Object.entries(
-            (balances||[]).filter(b => scopedSchoolIds.includes(b.school_id)).reduce((acc,b) => { acc[b.product_name] = (acc[b.product_name]||0) + Number(b.balance); return acc; }, {})
-          ).map(([p,q]) => `<div class="stat"><div class="n">${fmt(q)}</div><div class="l">${esc(p)} remaining</div></div>`).join("")}
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Company vs AEO Comparison</h3>
-      <div class="grid-4">
-        <div class="stat"><div class="n">${cmpCounts["Matched"]}</div><div class="l">Matched</div></div>
-        <div class="stat"><div class="n">${cmpCounts["Short Received"]}</div><div class="l">Short</div></div>
-        <div class="stat"><div class="n">${cmpCounts["Excess Received"]}</div><div class="l">Excess</div></div>
-        <div class="stat"><div class="n">${cmpCounts["AEO entered, company did not provide"] + cmpCounts["Company provided, AEO did not enter"]}</div><div class="l">Missing a record</div></div>
-      </div>
-    </div>
-
+  return `
     <div class="card">
       <h3>Inventory Health</h3>
-      <p class="sub">Days of stock remaining = current balance ÷ enrolment, assuming one pack per enrolled student per scheduled day. Milk flagged under 6 days, Biscuits under 2 days.</p>
+      <p class="sub">Current stock (not period-bound). Days of stock remaining = current balance ÷ enrolment, assuming one pack per enrolled student per scheduled day. Milk flagged under 6 days, Biscuits under 2 days.</p>
       ${enrolmentError ? `<div class="err" style="margin-bottom:14px;">Could not fetch enrolment data (${esc(enrolmentError)}) - days-remaining figures below are unavailable.</div>` : ""}
       <div class="grid-4">
+        <div class="stat"><div class="n">${fmt(scoped.length)}</div><div class="l">Schools in scope</div></div>
+        <div class="stat"><div class="n">${fmt(milkTotal)}</div><div class="l">Milk remaining</div></div>
+        <div class="stat"><div class="n">${fmt(biscuitTotal)}</div><div class="l">Biscuits remaining</div></div>
         <div class="stat"><div class="n" style="color:${milkLowRows.length ? 'var(--bad-fg)' : 'inherit'}">${milkLowRows.length}</div><div class="l">Milk &lt; 6 days</div></div>
         <div class="stat"><div class="n" style="color:${biscuitLowRows.length ? 'var(--bad-fg)' : 'inherit'}">${biscuitLowRows.length}</div><div class="l">Biscuits &lt; 2 days</div></div>
         <div class="stat"><div class="n">${zeroStockRows.length}</div><div class="l">Zero or negative stock</div></div>
-        <div class="stat"><div class="n">${outstandingLoans}</div><div class="l">Rationalization of Stock (not yet returned)</div></div>
+        <div class="stat"><div class="n">${outstandingLoans === null ? "—" : outstandingLoans}</div><div class="l">Rationalization of Stock (not yet returned)</div></div>
       </div>
       ${renderHealthTable("⚠ Milk under 6 days", milkLowRows, "milk")}
       ${renderHealthTable("⚠ Biscuits under 2 days", biscuitLowRows, "biscuit")}
-    </div>
+    </div>`;
+}
 
+/* ----- Section: missing consumption today ----- */
+async function loadMissing(){
+  const scoped = scopedSchools();
+  if(scoped.length === 0) return "";
+  const today = todayStr();
+  const { data, error } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: scoped.map(s => s.id), p_from: today, p_to: today });
+  if(error) throw error;
+  const scopedById = Object.fromEntries(scoped.map(s => [s.id, s]));
+  const missingBySchool = {};
+  (data || []).forEach(r => { (missingBySchool[r.school_id] ||= []).push(r.product_name); });
+  const ids = Object.keys(missingBySchool);
+  return `
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; flex-wrap:wrap; gap:10px;">
         <h3 style="margin:0;">Missing Consumption (Today)</h3>
         <a class="btn-secondary" href="operations.html" style="text-decoration:none;">Check a date range &rarr;</a>
       </div>
       <p class="sub">Schools with no consumption entry for a product that's actually scheduled today. For a date range or a CSV, use Operations &rarr; Missing Consumption.</p>
-      ${missingErr ? `<div class="err">${esc(missingErr)}</div>` : `
       <div class="grid-4">
-        <div class="stat"><div class="n" style="color:${missingSchoolIds.length ? 'var(--bad-fg)' : 'inherit'}">${missingSchoolIds.length}</div><div class="l">Schools missing today</div></div>
-        <div class="stat"><div class="n">${scopedSchoolIds.length}</div><div class="l">Schools in scope</div></div>
+        <div class="stat"><div class="n" style="color:${ids.length ? 'var(--bad-fg)' : 'inherit'}">${ids.length}</div><div class="l">Schools missing today</div></div>
+        <div class="stat"><div class="n">${scoped.length}</div><div class="l">Schools in scope</div></div>
       </div>
-      ${missingSchoolIds.length ? `
+      ${ids.length ? `
       <div class="table-wrap" style="margin-top:14px;"><table>
         <thead><tr><th>EMIS</th><th>School</th><th>Markaz</th><th>Missing</th></tr></thead>
-        <tbody>${missingSchoolIds.slice(0,20).map(id => {
-          const s = scopedById[id];
-          return `<tr>
-            <td>${esc(s?.emis_code)}</td>
-            <td>${esc(s?.school_name)}</td>
-            <td>${esc(cache.markaz.find(m => m.id === s?.markaz_id)?.name)}</td>
-            <td><span class="pill pill-bad">${esc(missingBySchool[id].join(", "))}</span></td>
-          </tr>`;
-        }).join("")}</tbody>
+        <tbody>${ids.slice(0,20).map(id => { const s = scopedById[id]; return `<tr>
+          <td>${esc(s?.emis_code)}</td><td>${esc(s?.school_name)}</td><td>${esc(markazById[s?.markaz_id]?.name)}</td>
+          <td><span class="pill pill-bad">${esc(missingBySchool[id].join(", "))}</span></td></tr>`; }).join("")}</tbody>
       </table></div>
-      ${missingSchoolIds.length > 20 ? `<div class="sub" style="margin-top:6px;">Showing first 20 of ${missingSchoolIds.length} - see Operations for the full list and CSV export.</div>` : ""}
+      ${ids.length > 20 ? `<div class="sub" style="margin-top:6px;">Showing first 20 of ${ids.length} - see Operations for the full list and CSV export.</div>` : ""}
       ` : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">Nothing missing for today in this scope - or nothing was scheduled today at all.</p>`}
-      `}
     </div>`;
+}
+
+/* ----- Download: inventory received entered by AEOs (respects current filters + period) ----- */
+let downloading = false;
+function loadXlsxLib(){
+  if(window.XLSX) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js";
+    s.onload = resolve; s.onerror = () => reject(new Error("Could not load the Excel library - use the CSV download instead."));
+    document.head.appendChild(s);
+  });
+}
+async function downloadReceived(kind){
+  if(downloading) return;
+  const perr = periodError();
+  if(perr){ toast(perr, "bad"); return; }
+  downloading = true;
+  const btns = [document.getElementById("dlCsvBtn"), document.getElementById("dlXlsxBtn")];
+  const labels = btns.map(b => b.textContent);
+  btns.forEach(b => { b.disabled = true; b.textContent = "Preparing…"; });
+  try{
+    const args = { p_from: F.from || null, p_to: F.to || null, p_wing: F.wing || null, p_tehsil: F.tehsil || null,
+                   p_markaz_id: F.markaz || null, p_school_id: F.school || null };
+    const rows = [];
+    for(let from = 0; ; from += PAGE_SIZE){
+      const { data, error } = await sb.rpc("fn_received_export", args).range(from, from + PAGE_SIZE - 1);
+      if(error) throw error;
+      rows.push(...(data || []));
+      if(!data || data.length < PAGE_SIZE) break;
+    }
+    if(rows.length === 0){ toast("No received-inventory records match the current filters and period.", "bad"); return; }
+    const header = ["Date","School EMIS Code","School Name","Wing","Tehsil","Markaz",
+      "Milk Quantity Received","Milk Invoice Number","Milk Invoice Date",
+      "Biscuit Quantity Received","Biscuit Invoice Number","Biscuit Invoice Date",
+      "Entered By","Verified","Certification Status"];
+    const cell = v => (v === null || v === undefined) ? "" : v;
+    const body = rows.map(r => [dmy(r.receipt_date), r.emis_code, r.school_name, cell(r.wing), r.tehsil, r.markaz,
+      r.milk_qty === null ? "" : num(r.milk_qty), cell(r.milk_invoice_no), dmy(r.milk_invoice_date),
+      r.biscuit_qty === null ? "" : num(r.biscuit_qty), cell(r.biscuit_invoice_no), dmy(r.biscuit_invoice_date),
+      cell(r.entered_by), r.verified ? "Yes" : "No", cell(r.certification_status)]);
+    const stamp = `${F.from || "all"}_to_${F.to || "all"}`;
+    const scopeName = (F.school ? "school" : F.markaz ? "markaz" : F.tehsil ? "tehsil" : "district") + (F.wing ? `-${F.wing}` : "");
+    const fname = `received-inventory_${scopeName}_${stamp}`;
+    if(kind === "xlsx"){
+      await loadXlsxLib();
+      const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Received Inventory");
+      XLSX.writeFile(wb, `${fname}.xlsx`);
+    } else {
+      const esc1 = v => { const s = String(v); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+      const csv = "\uFEFF" + [header, ...body].map(r => r.map(esc1).join(",")).join("\r\n");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      a.download = `${fname}.csv`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+    toast(`Downloaded ${rows.length} record(s).`);
+  }catch(err){
+    console.error("[SMP] download failed:", err && err.message);
+    toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
+  }finally{
+    downloading = false;
+    btns.forEach((b, i) => { b.disabled = false; b.textContent = labels[i]; });
+  }
 }
 
 function renderHealthTable(title, rows, highlight){
