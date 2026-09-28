@@ -212,3 +212,6 @@ input:disabled, select:disabled, textarea:disabled{
 .consumed-input:not(:disabled), .receiptDate:not(:disabled), .receiptInvoice:not(:disabled), .receiptQty:not(:disabled){
   background:var(--open-bg); border-color:var(--open-line);
 }
+
+/* Sync button (left of the user's name in the top bar) */
+#topbar .sync-me-btn{ padding:5px 10px; font-size:12px; }
