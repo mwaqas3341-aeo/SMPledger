@@ -244,6 +244,8 @@ function renderProformaSection(){
         if(!res.ok) throw new Error(data.error || "Sync failed");
         statusBox.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">
           Synced ${data.total} A-I-DB accounts - ${data.created} newly provisioned, ${data.updated} refreshed${data.skipped ? `, ${data.skipped} skipped` : ""}.
+          ${data.extraMarkazLinked ? `<br>${data.extraMarkazLinked} extra-markaz assignment(s) applied.` : ""}
+          ${data.extraMarkazUnmatched ? `<br><b>${data.extraMarkazUnmatched} extra markaz name(s) from A-I-DB have no match in SMP</b> and were not applied: ${(data.unmatchedNames || []).map(esc).join("; ")}` : ""}
           ${data.errors?.length ? `<br>Errors: ${data.errors.map(esc).join("; ")}` : ""}
         </p>`;
         toast("Directory sync complete");

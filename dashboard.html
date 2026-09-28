@@ -129,7 +129,8 @@ boot();
 // browser session (per user) instead of being re-downloaded on every page load.
 const REF_TTL_MS = 30 * 60 * 1000;
 async function loadRefData(force){
-  const key = `smp_ref_v1_${currentProfile.id}`;
+  // Key includes the user's scope, so a changed/extra markaz assignment is never hidden by a stale cache.
+  const key = `smp_ref_v2_${currentProfile.id}_${currentProfile.role}_${currentProfile.markaz_id || ""}_${(currentProfile.extra_markaz_ids || []).slice().sort().join("+")}_${currentProfile.tehsil || ""}_${currentProfile.wing_scope || ""}`;
   if(!force){
     try{
       const raw = sessionStorage.getItem(key);
