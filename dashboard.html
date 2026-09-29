@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SMP Dashboard — School Meal Program</title>
-<script src="assets/safety.js"></script>
-<script src="assets/layout.js"></script>
-<script src="assets/sync-me.js"></script>
-<script src="assets/config.js"></script>
+<script src="assets/safety.js?v=20260929c"></script>
+<script src="assets/layout.js?v=20260929c"></script>
+<script src="assets/sync-me.js?v=20260929c"></script>
+<script src="assets/config.js?v=20260929c"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css" />
+<link rel="stylesheet" href="assets/styles.css?v=20260929c" />
 </head>
 <body>
 
@@ -335,6 +335,10 @@ async function renderOverview(content){
   if(!isAdmin && currentProfile.tehsil && !F.tehsil) F.tehsil = currentProfile.tehsil;
 
   content.innerHTML = `
+    <div class="card" id="quickLinksCard">
+      <h3>Quick Links</h3>
+      <div class="menu-cards" id="moduleCards" style="padding:0; margin:0;"></div>
+    </div>
     <div class="card">
       <h3>Filters &amp; Period</h3>
       <div class="form-row">
@@ -430,6 +434,7 @@ async function renderOverview(content){
   $("dlCsvBtn").addEventListener("click", () => downloadReceived("csv"));
   $("dlXlsxBtn").addEventListener("click", () => downloadReceived("xlsx"));
 
+  buildModuleCards();
   rebuildOptions();
   syncSummaryHeader();
   runSection("secSummary","summary",loadSummary,{bare:true});

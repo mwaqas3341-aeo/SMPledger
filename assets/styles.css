@@ -140,7 +140,6 @@ body.has-sidebar #app{ margin-left:var(--sidebar-w); }
    (on dashboard.html) and for switching sections within a module page. */
 .menu-cards{
   display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px;
-  padding:20px 24px 4px; max-width:1240px;
 }
 .menu-card{
   display:block; text-align:left; background:var(--card); border:1.5px solid var(--line);
