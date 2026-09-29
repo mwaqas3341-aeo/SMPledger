@@ -234,18 +234,33 @@ let uploadState = { rows: null, headers: null, mapping: null, productId: null, m
 function renderUploadWizard(mount){
   uploadState = { rows: null, headers: null, mapping: null, productId: null };
   const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+  const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
   mount.innerHTML = `
     <div class="card">
       <h3>Upload company-provided data</h3>
       <p class="sub">Import a vendor delivery sheet (Excel/CSV) - a file can cover a whole week or month of deliveries with different dates and invoice numbers per row, so both are read from the file itself, not entered once for the whole batch. A file covering only one product still works with just the Product picker below; a mixed Milk-and-Biscuit file works too if you map a Product column in the next step.</p>
       <div class="form-row">
+        <div><label>Tehsil to import *</label><select id="upTehsil"><option value="">Select…</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
+        <div><label>Wing to import *</label><select id="upWing"><option value="">Select…</option><option value="M-EE">M-EE</option><option value="W-EE">W-EE</option></select></div>
         <div><label>Product (default if no Product column mapped below)</label><select id="upProduct"><option value="">Select…</option>${productOpts}</select></div>
-        <div><label>File</label><input type="file" id="upFile" accept=".xlsx,.xls,.csv"/></div>
+        <div><label>File</label><input type="file" id="upFile" accept=".xlsx,.xls,.csv" disabled/></div>
         <div style="align-self:end;"><button class="btn-secondary" type="button" id="templateBtn">Download template</button></div>
       </div>
+      <p class="sub" id="upScopeHint" style="color:var(--edit);">Pick the Tehsil and Wing you're importing first. Only rows whose school belongs to that Tehsil + Wing will be imported - every other EMIS code in the file (a different tehsil, wing, or one not in SMP at all) is skipped and listed as "out of scope", even if the file also contains other tehsils' data.</p>
       <div id="wizardStep2"></div>
     </div>
   `;
+
+  const fileInput = document.getElementById("upFile");
+  const scopeHint = document.getElementById("upScopeHint");
+  function refreshScopeLock(){
+    const ready = document.getElementById("upTehsil").value && document.getElementById("upWing").value;
+    fileInput.disabled = !ready;
+    scopeHint.style.display = ready ? "none" : "";
+    if(!ready) fileInput.value = "";
+  }
+  document.getElementById("upTehsil").addEventListener("change", refreshScopeLock);
+  document.getElementById("upWing").addEventListener("change", refreshScopeLock);
 
   document.getElementById("templateBtn").addEventListener("click", downloadTemplate);
 
@@ -312,7 +327,17 @@ async function renderPreview(){
     return;
   }
 
-  const schoolByEmis = Object.fromEntries(cache.schools.map(s => [String(s.emis_code).trim(), s]));
+  const upTehsil = document.getElementById("upTehsil").value;
+  const upWing = document.getElementById("upWing").value;
+  if(!upTehsil || !upWing){ toast("Pick the Tehsil and Wing you're importing first", "bad"); return; }
+  const markazTehsil = Object.fromEntries(cache.markaz.map(m => [m.id, m.tehsil]));
+  // Only schools inside the chosen Tehsil + Wing resolve here - anything else in the file (another
+  // tehsil, another wing, or an EMIS SMP doesn't know) falls through to the "EMIS not found / out of
+  // scope" branch below, exactly like a genuinely unknown code, so nothing outside the chosen scope
+  // is ever considered for import regardless of what else the file contains.
+  const inScopeSchools = cache.schools.filter(s => s.wing === upWing && markazTehsil[s.markaz_id] === upTehsil);
+  const schoolByEmis = Object.fromEntries(inScopeSchools.map(s => [String(s.emis_code).trim(), s]));
+  const anySchoolByEmis = Object.fromEntries(cache.schools.map(s => [String(s.emis_code).trim(), s]));
   // Match a cell's text against a product name by substring (e.g. a file
   // saying "Milk Packs" or "Powder Milk" both resolve to the Milk product).
   function resolveProduct(cellText){
@@ -331,8 +356,9 @@ async function renderPreview(){
     const invoiceNumber = String(r[invoiceCol] ?? "").trim();
     const deliveryDate = normalizeDate(String(r[dateCol] ?? "").trim());
     const school = schoolByEmis[emis];
+    const outOfScope = !school && !!anySchoolByEmis[emis];   // real EMIS, just not in the chosen Tehsil + Wing
     const product = productCol !== "" ? resolveProduct(r[productCol]) : cache.products.find(p => p.id === defaultProductId);
-    return { rowNum: i + 2, emis, qty, invoiceNumber, deliveryDate, school, product, valid: !!school && !!product && !isNaN(qty) && qty >= 0 && !!invoiceNumber && !!deliveryDate };
+    return { rowNum: i + 2, emis, qty, invoiceNumber, deliveryDate, school, product, outOfScope, valid: !!school && !!product && !isNaN(qty) && qty >= 0 && !!invoiceNumber && !!deliveryDate };
   });
 
   // Dedupe within this batch: same EMIS + invoice number + product for this
@@ -377,13 +403,14 @@ async function renderPreview(){
         <div class="stat"><div class="n">${validCount}</div><div class="l">Ready to import</div></div>
         <div class="stat"><div class="n">${invalidRows.filter(r => r.duplicate).length}</div><div class="l">Duplicates in this file</div></div>
         <div class="stat"><div class="n">${invalidRows.filter(r => r.alreadyInSystem).length}</div><div class="l">Invoice already in system</div></div>
+        <div class="stat"><div class="n">${invalidRows.filter(r => r.outOfScope).length}</div><div class="l">Outside ${esc(upTehsil)} / ${esc(upWing)}</div></div>
       </div>
       ${invalidRows.length ? `
         <p class="sub" style="margin-top:12px;">Rows that will be skipped:</p>
         <div class="table-wrap"><table><thead><tr><th>Row</th><th>EMIS</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Date</th><th>Reason</th></tr></thead><tbody>
           ${invalidRows.map(r => `<tr>
             <td>${r.rowNum}</td><td>${esc(r.emis)}</td><td>${esc(r.product?.product_name || "—")}</td><td>${esc(r.qty)}</td><td>${esc(r.invoiceNumber)}</td><td>${esc(r.deliveryDate)}</td>
-            <td>${r.alreadyInSystem ? "Invoice already exists in system" : r.duplicate ? "Duplicate EMIS+invoice+product in this file" : !r.school ? "EMIS not found" : !r.product ? "Product not recognized" : "Missing quantity, invoice #, or date"}</td>
+            <td>${r.alreadyInSystem ? "Invoice already exists in system" : r.duplicate ? "Duplicate EMIS+invoice+product in this file" : r.outOfScope ? `EMIS not in ${esc(upTehsil)} / ${esc(upWing)} - out of scope for this import` : !r.school ? "EMIS not found in SMP" : !r.product ? "Product not recognized" : "Missing quantity, invoice #, or date"}</td>
           </tr>`).join("")}
         </tbody></table></div>
       ` : ""}
