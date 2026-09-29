@@ -187,18 +187,24 @@ async function navigate(id){
 // their own markaz and never see this. Calls onApply(filteredSchoolIds)
 // whenever a selection changes, including once on initial render.
 function renderJurisdictionFilter(container, onApply){
-  if(!["admin","super_admin","tr"].includes(currentProfile.role)){
+  // An AEO with only one markaz has nothing to narrow, so skip straight to their schools.
+  // An AEO holding charge of several markaz gets a Markaz picker scoped to just those markaz,
+  // same as everyone else - previously this whole filter was skipped for every AEO, so someone
+  // with multiple markaz had no way to work on one at a time.
+  const isAeoMulti = currentProfile.role === "aeo" && myMarkazIds().length > 1;
+  if(!["admin","super_admin","tr"].includes(currentProfile.role) && !isAeoMulti){
     onApply(cache.schools.map(s => s.id));
     return;
   }
-  const districts = [...new Set(cache.markaz.map(m => m.district))].filter(Boolean).sort();
+  const scopedMarkaz = currentProfile.role === "aeo" ? cache.markaz.filter(m => myMarkazIds().includes(m.id)) : cache.markaz;
+  const districts = [...new Set(scopedMarkaz.map(m => m.district))].filter(Boolean).sort();
   const wings = [...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort();
   container.innerHTML = `
     <div class="card">
       <h3>Filter by jurisdiction</h3>
       <p class="sub">District and Tehsil narrow the area; Wing must be picked before Markaz becomes selectable, since which Markaz have schools of that Wing depends on it.</p>
       <div class="form-row">
-        <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
+        <div style="${currentProfile.role === 'aeo' ? 'display:none' : ''}"><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
         <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
@@ -210,7 +216,7 @@ function renderJurisdictionFilter(container, onApply){
 
   function refreshTehsil(){
     const d = dEl.value;
-    const tehsils = [...new Set(cache.markaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
+    const tehsils = [...new Set(scopedMarkaz.filter(m => !d || m.district === d).map(m => m.tehsil))].filter(Boolean).sort();
     tEl.innerHTML = `<option value="">All</option>` + tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
   }
   function refreshMarkaz(){
@@ -218,7 +224,7 @@ function renderJurisdictionFilter(container, onApply){
     const markazIdsWithWing = w
       ? new Set(cache.schools.filter(s => s.wing === w).map(s => s.markaz_id))
       : null;
-    const list = cache.markaz.filter(m =>
+    const list = scopedMarkaz.filter(m =>
       (!d || m.district === d) && (!t || m.tehsil === t) && (!markazIdsWithWing || markazIdsWithWing.has(m.id)));
     mEl.disabled = !w;
     mEl.innerHTML = w
@@ -236,7 +242,7 @@ function renderJurisdictionFilter(container, onApply){
       onApply(cache.schools.filter(s => (s.emis_code || "").includes(emis)).map(s => s.id));
       return;
     }
-    const markazIds = new Set(cache.markaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
+    const markazIds = new Set(scopedMarkaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
     onApply(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id));
   }
   refreshTehsil(); refreshMarkaz();
