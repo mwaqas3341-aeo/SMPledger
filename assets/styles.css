@@ -28,6 +28,7 @@
   --sidebar-w:250px;
 }
 *{ box-sizing:border-box; }
+html{ overflow-x:hidden; }
 body{
   margin:0; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   background:var(--paper); color:var(--ink); font-size:14px; -webkit-font-smoothing:antialiased;
@@ -97,7 +98,7 @@ button:active{ filter:brightness(.95); }
 
 /* ---------- Official sidebar navigation ---------- */
 #sidebarNav{
-  position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-w); background:var(--navy-dark);
+  position:fixed; top:0; left:0; bottom:0; width:min(var(--sidebar-w), 85vw); background:var(--navy-dark);
   color:#eef3f0; z-index:40; display:flex; flex-direction:column; overflow-y:auto;
   border-right:1px solid rgba(255,255,255,.08);
 }
@@ -125,6 +126,7 @@ button:active{ filter:brightness(.95); }
   padding:14px 12px 6px;
 }
 #sidebarOverlay{ display:none; position:fixed; inset:0; background:rgba(10,20,15,.45); z-index:35; }
+body.sidebar-open{ overflow:hidden; }
 
 /* Content shifts right of the fixed sidebar on desktop/tablet; becomes an overlay drawer on phones. */
 body.has-sidebar #app{ margin-left:var(--sidebar-w); }
@@ -176,7 +178,8 @@ thead th{
 }
 tbody td{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
 tbody tr:hover{ background:#fafbfd; }
-.table-wrap{ overflow-x:auto; }
+.table-wrap{ overflow-x:auto; max-width:100%; }
+img, svg{ max-width:100%; }
 .sticky-col{ position:sticky; left:0; background:inherit; z-index:1; }
 thead .sticky-col{ background:var(--card); z-index:2; }
 .col-group-milk{ background:#f6fbff; }
@@ -226,6 +229,7 @@ thead .col-group-milk, thead .col-group-biscuit{ background:var(--card); }
 .modal-box{
   background:var(--card); border-radius:var(--radius); padding:26px 26px 22px;
   width:100%; max-width:440px; box-shadow:0 24px 60px rgba(0,0,0,.35);
+  max-height:90vh; overflow-y:auto;
 }
 .modal-box h3{ margin:0 0 12px; font-size:16px; color:var(--bad-fg); display:flex; align-items:center; gap:8px; }
 .modal-box p{ font-size:13.5px; line-height:1.55; color:var(--ink); margin:0 0 12px; }
@@ -237,14 +241,45 @@ thead .col-group-milk, thead .col-group-biscuit{ background:var(--card); }
 .save-indicator.saving{ color:var(--ink-soft); font-weight:400; }
 .save-indicator.ok{ color:var(--ok-fg); }
 .save-indicator.bad{ color:var(--bad-fg); }
-@media (max-width:480px){ .save-indicator{ display:block; margin:4px 0 0; } }
 
 /* ---------- Mobile ---------- */
 @media (max-width: 860px){
   #content{ padding:16px 14px 60px; }
-  #topbar{ padding:12px 16px; flex-wrap:wrap; gap:8px; }
-  .menu-cards{ padding:14px 14px 4px; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+
+  /* The header used to be a fixed 58px single row; on a phone that's not enough room for the
+     menu button, title, sync button, name/role/jurisdiction and sign-out all in one line, and
+     forcing them to wrap inside a fixed height made the bar overflow itself. It's now two full-
+     width rows instead: title row, then a right-aligned actions row - both allowed to size to
+     their own content. */
+  #topbar{ height:auto; min-height:52px; padding:10px 14px; flex-wrap:wrap; gap:8px 0; align-items:center; }
+  #topbar .brand{ flex:1 1 100%; }
+  #topbar .right{ flex:1 1 100%; justify-content:flex-end; flex-wrap:wrap; gap:8px 10px; }
+  #topbar .brand h2{ font-size:14px; }
+  #topbar .who{ text-align:right; }
+
+  .menu-cards{ grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
   .item-row{ grid-template-columns:1fr 1fr; }
+
+  /* Roomier tap targets and no iOS auto-zoom-on-focus (which happens under 16px font-size). */
+  button{ padding:10px 14px; min-height:40px; }
+  input, select, textarea{ font-size:16px; padding:11px 12px; }
+  .link-btn{ padding:8px 6px; }
+
+  .card{ padding:16px; }
+  .grid-4{ gap:10px; }
+}
+
+@media (max-width: 480px){
+  #topbar .brand .eyebrow{ display:none; }   /* saves a line on very narrow phones - title alone is enough */
+  #topbar .brand h2{ font-size:13.5px; }
+  .save-indicator{ display:block; margin:4px 0 0; }
+
+  /* Two dropdowns side by side get too cramped on a small phone - stack every filter/form row
+     and every summary/stat grid to one column so labels and values stay fully readable. */
+  .form-row, .grid-4, .grid-3, .grid-2, .item-row{ grid-template-columns:1fr !important; }
+
+  .card{ padding:14px; }
+  .modal-box{ padding:20px 18px 16px; }
 }
 
 /* ---------- Action colours + locked/editable fields ---------- */
