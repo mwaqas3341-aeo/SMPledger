@@ -126,7 +126,8 @@ button:active{ filter:brightness(.95); }
   padding:14px 12px 6px;
 }
 #sidebarOverlay{ display:none; position:fixed; inset:0; background:rgba(10,20,15,.45); z-index:35; }
-body.sidebar-open{ overflow:hidden; }
+/* overflow:hidden while the drawer is open is applied inside the <=860px block below,
+   scoped to when the sidebar is actually an overlay - see there. */
 
 /* Content shifts right of the fixed sidebar on desktop/tablet; becomes an overlay drawer on phones. */
 body.has-sidebar #app{ margin-left:var(--sidebar-w); }
@@ -136,12 +137,13 @@ body.has-sidebar #app{ margin-left:var(--sidebar-w); }
   #sidebarNav{ transform:translateX(-100%); transition:transform .18s ease; box-shadow:2px 0 18px rgba(0,0,0,.25); }
   body.sidebar-open #sidebarNav{ transform:translateX(0); }
   body.sidebar-open #sidebarOverlay{ display:block; }
+  body.sidebar-open{ overflow:hidden; }
 }
 
 /* Card-based navigation - used both for switching between top-level modules
    (on dashboard.html) and for switching sections within a module page. */
 .menu-cards{
-  display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px;
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; max-width:100%;
 }
 .menu-card{
   display:block; text-align:left; background:var(--card); border:1.5px solid var(--line);
@@ -153,7 +155,7 @@ body.has-sidebar #app{ margin-left:var(--sidebar-w); }
 .menu-card .label{ font-size:13.5px; font-weight:700; color:var(--navy); display:block; }
 .menu-card .desc{ font-size:11.5px; color:var(--ink-soft); margin-top:3px; display:block; }
 
-#content{ padding:20px 24px 60px; max-width:1240px; }
+#content{ padding:20px 24px 60px; max-width:1320px; margin:0 auto; width:100%; }
 #menuToggle{ display:none; }
 
 /* ---------- Cards / stats ---------- */
@@ -243,6 +245,11 @@ thead .col-group-milk, thead .col-group-biscuit{ background:var(--card); }
 .save-indicator.bad{ color:var(--bad-fg); }
 
 /* ---------- Mobile ---------- */
+@media (min-width: 861px) and (max-width: 1024px){
+  #content{ padding:18px 16px 50px; }
+  .grid-4{ grid-template-columns:repeat(2, 1fr); }
+}
+
 @media (max-width: 860px){
   #content{ padding:16px 14px 60px; }
 
