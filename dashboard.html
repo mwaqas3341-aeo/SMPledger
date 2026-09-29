@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SMP Dashboard — School Meal Program</title>
 <script src="assets/safety.js"></script>
+<script src="assets/layout.js"></script>
 <script src="assets/sync-me.js"></script>
 <script src="assets/config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -25,7 +26,6 @@
       <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
     </div>
   </div>
-  <div class="menu-cards" id="moduleCards"></div>
   <div id="content"><p style="color:var(--ink-soft)">Loading dashboard…</p></div>
 </div>
 
@@ -168,7 +168,7 @@ async function loadRefData(force){
 
 function showApp(){
   document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
-  buildModuleCards();
+  renderSidebarNav();
   renderOverviewSection();
 }
 

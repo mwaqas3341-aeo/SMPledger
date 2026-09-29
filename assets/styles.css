@@ -6,24 +6,31 @@
    ========================================================================= */
 
 :root{
-  --navy:#1c2b4a;
-  --navy-dark:#12203a;
-  --slate:#4a5872;
-  --paper:#f4f6f9;
+  /* Official government palette - deep green (primary), white, light grey, dark ink,
+     restrained gold used only for the eyebrow label and a few small accents, matching a
+     formal administrative portal rather than a commercial SaaS product. Variable NAMES
+     are kept as --navy/--navy-dark for backward compatibility (every existing page and
+     component already references them) - only the colour VALUES change, so this single
+     block re-themes the entire application with no HTML/JS changes required anywhere else. */
+  --navy:#0e5b3c;
+  --navy-dark:#0a3f2a;
+  --slate:#3f5c4f;
+  --paper:#f2f4f2;
   --card:#ffffff;
-  --line:#dfe4ec;
-  --ink:#1c2330;
-  --ink-soft:#5b6577;
-  --gold:#b8862c;
+  --line:#d9e2dc;
+  --ink:#1b241f;
+  --ink-soft:#5a655e;
+  --gold:#9c7a1f;
   --ok-bg:#e8f5ea; --ok-fg:#1e6b34;
   --warn-bg:#fdf1dc; --warn-fg:#8a5a06;
   --bad-bg:#fbe7e7; --bad-fg:#a32626;
-  --radius:10px;
+  --radius:6px;
+  --sidebar-w:250px;
 }
 *{ box-sizing:border-box; }
 body{
   margin:0; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background:var(--paper); color:var(--ink); font-size:14px;
+  background:var(--paper); color:var(--ink); font-size:14px; -webkit-font-smoothing:antialiased;
 }
 .hidden{ display:none !important; }
 
@@ -69,19 +76,65 @@ button:active{ filter:brightness(.95); }
 /* ---------- App shell (topbar + card nav, no sidebar) ---------- */
 #app{ min-height:100vh; }
 #topbar{
-  background:var(--navy); color:#fff; padding:14px 24px;
-  display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:10;
-  box-shadow:0 2px 10px rgba(0,0,0,.12);
+  background:var(--navy); color:#fff; padding:0 22px; height:58px;
+  display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:30;
+  border-bottom:3px solid var(--gold);
 }
-#topbar .brand{ display:flex; align-items:center; gap:14px; }
-#topbar .brand .eyebrow{ font-size:10px; letter-spacing:.12em; color:var(--gold); font-weight:700; text-transform:uppercase; }
-#topbar .brand h2{ margin:1px 0 0; font-size:15px; color:#fff; font-weight:600; }
-#topbar .home-link{ color:#c4cde0; text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border-radius:6px; }
-#topbar .home-link:hover{ background:rgba(255,255,255,.1); color:#fff; }
-#topbar .right{ display:flex; align-items:center; gap:14px; }
-#topbar .who{ font-size:12.5px; color:#c4cde0; text-align:right; line-height:1.35; }
-#topbar .who b{ color:#fff; }
+#topbar .brand{ display:flex; align-items:center; gap:12px; }
+#topbar .brand .eyebrow{ font-size:10px; letter-spacing:.14em; color:#d9c98a; font-weight:700; text-transform:uppercase; }
+#topbar .brand h2{ margin:1px 0 0; font-size:15px; color:#fff; font-weight:600; letter-spacing:.01em; }
+#topbar .home-link{ display:none; } /* superseded by the sidebar's own Dashboard link */
+#topbar .right{ display:flex; align-items:center; gap:12px; }
+#topbar .who{ font-size:12px; color:#cfe3d8; text-align:right; line-height:1.35; }
+#topbar .who b{ color:#fff; font-size:12.5px; }
 #topbar button{ white-space:nowrap; }
+
+/* ---------- Sidebar toggle (hamburger) - shown in the header, opens the sidebar on mobile/tablet ---------- */
+#sidebarToggle{
+  display:none; background:transparent; color:#fff; padding:6px 8px; font-size:18px; line-height:1; border-radius:6px;
+}
+#sidebarToggle:hover{ background:rgba(255,255,255,.12); }
+
+/* ---------- Official sidebar navigation ---------- */
+#sidebarNav{
+  position:fixed; top:0; left:0; bottom:0; width:var(--sidebar-w); background:var(--navy-dark);
+  color:#eef3f0; z-index:40; display:flex; flex-direction:column; overflow-y:auto;
+  border-right:1px solid rgba(255,255,255,.08);
+}
+#sidebarNav .sn-brand{
+  padding:16px 18px 14px; border-bottom:1px solid rgba(255,255,255,.12); flex:0 0 auto;
+}
+#sidebarNav .sn-brand .sn-title{ font-size:14px; font-weight:700; color:#fff; letter-spacing:.01em; }
+#sidebarNav .sn-brand .sn-sub{ font-size:10.5px; color:#a9c2b3; letter-spacing:.08em; text-transform:uppercase; margin-top:3px; }
+#sidebarNav nav{ padding:10px 10px 20px; flex:1 1 auto; }
+#sidebarNav a.sn-link, #sidebarNav button.sn-group{
+  display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:transparent; border:none;
+  color:#dbe7e0; text-decoration:none; font-size:13px; font-weight:500; padding:9px 12px; border-radius:6px;
+  margin-bottom:2px; font-family:inherit; cursor:pointer;
+}
+#sidebarNav a.sn-link:hover, #sidebarNav button.sn-group:hover{ background:rgba(255,255,255,.08); color:#fff; }
+#sidebarNav a.sn-link.active{ background:#fff; color:var(--navy-dark); font-weight:700; }
+#sidebarNav .sn-group-label{ flex:1 1 auto; }
+#sidebarNav .sn-caret{ font-size:10px; transition:transform .15s ease; opacity:.75; }
+#sidebarNav .sn-group[aria-expanded="true"] .sn-caret{ transform:rotate(90deg); }
+#sidebarNav .sn-subnav{ padding-left:14px; margin:2px 0 6px; border-left:1px solid rgba(255,255,255,.14); margin-left:15px; }
+#sidebarNav .sn-subnav.hidden{ display:none; }
+#sidebarNav .sn-subnav a.sn-link{ font-size:12.5px; padding:8px 10px; }
+#sidebarNav .sn-section-label{
+  font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:#7fa393; font-weight:700;
+  padding:14px 12px 6px;
+}
+#sidebarOverlay{ display:none; position:fixed; inset:0; background:rgba(10,20,15,.45); z-index:35; }
+
+/* Content shifts right of the fixed sidebar on desktop/tablet; becomes an overlay drawer on phones. */
+body.has-sidebar #app{ margin-left:var(--sidebar-w); }
+@media (max-width: 860px){
+  #sidebarToggle{ display:inline-flex; align-items:center; justify-content:center; }
+  body.has-sidebar #app{ margin-left:0; }
+  #sidebarNav{ transform:translateX(-100%); transition:transform .18s ease; box-shadow:2px 0 18px rgba(0,0,0,.25); }
+  body.sidebar-open #sidebarNav{ transform:translateX(0); }
+  body.sidebar-open #sidebarOverlay{ display:block; }
+}
 
 /* Card-based navigation - used both for switching between top-level modules
    (on dashboard.html) and for switching sections within a module page. */
