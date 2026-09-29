@@ -257,7 +257,11 @@ function renderUploadWizard(mount){
     const ready = document.getElementById("upTehsil").value && document.getElementById("upWing").value;
     fileInput.disabled = !ready;
     scopeHint.style.display = ready ? "none" : "";
-    if(!ready) fileInput.value = "";
+    // Changing scope invalidates any file/preview already loaded under the old scope - clear both
+    // rather than leaving a stale preview on screen that no longer matches the pickers above it.
+    fileInput.value = "";
+    uploadState.rows = null;
+    document.getElementById("wizardStep2").innerHTML = "";
   }
   document.getElementById("upTehsil").addEventListener("change", refreshScopeLock);
   document.getElementById("upWing").addEventListener("change", refreshScopeLock);
