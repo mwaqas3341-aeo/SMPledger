@@ -276,6 +276,21 @@ thead .col-group-milk, thead .col-group-biscuit{ background:var(--card); }
   .grid-4{ gap:10px; }
 }
 
+/* Short landscape phones (e.g. a phone rotated sideways): width alone would still trigger the
+   two-row mobile header above, right when vertical space is scarcest. Height, not width, decides
+   this one - collapse back to a single compact row regardless of how wide the screen is, keeping
+   Sync/Sign out reachable and just hiding the name/role label (not a control, so nothing usable
+   is lost) so the page content gets its space back. */
+@media (max-height: 480px) and (orientation: landscape){
+  #topbar{ height:auto; min-height:44px; padding:6px 14px; flex-wrap:nowrap; }
+  #topbar .brand{ flex:0 1 auto; }
+  #topbar .brand .eyebrow{ display:none; }
+  #topbar .brand h2{ font-size:13px; }
+  #topbar .right{ flex:0 0 auto; }
+  #topbar .who{ display:none; }
+  .modal-box{ max-height:85vh; padding:16px 18px 14px; }
+}
+
 @media (max-width: 480px){
   #topbar .brand .eyebrow{ display:none; }   /* saves a line on very narrow phones - title alone is enough */
   #topbar .brand h2{ font-size:13.5px; }
