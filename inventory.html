@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Inventory Received — School Meal Program</title>
-<script src="assets/safety.js?v=20260929g"></script>
-<script src="assets/layout.js?v=20260929g"></script>
-<script src="assets/sync-me.js?v=20260929g"></script>
-<script src="assets/config.js?v=20260929g"></script>
+<script src="assets/safety.js?v=20260929h"></script>
+<script src="assets/layout.js?v=20260929h"></script>
+<script src="assets/sync-me.js?v=20260929h"></script>
+<script src="assets/config.js?v=20260929h"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929g" />
+<link rel="stylesheet" href="assets/styles.css?v=20260929h" />
 </head>
 <body>
 
@@ -343,12 +343,30 @@ async function renderMyReceiptsBody(visibleSchoolIds){
   // Selecting a date loads that date's entries right away - no separate
   // "Load" click needed.
   document.getElementById("receiptDateInput").addEventListener("change", (e) => {
-    selectedReceiptDate = e.target.value || todayStr();
+    let v = e.target.value || todayStr();
+    if(v > todayStr()){
+      toast("A delivery can't be dated in the future - check the day and month.", "bad");
+      v = todayStr();
+      e.target.value = v;
+    }
+    selectedReceiptDate = v;
     renderMyReceiptsBody(visibleSchoolIds);
   });
   document.getElementById("receiptTodayBtn").addEventListener("click", () => {
     selectedReceiptDate = todayStr();
     renderMyReceiptsBody(visibleSchoolIds);
+  });
+
+  // Clamp every per-row date field the moment it changes (typing or scrolling past today in the
+  // native picker isn't reliably blocked by the max="" attribute on every browser) - immediate
+  // feedback here, rather than only catching it later when Submit is pressed.
+  mount.querySelectorAll(".receiptDate").forEach(el => {
+    el.addEventListener("change", (e) => {
+      if(e.target.value && e.target.value > todayStr()){
+        toast("A delivery can't be dated in the future - check the day and month.", "bad");
+        e.target.value = todayStr();
+      }
+    });
   });
 
   // Locked rows (already have data for this date) start with disabled inputs.
@@ -446,6 +464,13 @@ async function trySaveReceipt(inp, visibleSchoolIds){
   // different invoices, different dates - so each product's Date/Invoice #
   // is required on its own; neither is ever assumed to share the other's.
   const effectiveDate = dateInput.value, effectiveInvoice = invoiceInput.value.trim();
+
+  if(effectiveDate && effectiveDate > todayStr()){
+    toast(`${product?.product_name} date can't be in the future - check the day and month.`, "bad");
+    dateInput.value = todayStr();
+    dateInput.focus();
+    return false;
+  }
 
   // Invoice # is required - it's what the system matches against company
   // data to compare what was actually delivered, independently per product.
@@ -588,7 +613,7 @@ function showEditReceiptModal(existing, school, product, onSaved){
       <h3>Edit Receipt</h3>
       <p>${esc(school?.school_name)} — ${esc(product?.product_name)}</p>
       <form id="editReceiptForm" class="form-row" style="grid-template-columns:1fr;">
-        <div><label>Date</label><input type="date" name="receipt_date" value="${existing.receipt_date || todayStr()}" max="${todayStr()}" required/></div>
+        <div><label>Date</label><input type="date" id="editReceiptDateField" name="receipt_date" value="${existing.receipt_date || todayStr()}" max="${todayStr()}" required/></div>
         <div><label>Invoice #</label><input type="text" name="invoice_number" value="${esc(existing.invoice_number || "")}" required/></div>
         <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity_received" value="${existing.quantity_received}" required/></div>
         <div class="actions-row">
@@ -602,9 +627,20 @@ function showEditReceiptModal(existing, school, product, onSaved){
   const close = () => overlay.remove();
   document.getElementById("editCancelBtn").addEventListener("click", close);
   overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+  document.getElementById("editReceiptDateField").addEventListener("change", (e) => {
+    if(e.target.value && e.target.value > todayStr()){
+      toast("Date can't be in the future - check the day and month.", "bad");
+      e.target.value = todayStr();
+    }
+  });
   document.getElementById("editReceiptForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    const chosenDate = fd.get("receipt_date");
+    if(chosenDate && chosenDate > todayStr()){
+      toast("Date can't be in the future - check the day and month.", "bad");
+      return;
+    }
     try{
       const { data, error } = await sb.rpc("fn_update_school_receipt", {
         p_receipt_id: existing.id,
