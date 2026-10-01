@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Inventory Received — School Meal Program</title>
-<script src="assets/safety.js?v=20260929f"></script>
-<script src="assets/layout.js?v=20260929f"></script>
-<script src="assets/sync-me.js?v=20260929f"></script>
-<script src="assets/config.js?v=20260929f"></script>
+<script src="assets/safety.js?v=20260929g"></script>
+<script src="assets/layout.js?v=20260929g"></script>
+<script src="assets/sync-me.js?v=20260929g"></script>
+<script src="assets/config.js?v=20260929g"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929f" />
+<link rel="stylesheet" href="assets/styles.css?v=20260929g" />
 </head>
 <body>
 
@@ -316,7 +316,7 @@ async function renderMyReceiptsBody(visibleSchoolIds){
             const existing = existingByKey[`${s.id}|${p.id}`];
             if(existing) hasData = true;
             return `
-            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${existing?.receipt_date || selectedReceiptDate}" style="width:120px;padding:5px 6px;"/></td>
+            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${existing?.receipt_date || selectedReceiptDate}" max="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
             <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" value="${esc(existing?.invoice_number || "")}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
             <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
               <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
@@ -588,7 +588,7 @@ function showEditReceiptModal(existing, school, product, onSaved){
       <h3>Edit Receipt</h3>
       <p>${esc(school?.school_name)} — ${esc(product?.product_name)}</p>
       <form id="editReceiptForm" class="form-row" style="grid-template-columns:1fr;">
-        <div><label>Date</label><input type="date" name="receipt_date" value="${existing.receipt_date || todayStr()}" required/></div>
+        <div><label>Date</label><input type="date" name="receipt_date" value="${existing.receipt_date || todayStr()}" max="${todayStr()}" required/></div>
         <div><label>Invoice #</label><input type="text" name="invoice_number" value="${esc(existing.invoice_number || "")}" required/></div>
         <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity_received" value="${existing.quantity_received}" required/></div>
         <div class="actions-row">
