@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Operations — School Meal Program</title>
-<script src="assets/safety.js?v=20260929h"></script>
-<script src="assets/layout.js?v=20260929h"></script>
-<script src="assets/sync-me.js?v=20260929h"></script>
-<script src="assets/config.js?v=20260929h"></script>
+<script src="assets/safety.js?v=20260929i"></script>
+<script src="assets/layout.js?v=20260929i"></script>
+<script src="assets/sync-me.js?v=20260929i"></script>
+<script src="assets/config.js?v=20260929i"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929h" />
+<link rel="stylesheet" href="assets/styles.css?v=20260929i" />
 </head>
 <body>
 
@@ -495,7 +495,7 @@ function renderAdjustmentsSection(){
         <div id="markazField" class="hidden"><label>Markaz</label><select name="markaz_id"><option value="">Select…</option>${markazOpts}</select></div>
         <div><label>Product</label><select name="product_id" required><option value="">Select…</option>${productOpts}</select></div>
         <div><label>Quantity (+/-)</label><input type="number" name="quantity" step="0.01" required placeholder="e.g. -12 or 5"/></div>
-        <div><label>Date</label><input type="date" name="adjustment_date" value="${todayStr()}" required/></div>
+        <div><label>Date</label><input type="date" name="adjustment_date" id="adjDateField" value="${todayStr()}" max="${todayStr()}" required/></div>
         <div style="grid-column:1/-1;"><label>Reason</label><input type="text" name="reason" required placeholder="e.g. Spoiled during transport"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Post adjustment</button></div>
       </form>
@@ -518,10 +518,20 @@ function renderAdjustmentsSection(){
   }
   entityType.addEventListener("change", toggleFields);
   toggleFields();
+  document.getElementById("adjDateField").addEventListener("change", (e) => {
+    if(e.target.value && e.target.value > todayStr()){
+      toast("Adjustment date can't be in the future - check the day and month.", "bad");
+      e.target.value = todayStr();
+    }
+  });
 
   document.getElementById("adjForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    if(fd.get("adjustment_date") > todayStr()){
+      toast("Adjustment date can't be in the future - check the day and month.", "bad");
+      return;
+    }
     const entity = fd.get("entity_type");
     try{
       const { error } = await sb.rpc("fn_create_adjustment", {

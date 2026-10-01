@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SMP Permanent Transfer &amp; Rationalization of Stock — School Meal Program</title>
-<script src="assets/safety.js?v=20260929h"></script>
-<script src="assets/layout.js?v=20260929h"></script>
-<script src="assets/sync-me.js?v=20260929h"></script>
-<script src="assets/config.js?v=20260929h"></script>
+<script src="assets/safety.js?v=20260929i"></script>
+<script src="assets/layout.js?v=20260929i"></script>
+<script src="assets/sync-me.js?v=20260929i"></script>
+<script src="assets/config.js?v=20260929i"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929h" />
+<link rel="stylesheet" href="assets/styles.css?v=20260929i" />
 </head>
 <body>
 
@@ -233,7 +233,7 @@ async function renderTransfers(content){
           <div><label>From School</label><select name="from_school_id" required></select></div>
           <div><label>To School</label><select name="to_school_id" required></select></div>
           <div><label>Quantity</label><input type="number" min="0" step="0.01" name="quantity" required /></div>
-          <div><label>Date</label><input type="date" name="transfer_date" required value="${todayStr()}"/></div>
+          <div><label>Date</label><input type="date" name="transfer_date" id="transferDateField" required value="${todayStr()}" max="${todayStr()}"/></div>
           <div><label>Reason</label><input name="reason" /></div>
         </div>
         <div class="actions-row"><button class="btn-primary" type="submit">Create Permanent Transfer of Stock</button></div>
@@ -259,9 +259,19 @@ async function renderTransfers(content){
 
   const form = document.getElementById("transferForm");
   wireMarkazSchoolFilters(form);
+  document.getElementById("transferDateField").addEventListener("change", (e) => {
+    if(e.target.value && e.target.value > todayStr()){
+      toast("Transfer date can't be in the future - check the day and month.", "bad");
+      e.target.value = todayStr();
+    }
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
+    if(fd.get("transfer_date") > todayStr()){
+      toast("Transfer date can't be in the future - check the day and month.", "bad");
+      return;
+    }
     try{
       const { error } = await sb.rpc("fn_create_transfer", {
         p_markaz_id: fd.get("markaz_id"),
@@ -303,7 +313,7 @@ async function renderLoans(content){
           <div><label>From School (lender)</label><select name="from_school_id" required></select></div>
           <div><label>To School (borrower)</label><select name="to_school_id" required></select></div>
           ${productQtyFields()}
-          <div><label>Rationalization Date</label><input type="date" name="loan_date" required value="${todayStr()}"/></div>
+          <div><label>Rationalization Date</label><input type="date" name="loan_date" id="loanDateField" required value="${todayStr()}" max="${todayStr()}"/></div>
           <div><label>Expected Return Date</label><input type="date" name="expected_return_date" /></div>
           <div><label>Reason</label><input name="reason" /></div>
         </div>
@@ -320,9 +330,19 @@ async function renderLoans(content){
 
   const form = document.getElementById("loanForm");
   wireMarkazSchoolFilters(form);
+  document.getElementById("loanDateField").addEventListener("change", (e) => {
+    if(e.target.value && e.target.value > todayStr()){
+      toast("Rationalization date can't be in the future - check the day and month.", "bad");
+      e.target.value = todayStr();
+    }
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
+    if(fd.get("loan_date") > todayStr()){
+      toast("Rationalization date can't be in the future - check the day and month.", "bad");
+      return;
+    }
     const entries = cache.products
       .map(p => ({ product: p, qty: Number(fd.get(`qty_${p.id}`) || 0) }))
       .filter(x => x.qty > 0);
