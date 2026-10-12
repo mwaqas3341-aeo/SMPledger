@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Users &amp; Markaz Access — School Meal Program</title>
+<script src="assets/safety.js?v=20260929i"></script>
+<script src="assets/layout.js?v=20260929i"></script>
+<script src="assets/sync-me.js?v=20260929i"></script>
+<script src="assets/report-email.js?v=20261012a"></script>
+<script src="assets/config.js?v=20260929i"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css?v=20260929i" />
+<style>
+  .uf-bar{ display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-bottom:12px; }
+  .uf-bar > div{ min-width:150px; }
+  .uf-bar .grow{ flex:1; min-width:220px; }
+  .mk-list{ border:1px solid var(--line); border-radius:var(--radius); max-height:230px; overflow-y:auto; padding:6px 8px; background:#fff; }
+  .mk-item{ display:flex; align-items:center; gap:8px; padding:4px 2px; font-size:13px; cursor:pointer; margin:0; font-weight:500; color:var(--ink); }
+  .mk-item input{ width:auto; margin:0; }
+  .mk-item small{ color:var(--ink-soft); }
+  .mk-tools{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; font-size:12.5px; color:var(--ink-soft); }
+  .tab-row{ display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .muted{ color:var(--ink-soft); font-size:12.5px; }
+  .tight td, .tight th{ white-space:nowrap; }
+  .tight td.wrap{ white-space:normal; min-width:200px; }
+  .modal-wide{ max-width:680px !important; }
+  .modal-wide h3{ color:var(--ink) !important; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div class="brand">
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Users &amp; Markaz Access</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
+    </div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </div>
+  <div id="content"></div>
+</div>
+
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+/*
+  Admin-only user directory. Users, roles, markaz assignments and report emails are kept in SMP's
+  own `profiles` table; saving a user here marks them "maintained locally" (profiles.locked_scope)
+  so A-I-DB login/sync no longer overwrites their role, markaz, tehsil, name or cell number.
+
+  Access model (unchanged, enforced by row-level security elsewhere in the app):
+    aeo   -> home markaz + any number of extra markaz (extra_markaz_ids)
+    tr    -> every school in their tehsil (optionally one wing)
+    admin -> everything
+  Whoever holds a markaz sees its schools and reports, so assigning a markaz to a person is all
+  that is needed to give them that markaz's schools and reports.
+
+  Client-side gate below + RLS (profiles_admin_all / trg_profiles_guard) as the real backstop.
+*/
+
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+
+let currentUser = null, currentProfile = null;
+let cache = { markaz: [], people: [] };
+let view = { tab: "users", q: "", role: "", email: "", managed: "", cq: "" };
+
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
+
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){ await sb.auth.signOut(); window.location.href = "index.html"; return; }
+  if(!["admin","super_admin"].includes(profile.role)){ window.location.href = "dashboard.html"; return; }
+  currentProfile = profile;
+  await loadData();
+  showApp();
+}
+boot();
+
+function showApp(){
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+  renderSidebarNav();
+  renderPage();
+}
+
+async function loadData(){
+  const [mk, pp] = await Promise.all([
+    sb.from("markaz").select("id,name,district,tehsil,active").eq("active", true).order("name"),
+    sb.from("profiles").select("id,full_name,role,markaz_id,extra_markaz_ids,tehsil,wing_scope,cell_no,cnic,active,report_email,locked_scope,jurisdiction_source,jurisdiction_synced_at,school_id").order("full_name"),
+  ]);
+  if(mk.error || pp.error){ toast((mk.error || pp.error).message, "bad"); }
+  cache.markaz = mk.data || [];
+  cache.people = pp.data || [];
+}
+
+const markazById = () => Object.fromEntries(cache.markaz.map(m => [m.id, m]));
+const tehsils = () => [...new Set(cache.markaz.map(m => m.tehsil).filter(Boolean))].sort();
+function cnicTail(c){ const d = String(c || "").replace(/\D/g, ""); return d ? "•••••••••" + d.slice(-4) : "—"; }
+
+function accessText(p){
+  const byId = markazById();
+  if(p.role === "admin" || p.role === "super_admin") return "All schools";
+  if(p.role === "tr"){
+    return (p.tehsil ? `Whole tehsil: ${p.tehsil}` : "No tehsil set") + (p.wing_scope ? ` (${p.wing_scope})` : "");
+  }
+  if(p.role === "school_user") return "Single school";
+  const home = byId[p.markaz_id];
+  const extra = (p.extra_markaz_ids || []).length;
+  if(!home && !extra) return "No markaz assigned";
+  return (home ? home.name : "No home markaz") + (extra ? ` +${extra} more` : "");
+}
+
+/* ===================== PAGE ===================== */
+function renderPage(){
+  const content = document.getElementById("content");
+  const active = cache.people.filter(p => p.active);
+  const needEmail = active.filter(p => ["aeo","tr","admin"].includes(p.role) && !p.report_email).length;
+  const local = cache.people.filter(p => p.locked_scope).length;
+  content.innerHTML = `
+    <div class="card">
+      <h3>Users &amp; Markaz Access</h3>
+      <p class="sub">Maintain users, their report email and which markaz each person holds. A person who holds a markaz sees that markaz's schools and reports. Users saved here are marked <b>Local</b>: A-I-DB sign-in and sync no longer overwrite their role, markaz, tehsil, name or cell number.</p>
+      <div class="grid-4" style="margin-top:12px;">
+        <div class="stat"><div class="n">${active.length}</div><div class="l">Active users</div></div>
+        <div class="stat"><div class="n">${local}</div><div class="l">Maintained locally</div></div>
+        <div class="stat"><div class="n" style="color:${needEmail ? "var(--warn-fg)" : "var(--ok-fg)"}">${needEmail}</div><div class="l">Missing report email</div></div>
+      </div>
+    </div>
+    <div class="tab-row">
+      <button class="${view.tab === "users" ? "btn-primary" : "btn-secondary"}" type="button" id="tabUsers">Users</button>
+      <button class="${view.tab === "coverage" ? "btn-primary" : "btn-secondary"}" type="button" id="tabCoverage">Markaz coverage</button>
+    </div>
+    <div id="tabBody"></div>`;
+  document.getElementById("tabUsers").onclick = () => { view.tab = "users"; renderPage(); };
+  document.getElementById("tabCoverage").onclick = () => { view.tab = "coverage"; renderPage(); };
+  if(view.tab === "coverage") renderCoverage(); else renderUsers();
+}
+
+/* ===================== USERS TAB ===================== */
+function filteredPeople(){
+  const q = view.q.trim().toLowerCase();
+  return cache.people.filter(p => {
+    if(view.role && p.role !== view.role) return false;
+    if(view.email === "missing" && p.report_email) return false;
+    if(view.email === "set" && !p.report_email) return false;
+    if(view.managed === "local" && !p.locked_scope) return false;
+    if(view.managed === "aidb" && p.locked_scope) return false;
+    if(q){
+      const hay = [p.full_name, p.report_email, p.cell_no, p.cnic, accessText(p)].join(" ").toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderUsers(){
+  const body = document.getElementById("tabBody");
+  body.innerHTML = `
+    <div class="card">
+      <div class="uf-bar">
+        <div class="grow"><label>Search</label><input id="fQ" type="search" placeholder="Name, email, cell, CNIC, markaz…" value="${esc(view.q)}"/></div>
+        <div><label>Role</label><select id="fRole">
+          <option value="">All</option>
+          ${["aeo","tr","admin","school_user"].map(r => `<option value="${r}" ${view.role === r ? "selected" : ""}>${r}</option>`).join("")}
+        </select></div>
+        <div><label>Report email</label><select id="fEmail">
+          <option value="">All</option>
+          <option value="missing" ${view.email === "missing" ? "selected" : ""}>Missing</option>
+          <option value="set" ${view.email === "set" ? "selected" : ""}>Set</option>
+        </select></div>
+        <div><label>Managed</label><select id="fManaged">
+          <option value="">All</option>
+          <option value="local" ${view.managed === "local" ? "selected" : ""}>Local</option>
+          <option value="aidb" ${view.managed === "aidb" ? "selected" : ""}>A-I-DB</option>
+        </select></div>
+      </div>
+      <div class="table-wrap"><table class="tight">
+        <thead><tr><th>Name</th><th>Role</th><th>Access</th><th>Report email</th><th>Cell</th><th>CNIC</th><th>Status</th><th></th></tr></thead>
+        <tbody id="userRows"></tbody>
+      </table></div>
+      <p class="muted" id="userCount" style="margin-top:8px;"></p>
+    </div>`;
+  const rerenderRows = () => {
+    const list = filteredPeople();
+    document.getElementById("userRows").innerHTML = list.length ? list.map(p => `
+      <tr>
+        <td>${esc(p.full_name || "—")}</td>
+        <td><span class="pill pill-role">${esc(p.role)}</span></td>
+        <td class="wrap">${esc(accessText(p))}</td>
+        <td>${p.report_email ? esc(p.report_email) : `<span class="pill pill-warn">not set</span>`}</td>
+        <td>${esc(p.cell_no || "—")}</td>
+        <td class="muted">${cnicTail(p.cnic)}</td>
+        <td>${p.active ? `<span class="pill pill-ok">Active</span>` : `<span class="pill pill-bad">Inactive</span>`}
+            ${p.locked_scope ? `<span class="pill pill-role" title="Maintained in SMP; A-I-DB cannot overwrite">Local</span>` : `<span class="pill pill-warn" title="Still refreshed from A-I-DB on sign-in until edited here">A-I-DB</span>`}</td>
+        <td><button class="btn-secondary" type="button" data-edit="${p.id}">Edit</button></td>
+      </tr>`).join("") : `<tr><td colspan="8" class="muted">No users match.</td></tr>`;
+    document.getElementById("userCount").textContent = `${list.length} of ${cache.people.length} users`;
+    document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => openEditor(b.dataset.edit));
+  };
+  rerenderRows();
+  document.getElementById("fQ").oninput = (e) => { view.q = e.target.value; rerenderRows(); };
+  document.getElementById("fRole").onchange = (e) => { view.role = e.target.value; rerenderRows(); };
+  document.getElementById("fEmail").onchange = (e) => { view.email = e.target.value; rerenderRows(); };
+  document.getElementById("fManaged").onchange = (e) => { view.managed = e.target.value; rerenderRows(); };
+}
+
+/* ===================== EDITOR ===================== */
+function openEditor(id){
+  const p = cache.people.find(x => x.id === id);
+  if(!p) return;
+  const isSelf = p.id === currentProfile.id;
+  const roleOptions = ["aeo","tr","admin"].concat(["super_admin","school_user"].includes(p.role) ? [p.role] : []);
+  const selectedExtra = new Set(p.extra_markaz_ids || []);
+  const markazSorted = cache.markaz.slice().sort((a, b) => (a.tehsil || "").localeCompare(b.tehsil || "") || a.name.localeCompare(b.name));
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box modal-wide">
+      <h3>Edit user</h3>
+      <p class="muted" style="margin-bottom:10px;">CNIC ${cnicTail(p.cnic)} &middot; ${p.locked_scope ? "Maintained locally" : "Currently refreshed from A-I-DB on sign-in"}</p>
+      <div class="form-row">
+        <div><label>Full name</label><input id="eName" type="text" value="${esc(p.full_name || "")}"/></div>
+        <div><label>Cell no.</label><input id="eCell" type="text" value="${esc(p.cell_no || "")}"/></div>
+        <div><label>Report email</label><input id="eEmail" type="email" placeholder="name@gmail.com" value="${esc(p.report_email || "")}"/></div>
+      </div>
+      <div class="form-row" style="margin-top:12px;">
+        <div><label>Role</label><select id="eRole" ${isSelf ? "disabled" : ""}>
+          ${roleOptions.map(r => `<option value="${r}" ${p.role === r ? "selected" : ""}>${r}</option>`).join("")}
+        </select></div>
+        <div id="eTehsilWrap"><label>Tehsil <span class="muted">(whole-tehsil access for role tr)</span></label><select id="eTehsil">
+          <option value="">— none —</option>
+          ${tehsils().map(t => `<option value="${esc(t)}" ${p.tehsil === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+        </select></div>
+        <div id="eWingWrap"><label>Wing limit <span class="muted">(tr only)</span></label><select id="eWing">
+          <option value="">None (both wings)</option>
+          ${["M-EE","W-EE"].map(w => `<option value="${w}" ${p.wing_scope === w ? "selected" : ""}>${w}</option>`).join("")}
+        </select></div>
+        <div><label>Status</label><select id="eActive" ${isSelf ? "disabled" : ""}>
+          <option value="true" ${p.active ? "selected" : ""}>Active</option>
+          <option value="false" ${!p.active ? "selected" : ""}>Inactive</option>
+        </select></div>
+      </div>
+      <div style="margin-top:12px;">
+        <label>Home markaz</label>
+        <select id="eHome">
+          <option value="">— none —</option>
+          ${markazSorted.map(m => `<option value="${m.id}" ${p.markaz_id === m.id ? "selected" : ""}>${esc(m.name)}${m.tehsil ? " — " + esc(m.tehsil) : ""}</option>`).join("")}
+        </select>
+      </div>
+      <div style="margin-top:12px;" id="eExtraWrap">
+        <label>Additional markaz <span class="muted">(any number; this person will see their schools and reports)</span></label>
+        <div class="mk-tools">
+          <input id="eMkSearch" type="search" placeholder="Filter markaz…" style="flex:1; min-width:160px;"/>
+          <button class="link-btn" type="button" id="eMkClear">Clear all</button>
+          <span id="eMkCount"></span>
+        </div>
+        <div class="mk-list" id="eMkList"></div>
+      </div>
+      <div class="modal-note" style="margin-top:14px;">Saving marks this user as <b>maintained locally</b>. A-I-DB sign-in and sync will no longer change their role, markaz, tehsil, name or cell number.</div>
+      <div class="actions-row">
+        <button class="btn-secondary" type="button" id="eCancel">Cancel</button>
+        <button class="btn-primary" type="button" id="eSave">Save</button>
+      </div>
+      <div class="err" id="eErr" style="margin-top:8px;"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const $ = (sel) => overlay.querySelector(sel);
+
+  function updateRoleVisibility(){
+    const r = $("#eRole").value;
+    $("#eTehsilWrap").style.display = r === "tr" ? "" : "none";
+    $("#eWingWrap").style.display = r === "tr" ? "" : "none";
+    $("#eExtraWrap").style.display = (r === "aeo" || r === "tr" || r === "admin") ? "" : "none";
+  }
+  function renderMarkazList(){
+    const q = $("#eMkSearch").value.trim().toLowerCase();
+    const home = $("#eHome").value;
+    const list = markazSorted.filter(m => m.id !== home && (!q || (m.name + " " + (m.tehsil || "")).toLowerCase().includes(q)));
+    $("#eMkList").innerHTML = list.length ? list.map(m => `
+      <label class="mk-item"><input type="checkbox" value="${m.id}" ${selectedExtra.has(m.id) ? "checked" : ""}/>
+        ${esc(m.name)} <small>${esc(m.tehsil || "")}</small></label>`).join("") : `<span class="muted">No markaz match.</span>`;
+    $("#eMkList").querySelectorAll("input").forEach(cb => cb.onchange = () => {
+      if(cb.checked) selectedExtra.add(cb.value); else selectedExtra.delete(cb.value);
+      updateCount();
+    });
+    updateCount();
+  }
+  function updateCount(){ $("#eMkCount").textContent = `${selectedExtra.size} selected`; }
+
+  $("#eRole").onchange = updateRoleVisibility;
+  $("#eMkSearch").oninput = renderMarkazList;
+  $("#eHome").onchange = () => { selectedExtra.delete($("#eHome").value); renderMarkazList(); };
+  $("#eMkClear").onclick = () => { selectedExtra.clear(); renderMarkazList(); };
+  $("#eCancel").onclick = () => overlay.remove();
+  overlay.addEventListener("mousedown", (e) => { if(e.target === overlay) overlay.remove(); });
+  updateRoleVisibility();
+  renderMarkazList();
+
+  $("#eSave").onclick = async () => {
+    const err = $("#eErr"); err.textContent = "";
+    const name = $("#eName").value.trim();
+    const email = $("#eEmail").value.trim().toLowerCase();
+    const role = isSelf ? p.role : $("#eRole").value;
+    const tehsil = $("#eTehsil").value;
+    const home = $("#eHome").value || null;
+    if(!name){ err.textContent = "Name is required."; return; }
+    if(email && !EMAIL_RE.test(email)){ err.textContent = "That report email doesn't look valid."; return; }
+    if(role === "tr" && !tehsil){ err.textContent = "Pick a tehsil: role tr gets every school in that tehsil."; return; }
+    if(role === "admin" && p.role !== "admin" && !confirm(`Make ${name} an admin? Admins can see and change everything.`)) return;
+    const extra = [...selectedExtra].filter(x => x !== home);
+    const homeTehsil = home ? (markazById()[home] || {}).tehsil : null;
+    const payload = {
+      full_name: name,
+      cell_no: $("#eCell").value.trim() || null,
+      report_email: email || null,
+      role,
+      markaz_id: home,
+      extra_markaz_ids: role === "tr" ? [] : extra,
+      tehsil: role === "tr" ? tehsil : (tehsil || p.tehsil || homeTehsil || null),
+      wing_scope: role === "tr" ? ($("#eWing").value || null) : null,
+      active: isSelf ? p.active : $("#eActive").value === "true",
+      locked_scope: true,
+      jurisdiction_source: "manual",
+      jurisdiction_synced_at: new Date().toISOString(),
+    };
+    const btn = $("#eSave"); btn.disabled = true; btn.textContent = "Saving…";
+    const { data, error } = await sb.from("profiles").update(payload).eq("id", p.id).select("id,role,locked_scope,report_email").single();
+    btn.disabled = false; btn.textContent = "Save";
+    if(error){ err.textContent = error.message; return; }
+    if(!data || data.role !== role || !data.locked_scope){ err.textContent = "The change was not accepted by the database - check you are signed in as an admin."; return; }
+    overlay.remove();
+    await loadData();
+    renderPage();
+    toast(`Saved ${name}.`);
+  };
+}
+
+/* ===================== COVERAGE TAB ===================== */
+function renderCoverage(){
+  const body = document.getElementById("tabBody");
+  body.innerHTML = `
+    <div class="card">
+      <p class="sub">Who sees each markaz's schools and reports: the home AEO, anyone holding it as an additional markaz, and the tehsil representative(s) for the whole tehsil. Orange rows need attention.</p>
+      <div class="uf-bar"><div class="grow"><label>Filter markaz or person</label><input id="cQ" type="search" value="${esc(view.cq)}" placeholder="Markaz, tehsil or person…"/></div></div>
+      <div class="table-wrap"><table class="tight">
+        <thead><tr><th>Markaz</th><th>Tehsil</th><th>Home</th><th>Also held by</th><th>Tehsil reps</th></tr></thead>
+        <tbody id="covRows"></tbody></table></div>
+    </div>`;
+  const people = cache.people.filter(p => p.active);
+  const rows = cache.markaz.slice().sort((a, b) => (a.tehsil || "").localeCompare(b.tehsil || "") || a.name.localeCompare(b.name)).map(m => {
+    const home = people.filter(p => p.markaz_id === m.id && ["aeo","tr","admin"].includes(p.role));
+    const extra = people.filter(p => (p.extra_markaz_ids || []).includes(m.id) && p.markaz_id !== m.id);
+    const trs = people.filter(p => p.role === "tr" && p.tehsil && p.tehsil === m.tehsil);
+    return { m, home, extra, trs };
+  });
+  const draw = () => {
+    const q = (document.getElementById("cQ").value || "").trim().toLowerCase();
+    view.cq = q;
+    const list = rows.filter(r => !q || [r.m.name, r.m.tehsil, ...r.home.map(x => x.full_name), ...r.extra.map(x => x.full_name), ...r.trs.map(x => x.full_name)].join(" ").toLowerCase().includes(q));
+    document.getElementById("covRows").innerHTML = list.map(r => {
+      const nobody = !r.home.length && !r.extra.length;
+      const shared = r.home.length > 1;
+      const flag = nobody ? "background:var(--warn-bg);" : (shared ? "background:var(--warn-bg);" : "");
+      return `<tr style="${flag}">
+        <td>${esc(r.m.name)}</td><td>${esc(r.m.tehsil || "")}</td>
+        <td class="wrap">${r.home.length ? r.home.map(x => esc(x.full_name)).join(", ") : `<span class="pill pill-warn">${nobody ? "No one holds this markaz" : "—"}</span>`}${shared ? ` <span class="pill pill-warn">shared</span>` : ""}</td>
+        <td class="wrap">${r.extra.length ? r.extra.map(x => esc(x.full_name)).join(", ") : "—"}</td>
+        <td class="wrap">${r.trs.length ? r.trs.map(x => esc(x.full_name)).join(", ") : "—"}</td></tr>`;
+    }).join("") || `<tr><td colspan="5" class="muted">No markaz match.</td></tr>`;
+  };
+  draw();
+  document.getElementById("cQ").oninput = draw;
+}
+</script>
+</body>
+</html>

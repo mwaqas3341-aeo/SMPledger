@@ -22,6 +22,7 @@ const SMP_NAV = [
       { href: "report-generation.html", label: "Reports & Demand" },
       { href: "report-comparison.html", label: "Company vs AEO Comparison", roles: ["admin", "super_admin", "tr"] },
       { href: "admin.html",             label: "Admin Panel", roles: ["admin", "super_admin"] },
+      { href: "users.html",             label: "Users & Markaz Access", roles: ["admin", "super_admin"] },
     ],
   },
 ];
