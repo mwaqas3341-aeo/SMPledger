@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SMP Dashboard — School Meal Program</title>
-<script src="assets/safety.js?v=20260929i"></script>
-<script src="assets/layout.js?v=20260929i"></script>
-<script src="assets/sync-me.js?v=20260929i"></script>
-<script src="assets/config.js?v=20260929i"></script>
+<script src="assets/safety.js?v=20261015a"></script>
+<script src="assets/layout.js?v=20261015a"></script>
+<script src="assets/sync-me.js?v=20261015a"></script>
+<script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929i" />
+<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
 </head>
 <body>
 
@@ -539,7 +539,7 @@ async function loadMissing(){
   const scoped = scopedSchools();
   if(scoped.length === 0) return "";
   const today = todayStr();
-  const { data, error } = await sb.rpc("fn_missing_consumption_period", { p_school_ids: scoped.map(s => s.id), p_from: today, p_to: today });
+  const { data, error } = await smpFetchAll(() => sb.rpc("fn_missing_consumption_period", { p_school_ids: scoped.map(s => s.id), p_from: today, p_to: today }));
   if(error) throw error;
   const scopedById = Object.fromEntries(scoped.map(s => [s.id, s]));
   const missingBySchool = {};

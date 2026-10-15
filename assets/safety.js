@@ -19,3 +19,21 @@
     var r = e && e.reason; console.error("[SMP] unhandled rejection:", r && r.message ? r.message : "unknown"); banner();
   });
 })();
+
+// Paged read helper. Supabase/PostgREST silently caps any single response at
+// 1,000 rows (no error), so any list that can exceed that MUST be read through
+// this. makeQuery must return a fresh, deterministically ordered query/rpc
+// builder each call (add .order(...) with a unique tiebreaker).
+// Returns { data, error } like a normal supabase call.
+window.smpFetchAll = async function(makeQuery, pageSize){
+  pageSize = pageSize || 1000;
+  var rows = [];
+  for(var from = 0; ; from += pageSize){
+    var res = await makeQuery().range(from, from + pageSize - 1);
+    if(res.error) return { data: null, error: res.error };
+    var page = res.data || [];
+    for(var i = 0; i < page.length; i++) rows.push(page[i]);
+    if(page.length < pageSize) break;
+  }
+  return { data: rows, error: null };
+};

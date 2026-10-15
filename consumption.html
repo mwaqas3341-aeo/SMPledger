@@ -4,12 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Consumption — School Meal Program</title>
-<script src="assets/safety.js?v=20260929i"></script>
-<script src="assets/layout.js?v=20260929i"></script>
-<script src="assets/sync-me.js?v=20260929i"></script>
-<script src="assets/config.js?v=20260929i"></script>
+<script src="assets/safety.js?v=20261015a"></script>
+<script src="assets/layout.js?v=20261015a"></script>
+<script src="assets/sync-me.js?v=20261015a"></script>
+<script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929i" />
+<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
 </head>
 <body>
 
@@ -307,7 +307,7 @@ async function loadGridData(visibleSchoolIds){
     return;
   }
 
-  const { data, error } = await sb.rpc("fn_consumption_grid", { p_school_ids: schoolIds, p_date: selectedDate });
+  const { data, error } = await smpFetchAll(() => sb.rpc("fn_consumption_grid", { p_school_ids: schoolIds, p_date: selectedDate }).order("school_id").order("product_id"));
   if(error){
     tbody.innerHTML = `<tr><td colspan="3" class="err">${esc(error.message)}</td></tr>`;
     return;

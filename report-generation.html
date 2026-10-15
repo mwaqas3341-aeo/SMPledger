@@ -4,13 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Reports & Demand — School Meal Program</title>
-<script src="assets/safety.js?v=20260929i"></script>
-<script src="assets/layout.js?v=20260929i"></script>
-<script src="assets/sync-me.js?v=20260929i"></script>
-<script src="assets/config.js?v=20260929i"></script>
+<script src="assets/safety.js?v=20261015a"></script>
+<script src="assets/layout.js?v=20261015a"></script>
+<script src="assets/sync-me.js?v=20261015a"></script>
+<script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20260929i" />
+<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
 <style>
   #reportTable{ font-size:11.5px; }
   #reportTable th, #reportTable td{ padding:5px 6px; white-space:nowrap; }
@@ -466,7 +466,7 @@ async function generateDemand(fd){
   // "Available now" reuses fn_period_report's "opening" field for a window
   // starting tomorrow - that's exactly today's closing balance, no new RPC needed.
   const [milk, biscuit] = cache.products;
-  const { data: summary, error: sumErr } = await sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: until });
+  const { data: summary, error: sumErr } = await smpFetchAll(() => sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: until }).order("school_id").order("product_id"));
   if(sumErr){ tbody.innerHTML = `<tr><td class="err">${esc(sumErr.message)}</td></tr>`; return; }
   const summaryBy = {};
   (summary || []).forEach(r => {
@@ -647,14 +647,27 @@ async function generateReport(fd){
   // (a whole tehsil, 700+ IDs) makes .in() build a URL too long to accept.
   // consumption_select's RLS already scopes rows to what this person can
   // see, which is exactly what an unnarrowed schoolIds list means anyway.
-  let consumptionQuery = sb.from("consumption").select("school_id, product_id, consumption_date, quantity")
-    .gte("consumption_date", from).lte("consumption_date", to).eq("status", "active");
-  if(schoolIds.length <= 150) consumptionQuery = consumptionQuery.in("school_id", schoolIds);
+  // Per-day cells come from the consumption table. That can easily exceed the
+  // 1,000-row response cap (a tehsil x a fortnight is ~1,600+ rows), so read
+  // it in school chunks AND pages - never as one unpaged query, or the rows
+  // past the cap silently render as 0.
+  const fetchDaily = async () => {
+    const chunks = [];
+    for(let i = 0; i < schoolIds.length; i += 100) chunks.push(schoolIds.slice(i, i + 100));
+    const parts = await Promise.all(chunks.map(ids => smpFetchAll(() =>
+      sb.from("consumption").select("school_id, product_id, consumption_date, quantity")
+        .gte("consumption_date", from).lte("consumption_date", to).eq("status", "active")
+        .in("school_id", ids)
+        .order("school_id").order("product_id").order("consumption_date").order("id"))));
+    const bad = parts.find(p => p.error);
+    if(bad) return { data: null, error: bad.error };
+    return { data: parts.flatMap(p => p.data), error: null };
+  };
 
   const [{ data: summary, error: sumErr }, { data: dailyRows, error: dayErr },
          { data: exceptions, error: exErr }, { data: aeoDir, error: aeoErr }] = await Promise.all([
-    sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: to }),
-    consumptionQuery,
+    smpFetchAll(() => sb.rpc("fn_period_report", { p_school_ids: schoolIds, p_from: from, p_to: to }).order("school_id").order("product_id")),
+    fetchDaily(),
     sb.from("schedule_exceptions").select("exception_date, product_id, status").gte("exception_date", from).lte("exception_date", to),
     currentProfile.role === "aeo" ? Promise.resolve({ data: null, error: null }) : sb.rpc("fn_aeo_directory", { p_markaz_ids: markazIds }),
   ]);
@@ -682,6 +695,16 @@ async function generateReport(fd){
     const key = `${r.school_id}|${r.product_id}|${r.consumption_date}`;
     dailyBy[key] = (dailyBy[key] || 0) + Number(r.quantity);
   });
+  // Safety net: the per-day cells and the period totals are read by two
+  // different paths. If they ever disagree, say so loudly instead of
+  // quietly showing zeros.
+  {
+    const dayTotal = (dailyRows || []).reduce((a, r) => a + Number(r.quantity), 0);
+    const sumTotal = (summary || []).reduce((a, r) => a + Number(r.consumed), 0);
+    if(Math.abs(dayTotal - sumTotal) > 0.0001){
+      toast(`Check this report: daily consumption (${fmt(dayTotal)}) does not match the period total (${fmt(sumTotal)}). Please reload, and tell the admin if it persists.`, "bad");
+    }
+  }
   const aeoByMarkaz = {};
   (aeoDir || []).forEach(r => { aeoByMarkaz[r.markaz_id] = r; });
   if(currentProfile.role === "aeo"){
