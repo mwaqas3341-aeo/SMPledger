@@ -377,20 +377,18 @@ function showInvoiceWarningModal(chk, school, product, invoice){
     overlay.className = "modal-overlay";
     overlay.innerHTML = `
       <div class="modal-box">
-        <h3>⚠ ${isDup ? "This invoice was already entered" : "Invoice number already entered with different details"}</h3>
-        <p>You are adding <b>${esc(invoice)}</b> for <b>${esc(school?.school_name || "")}</b>${product ? ` - ${esc(product.product_name)}` : ""}.</p>
+        <h3>⚠ ${isDup ? "Duplicate Invoice Detected" : "Invoice Number Conflict"}</h3>
+        <p>You tried to add <b>${esc(invoice)}</b> for <b>${esc(school?.school_name || "")}</b>${product ? ` - ${esc(product.product_name)}` : ""}.</p>
         <div class="modal-note">${esc(body)}</div>
-        <p class="sub">If the entry on file is wrong, you can edit it instead. Otherwise save yours - both entries will be flagged for rectification in Company vs AEO comparison.</p>
+        <p><b>Nothing was saved.</b> An invoice number can be entered only once. Check the number on your challan. If the entry already on file is the wrong one, edit or delete that entry instead of adding it again.</p>
         <div class="actions-row">
-          <button class="btn-secondary" id="iwCancelBtn" type="button">Go back and check</button>
-          ${chk.existing?.id ? `<button class="btn-secondary" id="iwEditBtn" type="button">Edit the existing entry</button>` : ""}
-          <button class="btn-primary" id="iwSaveBtn" type="button">Save anyway - flag it</button>
+          <button class="btn-secondary" id="iwCancelBtn" type="button">Close</button>
+          ${chk.existing?.id ? `<button class="btn-primary" id="iwEditBtn" type="button">Edit the existing entry</button>` : ""}
         </div>
       </div>`;
     document.body.appendChild(overlay);
     const done = (v) => { overlay.remove(); resolve(v); };
     document.getElementById("iwCancelBtn").addEventListener("click", () => done(false));
-    document.getElementById("iwSaveBtn").addEventListener("click", () => done(true));
     const eb = document.getElementById("iwEditBtn");
     if(eb) eb.addEventListener("click", async () => {
       const { data: existing, error } = await sb.from("school_receipts")
@@ -418,21 +416,19 @@ function showOtherSchoolModal(others, school, product, invoice){
     overlay.className = "modal-overlay";
     overlay.innerHTML = `
       <div class="modal-box">
-        <h3>⚠ Invoice number already used at another school</h3>
-        <p>You are adding <b>${esc(invoice)}</b> for <b>${esc(school?.school_name || "")}</b>${product ? ` - ${esc(product.product_name)}` : ""}. The same invoice number was already entered for:</p>
+        <h3>⚠ Duplicate Invoice Detected - another school</h3>
+        <p>You tried to add <b>${esc(invoice)}</b> for <b>${esc(school?.school_name || "")}</b>${product ? ` - ${esc(product.product_name)}` : ""}. This invoice number is already used for:</p>
         <div class="table-wrap"><table><thead><tr><th>School</th><th>Markaz</th><th>Qty</th><th>Delivery date</th><th>Entered by</th><th>Entered on</th></tr></thead><tbody>
           ${others.map(o => `<tr><td>${esc(o.school)} <span class="sub">(EMIS ${esc(o.emis)})</span></td><td>${esc(o.markaz || "-")}</td><td>${fmt(o.quantity)}</td><td>${fmtDate(o.receipt_date)}</td><td>${esc(o.entered_by)}${o.entered_by_role ? ` (${esc(o.entered_by_role)})` : ""}</td><td>${fmtDt(o.entered_at)}</td></tr>`).join("")}
         </tbody></table></div>
-        <p class="sub">One of the entries may have a wrong invoice number. Check your challan. If yours is correct, save it - both entries will be flagged for rectification in Company vs AEO comparison.</p>
+        <p><b>Nothing was saved.</b> An invoice number can be entered only once. Check the number on your challan. If your number is correct, the entry above has the wrong number - ask that user to correct it, then add yours.</p>
         <div class="actions-row">
-          <button class="btn-secondary" id="osCancelBtn" type="button">Go back and check</button>
-          <button class="btn-primary" id="osConfirmBtn" type="button">Save anyway - flag it</button>
+          <button class="btn-primary" id="osCancelBtn" type="button">Close</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
     const done = (v) => { overlay.remove(); resolve(v); };
     document.getElementById("osCancelBtn").addEventListener("click", () => done(false));
-    document.getElementById("osConfirmBtn").addEventListener("click", () => done(true));
     overlay.addEventListener("click", (e) => { if(e.target === overlay) done(false); });
   });
 }
@@ -579,18 +575,12 @@ function showAddInventoryModal(visibleSchoolIds){
       // Ask the database first, so an existing invoice is reported before anything is saved. The database
       // re-checks inside the save itself, so this cannot be bypassed (refresh, second tab, double click).
       const chk = await precheckReceipt(schoolId, productId, invoice, date, qty);
-      // The invoice number is already in the system (same school, or another school): show exactly where and by
-      // whom, but do NOT stop the entry. If the user saves anyway, the database flags every entry sharing that
-      // invoice number and the Company vs AEO comparison lists them for rectification.
-      let savedWithWarning = false;
+      // The invoice number is already in the system (same school or another school): show exactly where and by
+      // whom, and STOP. The database enforces the same rule on the save itself, so it cannot be bypassed.
       if(chk && (chk.status === "duplicate" || chk.status === "conflict")){
-        const goOn = await showInvoiceWarningModal(chk, school, product, invoice);
-        if(!goOn) return;
-        savedWithWarning = true;
-      } else if(chk && chk.status === "other_school"){
-        const goOn = await showOtherSchoolModal(chk.others || [], school, product, invoice);
-        if(!goOn) return;
-        savedWithWarning = true;
+        if(chk.others && chk.others.length) await showOtherSchoolModal(chk.others, school, product, invoice);
+        else await showInvoiceWarningModal(chk, school, product, invoice);
+        return;
       }
       submitBtn.textContent = "Saving…";
       const { data, error } = await sb.rpc("fn_create_school_receipt", {
@@ -601,7 +591,6 @@ function showAddInventoryModal(visibleSchoolIds){
       const r = data?.[0];
       const dateNote = r?.auto_certified ? await receiptDateNote(r.id, date) : "";
       busy = false; overlay.remove();
-      if(savedWithWarning) toast("Saved - flagged for rectification because this invoice number is already in the system. It is listed in Company vs AEO comparison.");
       toast(r?.auto_certified ? "Inventory added and certified automatically." + dateNote
         : r?.flagged_mismatch ? "Inventory added - flagged for review (quantity matches a different invoice)."
         : "Inventory added.");
@@ -715,7 +704,7 @@ async function loadReceiptsTable(schoolIds){
       <td>${esc(r.schools?.school_name)}</td>
       <td>${esc(r.products?.product_name)}</td>
       <td>${fmt(r.quantity_received)} ${esc(r.products?.unit_name || "")}</td>
-      <td>${esc(r.invoice_number) || "—"}${r.invoice_flag ? ` <span class="pill pill-warn" title="${esc(r.invoice_flag_note || "")}">⚠ Flagged: ${r.invoice_flag === "other_school" ? "also used at another school" : r.invoice_flag === "duplicate" ? "duplicate entry" : "different details on file"}</span>` : ""}</td>
+      <td>${esc(r.invoice_number) || "—"}${r.invoice_flag ? ` <span class="pill pill-warn" title="${esc((r.invoice_flag_note || "") + " - Edit this entry to correct the invoice number.")}">⚠ Flagged: ${r.invoice_flag === "other_school" ? "also used at another school" : r.invoice_flag === "duplicate" ? "duplicate entry" : "different details on file"}</span>` : ""}</td>
       <td>${esc(r.collected_by) || "—"}</td>
       <td>${esc(r.remarks) || "—"}</td>
       <td>
