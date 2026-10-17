@@ -264,16 +264,18 @@ async function renderMyReceipts(content){
 }
 
 let selectedReceiptDate;
+let lastVisibleSchoolIds = [];
 
 async function renderMyReceiptsBody(visibleSchoolIds){
   if(!selectedReceiptDate) selectedReceiptDate = todayStr();
+  lastVisibleSchoolIds = visibleSchoolIds;
   const mount = document.getElementById("receiptsMount");
   const visibleSchools = sortSchoolsStandard(cache.schools.filter(s => visibleSchoolIds.includes(s.id)));
   const [milk, biscuit] = cache.products; // sorted milk-first in loadRefData
 
   // Same URL-length guard used elsewhere for a large schoolIds array.
   let existingQuery = sb.from("school_receipts")
-    .select("school_id, product_id, quantity_received, invoice_number")
+    .select("id, school_id, product_id, quantity_received, invoice_number")
     .eq("receipt_date", selectedReceiptDate).eq("status", "active");
   if(visibleSchoolIds.length <= 150) existingQuery = existingQuery.in("school_id", visibleSchoolIds);
   const { data: existingRows } = await existingQuery;
@@ -319,7 +321,7 @@ async function renderMyReceiptsBody(visibleSchoolIds){
             return `
             <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${existing?.receipt_date || selectedReceiptDate}" max="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
             <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" value="${esc(existing?.invoice_number || "")}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
-            <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
+            <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" data-receipt-id="${existing?.id || ""}" data-orig-qty="${existing ? existing.quantity_received : ""}" data-orig-date="${existing ? selectedReceiptDate : ""}" data-orig-invoice="${esc(existing?.invoice_number || "")}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
               <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
           `;
           }).join("");
@@ -425,6 +427,7 @@ async function handleReceiptRowAction(btn, visibleSchoolIds){
   // One reload for the whole row, not one per product - this used to fire
   // twice (once per product) for a row with both Milk and Biscuit filled in.
   if(anyAttempted) await loadReceiptsTable(visibleSchoolIds);
+  if(gridNeedsRefresh){ gridNeedsRefresh = false; await renderMyReceiptsBody(visibleSchoolIds); return; }
 
   if(allOk){
     fields.forEach(el => el.disabled = true);
@@ -493,6 +496,20 @@ async function trySaveReceipt(inp, visibleSchoolIds){
     if(!confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${effectiveDate})? Confirm only if this school genuinely received none.`)){
       return false;
     }
+  }
+
+  // A row that already has a saved receipt is EDITED in place - never inserted again.
+  if(inp.dataset.receiptId){
+    return await updateReceiptFromGrid(inp, ind, school, product, effectiveDate, qty, effectiveInvoice);
+  }
+  // New entry: ask the database whether this invoice already exists (same school, product and invoice #)
+  // before anything is saved. The database re-checks on save, so this can never be bypassed.
+  const chk = await precheckReceipt(schoolId, productId, effectiveInvoice, effectiveDate, qty);
+  if(chk && (chk.status === "duplicate" || chk.status === "conflict")){
+    ind.className = "save-indicator bad";
+    ind.textContent = chk.status === "duplicate" ? "✗ Duplicate invoice" : "✗ Invoice number conflict";
+    await showInvoiceProblemModal({ kind: chk.status, message: chk.message, existingId: chk.existing?.id, school, product });
+    return false;
   }
 
   // A second entry for the same school/product/date - same invoice or a
@@ -577,10 +594,120 @@ async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumb
     return true;
   }catch(err){
     inp.disabled = false;
-    const dupe = err.code === "23505" || /duplicate key/i.test(err.message || "");
     ind.className = "save-indicator bad";
-    ind.textContent = dupe ? "✗ Same invoice already saved for this date" : "✗ Not saved";
-    toast(err.message, "bad");
+    const prob = invoiceProblemFromError(err);
+    if(prob){
+      ind.textContent = prob.kind === "duplicate" ? "✗ Duplicate invoice" : "✗ Invoice number conflict";
+      await showInvoiceProblemModal({ ...prob, school: cache.schools.find(s => s.id === schoolId), product: cache.products.find(p => p.id === productId) });
+    } else {
+      ind.textContent = "✗ Not saved";
+      toast(err.message, "bad");
+    }
+    return false;
+  }
+}
+
+// ---- Duplicate-invoice protection (the database is the authority; these helpers only explain its answer) ----
+let gridNeedsRefresh = false;
+
+// Maps a database error to a duplicate / conflict problem, or null if it is some other error.
+function invoiceProblemFromError(err){
+  const msg = (err && err.message) || "", code = err && err.code;
+  let kind = null;
+  if(code === "SMDUP" || /^Duplicate Invoice Detected/i.test(msg)) kind = "duplicate";
+  else if(code === "SMCNF" || /^Invoice Number Conflict/i.test(msg)) kind = "conflict";
+  else if(code === "23505" || /duplicate key/i.test(msg)) kind = "duplicate";
+  if(!kind) return null;
+  let existingId = null;
+  try{ existingId = (JSON.parse((err && err.details) || "null") || {}).existing?.id || null; }catch(e){}
+  return { kind, message: /^(Duplicate Invoice Detected|Invoice Number Conflict)/i.test(msg) ? msg : "", existingId };
+}
+
+// Asks the database whether this receipt would be a duplicate or a conflict BEFORE anything is saved.
+async function precheckReceipt(schoolId, productId, invoice, date, qty){
+  try{
+    const { data, error } = await sb.rpc("fn_check_school_receipt", {
+      p_school_id: schoolId, p_product_id: productId, p_invoice_number: invoice,
+      p_receipt_date: date, p_quantity: qty, p_exclude_id: null,
+    });
+    if(error) return null;          // the save itself is still checked by the database
+    return data;
+  }catch(e){ return null; }
+}
+
+function showInvoiceProblemModal({ kind, message, existingId, school, product }){
+  return new Promise((resolve) => {
+    const old = document.getElementById("invoiceProblemModal");
+    if(old) old.remove();
+    const isDup = kind === "duplicate";
+    const title = isDup ? "Duplicate Invoice Detected" : "Invoice Number Conflict";
+    const fallback = isDup ? "This invoice already exists in the system. The invoice cannot be added again."
+      : "This invoice number already exists with different invoice details. Please verify the date, product, and quantity before proceeding.";
+    const body = String(message || "").replace(/^[^:]+:\s*/, "") || fallback;
+    const overlay = document.createElement("div");
+    overlay.id = "invoiceProblemModal";
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3>⚠ ${esc(title)}</h3>
+        ${school || product ? `<p><b>${esc(school?.school_name || "")}</b>${product ? ` — ${esc(product.product_name)}` : ""}</p>` : ""}
+        <div class="modal-note">${esc(body)}</div>
+        <p>Nothing was saved. If the existing entry is wrong, edit or delete it instead of adding it again.</p>
+        <div class="actions-row">
+          <button class="btn-secondary" id="ipCloseBtn" type="button">Close</button>
+          ${existingId ? `<button class="btn-primary" id="ipEditBtn" type="button">Edit the existing entry</button>` : ""}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => { overlay.remove(); resolve(); };
+    document.getElementById("ipCloseBtn").addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+    const editBtn = document.getElementById("ipEditBtn");
+    if(editBtn) editBtn.addEventListener("click", async () => {
+      const { data: existing, error } = await sb.from("school_receipts")
+        .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, school_id, product_id")
+        .eq("id", existingId).single();
+      if(error){ toast(error.message, "bad"); return; }
+      overlay.remove();
+      showEditReceiptModal(existing, cache.schools.find(s => s.id === existing.school_id) || school,
+        cache.products.find(p => p.id === existing.product_id) || product, () => renderMyReceiptsBody(lastVisibleSchoolIds));
+      resolve();
+    });
+  });
+}
+
+// Editing a row that already has a saved receipt updates THAT receipt in place. It never inserts a second one
+// (changing the date in an unlocked row used to look like a brand-new entry, which is how invoices got doubled).
+async function updateReceiptFromGrid(inp, ind, school, product, date, qty, invoice){
+  const unchanged = Number(inp.dataset.origQty) === Number(qty) && inp.dataset.origDate === date && (inp.dataset.origInvoice || "") === invoice;
+  if(unchanged){ ind.className = "save-indicator ok"; ind.textContent = "✓ No changes"; return true; }
+  ind.className = "save-indicator saving"; ind.textContent = "Saving…";
+  inp.disabled = true;
+  try{
+    const { data, error } = await sb.rpc("fn_update_school_receipt", {
+      p_receipt_id: inp.dataset.receiptId, p_quantity_received: qty, p_invoice_number: invoice, p_receipt_date: date,
+    });
+    if(error) throw error;
+    const r = data?.[0];
+    const dateNote = r?.auto_certified ? await receiptDateNote(inp.dataset.receiptId, date) : "";
+    ind.className = "save-indicator ok";
+    ind.textContent = r?.auto_certified ? "✓ Updated & certified" : r?.flagged_mismatch ? "✓ Updated - ⚠ flagged for review" : "✓ Updated";
+    toast("Receipt updated" + (r?.auto_certified ? " - auto-certified against company data." : r?.flagged_mismatch ? " - flagged for review (quantity matches a different invoice)." : ".") + dateNote);
+    inp.dataset.origQty = qty; inp.dataset.origDate = date; inp.dataset.origInvoice = invoice;
+    if(date !== selectedReceiptDate) gridNeedsRefresh = true;
+    inp.disabled = false;
+    return true;
+  }catch(err){
+    inp.disabled = false;
+    ind.className = "save-indicator bad";
+    const prob = invoiceProblemFromError(err);
+    if(prob){
+      ind.textContent = prob.kind === "duplicate" ? "✗ Duplicate invoice" : "✗ Invoice number conflict";
+      await showInvoiceProblemModal({ ...prob, school, product });
+    } else {
+      ind.textContent = "✗ Not saved";
+      toast(err.message, "bad");
+    }
     return false;
   }
 }
@@ -670,7 +797,11 @@ function showEditReceiptModal(existing, school, product, onSaved){
         : "Receipt updated");
       close();
       onSaved();
-    }catch(err){ toast(err.message, "bad"); }
+    }catch(err){
+      const prob = invoiceProblemFromError(err);
+      if(prob) await showInvoiceProblemModal({ ...prob, school, product });
+      else toast(err.message, "bad");
+    }
   });
 }
 
@@ -764,13 +895,13 @@ async function renderCompanyDataBody(visibleSchoolIds){
   mount.innerHTML = `
     <div class="card">
       <h3>Company-provided delivery data</h3>
-      <p class="sub">Uploaded by admins from vendor invoices. Rows whose invoice matches your receipt are certified automatically. Mark the remaining rows Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
+      <p class="sub">Uploaded by admins from vendor invoices. Rows whose invoice, product and quantity match your receipt are certified automatically - there is no manual certification. If a row is not matched, correct it in My Receipts: add the missing receipt, or edit or delete a wrong or doubled one, and it is re-checked automatically.</p>
       <div class="form-row" style="margin-bottom:12px;">
         <div><label>Product</label><select id="companyProduct"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
         <div style="align-self:end;"><button class="btn-secondary" type="button" id="companyDlBtn">Download Excel</button></div>
       </div>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
-        <th>Company date</th><th>AEO receipt date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Certify</th>
+        <th>Company date</th><th>AEO receipt date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Next step</th>
       </tr></thead><tbody><tr><td colspan="11" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
@@ -889,35 +1020,14 @@ function renderCompanyRows(schoolIds){
       <td>${esc(r.company_invoices?.invoice_number) || "—"}</td>
       <td class="status-cell">${statusPill(r.aeo_verification_status, r.aeo_verification_remarks)}</td>
       <td>${matchCell(r)}</td>
-      <td>${autoCertified(r) ? '<span style="color:var(--ink-soft)">Certified automatically - no action needed</span>' : `
-        <button class="link-btn" data-action="received">Mark received</button>
-        <button class="link-btn danger" data-action="not_received">Not received</button>`}
+      <td>${autoCertified(r) ? '<span style="color:var(--ink-soft)">Certified automatically - no action needed</span>'
+        : r.aeo_verification_status === "received" ? '<span style="color:var(--ink-soft)">Certified earlier - no action needed</span>'
+        : `<span style="color:var(--ink-soft)">${r.aeo_verification_status === "flagged_mismatch" ? "Check the invoice # and quantity in your receipt" : "Enter or correct your receipt"}</span> <button class="link-btn" type="button" data-goto="my_receipts">Go to My Receipts</button>`}
       </td>
     </tr>
   `).join("");
 
-  tbody.querySelectorAll("button[data-action]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const tr = btn.closest("tr");
-      const id = tr.dataset.id;
-      const status = btn.dataset.action;
-      let remarks = null;
-      if(status === "not_received"){
-        remarks = prompt("Optional: note what's wrong (for rectification)") || null;
-      }
-      try{
-        const { data, error } = await sb.rpc("fn_verify_company_item", { p_item_id: id, p_status: status, p_remarks: remarks });
-        if(error) throw error;
-        if(status === "received" && data?.[0]?.auto_created_receipt){
-          toast("Marked received - added to My Receipts automatically, no need to enter it separately");
-          await loadReceiptsTable(schoolIds);
-        } else {
-          toast(status === "received" ? "Marked received" : "Flagged as not received");
-        }
-        await loadCompanyTable(schoolIds);
-      }catch(err){ toast(err.message, "bad"); }
-    });
-  });
+  tbody.querySelectorAll("button[data-goto]").forEach(btn => btn.addEventListener("click", () => navigate(btn.dataset.goto)));
 }
 </script>
 </body>
