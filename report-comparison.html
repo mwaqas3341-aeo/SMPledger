@@ -95,6 +95,9 @@ function sortSchoolsStandard(schools){
   );
 }
 
+// Mirrors the database's fn_norm_invoice: upper-case, letters/digits only, letter O read as zero,
+// so "DO445INV1" and "D0445INV1" are the same invoice. Returns "" when nothing is left.
+function normInvoice(v){ return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/O/g, "0"); }
 function esc(s){ return (s===null||s===undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fmtDate(d){ if(!d) return "—"; return new Date(d).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
@@ -184,6 +187,7 @@ async function renderPage(){
       <div class="actions-row" style="margin-top:12px;">
         <button class="btn-secondary" type="button" id="dlCmpAllBtn">Download Excel - all rows</button>
         <button class="btn-secondary" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
+        <button class="btn-secondary" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
       </div>
     </div>
     <div class="grid-4" id="statCards"></div>
@@ -198,6 +202,7 @@ async function renderPage(){
   if(isAdmin) renderUploadWizard(document.getElementById("uploadMount"));
   document.getElementById("dlCmpAllBtn").addEventListener("click", () => downloadComparison(false));
   document.getElementById("dlCmpIssuesBtn").addEventListener("click", () => downloadComparison(true));
+  document.getElementById("dlCompanyListBtn").addEventListener("click", downloadCompanyList);
 
   const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing");
   function refreshTehsil(){
@@ -378,7 +383,7 @@ async function renderPreview(){
   const seen = new Set();
   parsed.forEach(row => {
     if(!row.valid) return;
-    const key = `${row.emis}|${row.invoiceNumber.toUpperCase()}|${row.product.id}`;
+    const key = `${row.emis}|${normInvoice(row.invoiceNumber)}|${row.product.id}`;
     if(seen.has(key)){ row.duplicate = true; row.valid = false; }
     else seen.add(key);
   });
@@ -390,16 +395,24 @@ async function renderPreview(){
   // instead of being cleanly skipped up front.
   const productIdsInFile = [...new Set(parsed.filter(r => r.valid).map(r => r.product.id))];
   if(productIdsInFile.length){
-    const { data: existingInvoices } = await sb.from("company_invoices")
-      .select("invoice_number, product_id")
+    // Paged read: a plain select is silently capped at 1,000 rows, which would let duplicates through
+    // once more than 1,000 invoices exist.
+    const { data: existingInvoices, error: existErr } = await smpFetchAll(() => sb.from("company_invoices")
+      .select("id, invoice_number, product_id")
       .eq("status", "active")
-      .in("product_id", productIdsInFile);
-    const existingKeys = new Set((existingInvoices || []).map(inv => `${(inv.invoice_number || "").trim().toUpperCase()}|${inv.product_id}`));
-    parsed.forEach(row => {
-      if(!row.valid) return;
-      const key = `${row.invoiceNumber.toUpperCase()}|${row.product.id}`;
-      if(existingKeys.has(key)){ row.alreadyInSystem = true; row.valid = false; }
-    });
+      .in("product_id", productIdsInFile)
+      .order("id"));
+    if(existErr){
+      toast("Could not check which invoices are already in the database: " + existErr.message + ". Nothing can be imported until this check works.", "bad");
+      parsed.forEach(row => { if(row.valid){ row.valid = false; row.checkFailed = true; } });
+    } else {
+      const existingKeys = new Set((existingInvoices || []).map(inv => `${normInvoice(inv.invoice_number)}|${inv.product_id}`));
+      parsed.forEach(row => {
+        if(!row.valid) return;
+        const key = `${normInvoice(row.invoiceNumber)}|${row.product.id}`;
+        if(existingKeys.has(key)){ row.alreadyInSystem = true; row.valid = false; }
+      });
+    }
   }
 
   uploadState.parsed = parsed;
@@ -414,7 +427,7 @@ async function renderPreview(){
         <div class="stat"><div class="n">${parsed.length}</div><div class="l">Rows in file</div></div>
         <div class="stat"><div class="n">${validCount}</div><div class="l">Ready to import</div></div>
         <div class="stat"><div class="n">${invalidRows.filter(r => r.duplicate).length}</div><div class="l">Duplicates in this file</div></div>
-        <div class="stat"><div class="n">${invalidRows.filter(r => r.alreadyInSystem).length}</div><div class="l">Invoice already in system</div></div>
+        <div class="stat"><div class="n">${invalidRows.filter(r => r.alreadyInSystem).length}</div><div class="l">Invoice already in database - will NOT be uploaded</div></div>
         <div class="stat"><div class="n">${invalidRows.filter(r => r.outOfScope).length}</div><div class="l">Outside ${esc(upTehsil)} / ${esc(upWing)}</div></div>
       </div>
       ${invalidRows.length ? `
@@ -422,7 +435,7 @@ async function renderPreview(){
         <div class="table-wrap"><table><thead><tr><th>Row</th><th>EMIS</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Date</th><th>Reason</th></tr></thead><tbody>
           ${invalidRows.map(r => `<tr>
             <td>${r.rowNum}</td><td>${esc(r.emis)}</td><td>${esc(r.product?.product_name || "—")}</td><td>${esc(r.qty)}</td><td>${esc(r.invoiceNumber)}</td><td>${esc(r.deliveryDate)}</td>
-            <td>${r.alreadyInSystem ? "Invoice already exists in system" : r.duplicate ? "Duplicate EMIS+invoice+product in this file" : r.outOfScope ? `EMIS not in ${esc(upTehsil)} / ${esc(upWing)} - out of scope for this import` : !r.school ? "EMIS not found in SMP" : !r.product ? "Product not recognized" : "Missing quantity, invoice #, or date"}</td>
+            <td>${r.checkFailed ? "Could not check existing invoices" : r.alreadyInSystem ? "Duplicate - this invoice was already uploaded earlier, not imported" : r.duplicate ? "Duplicate EMIS+invoice+product in this file" : r.outOfScope ? `EMIS not in ${esc(upTehsil)} / ${esc(upWing)} - out of scope for this import` : !r.school ? "EMIS not found in SMP" : !r.product ? "Product not recognized" : "Missing quantity, invoice #, or date"}</td>
           </tr>`).join("")}
         </tbody></table></div>
       ` : ""}
@@ -522,6 +535,7 @@ async function runImport(){
       else certified += Number(certCount || 0);
     }catch(err){
       let message = (err && err.message) || "Unknown database error";
+      if(err && (err.code === "23505" || /duplicate key/i.test(message))) message = "Invoice already in the database - not uploaded";
       // Never leave an invoice header behind without its items.
       if(invoiceId){
         const { error: delErr } = await sb.from("company_invoices").delete().eq("id", invoiceId);
@@ -604,6 +618,40 @@ function downloadComparison(issuesOnly){
     toast(`Downloaded ${rows.length} row(s).`);
   }catch(err){
     console.error("[SMP] comparison download failed:", err && err.message);
+    toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
+  }
+}
+
+// Excel export of the company-provided (uploaded) delivery list for the period chosen above - one row per
+// school per invoice, exactly as stored in Supabase.
+async function downloadCompanyList(){
+  const fd = new FormData(document.getElementById("filterForm"));
+  const from = fd.get("from"), to = fd.get("to");
+  try{
+    const { data, error } = await smpFetchAll(() => sb.from("company_invoice_items")
+      .select("id, quantity, unit, aeo_verification_status, school_id, product_id, company_invoices!inner(invoice_number, invoice_date, delivery_date, status)")
+      .eq("company_invoices.status", "active")
+      .gte("company_invoices.delivery_date", from).lte("company_invoices.delivery_date", to)
+      .order("id"));
+    if(error) throw error;
+    if(!data.length){ toast("No company-provided data in this period.", "bad"); return; }
+    const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
+    const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
+    const markazById = Object.fromEntries(cache.markaz.map(x => [x.id, x]));
+    const dmy = d => d ? new Date(d).toLocaleDateString("en-GB") : "";
+    const rows = data.map(r => {
+      const sc = schoolById[r.school_id];
+      return { d: r.company_invoices.delivery_date, row: [
+        dmy(r.company_invoices.delivery_date), dmy(r.company_invoices.invoice_date), r.company_invoices.invoice_number || "",
+        sc?.emis_code || "", sc?.school_name || "", markazById[sc?.markaz_id]?.name || "", markazById[sc?.markaz_id]?.tehsil || "", sc?.wing || "",
+        productById[r.product_id]?.product_name || "", Number(r.quantity) || 0, r.unit || "", r.aeo_verification_status || "pending"] };
+    }).sort((a, b) => a.d < b.d ? -1 : a.d > b.d ? 1 : 0).map(x => x.row);
+    const header = ["Delivery date","Invoice date","Invoice #","EMIS","School","Markaz","Tehsil","Wing","Product","Quantity","Unit","AEO certification"];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...rows]), "Company list");
+    XLSX.writeFile(wb, `company-provided-list_${from}_to_${to}.xlsx`);
+  }catch(err){
+    console.error("[SMP] company list download failed:", err && err.message);
     toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
   }
 }

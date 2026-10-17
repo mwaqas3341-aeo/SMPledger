@@ -9,6 +9,7 @@
 <script src="assets/sync-me.js?v=20261015a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css?v=20261015a" />
 </head>
 <body>
@@ -749,32 +750,69 @@ async function renderCompanyDataBody(visibleSchoolIds){
   mount.innerHTML = `
     <div class="card">
       <h3>Company-provided delivery data</h3>
-      <p class="sub">Uploaded by admins from vendor invoices. Mark each row Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
+      <p class="sub">Uploaded by admins from vendor invoices. Rows whose invoice matches your receipt are certified automatically. Mark the remaining rows Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
+      <div class="form-row" style="margin-bottom:12px;">
+        <div><label>Product</label><select id="companyProduct"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+        <div style="align-self:end;"><button class="btn-secondary" type="button" id="companyDlBtn">Download Excel</button></div>
+      </div>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
         <th>Invoice date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Certify</th>
       </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
+  document.getElementById("companyProduct").addEventListener("change", () => renderCompanyRows(visibleSchoolIds));
+  document.getElementById("companyDlBtn").addEventListener("click", downloadCompanyRows);
   await loadCompanyTable(visibleSchoolIds);
 }
 
+// Rows currently listed (after the product filter) - the Excel download exports exactly these.
+let companyRowsAll = [], companyRowsShown = [];
+function downloadCompanyRows(){
+  if(!companyRowsShown.length){ toast("Nothing to download for this selection.", "bad"); return; }
+  const dmy = d => d ? new Date(d).toLocaleDateString("en-GB") : "";
+  const header = ["Delivery date","Markaz","EMIS","School","Product","Quantity","Unit","Invoice #","Status","Matched with company invoice"];
+  const rows = companyRowsShown.map(r => {
+    const s = r.aeo_verification_status, rem = r.aeo_verification_remarks || "";
+    const matched = s === "received" && /^Auto-certified/i.test(rem) ? "Matched - certified automatically"
+      : s === "received" ? "Certified manually" : s === "flagged_mismatch" ? "Not matched - invoice # differs" : s === "not_received" ? "Marked not received" : "Not matched yet";
+    return [dmy(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date),
+      cache.markaz.find(m => m.id === r.schools?.markaz_id)?.name || "", r.schools?.emis_code || "", r.schools?.school_name || "",
+      r.products?.product_name || "", Number(r.quantity) || 0, r.products?.unit_name || "", r.company_invoices?.invoice_number || "",
+      s || "pending", matched];
+  });
+  const prod = document.getElementById("companyProduct");
+  const label = prod && prod.value ? (prod.options[prod.selectedIndex].text || "").replace(/\s+/g, "-") : "all-products";
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...rows]), "Company data");
+  XLSX.writeFile(wb, `company-data_${label}.xlsx`);
+}
+
 async function loadCompanyTable(schoolIds){
-  // Same fix as loadReceiptsTable above (and the earlier Dashboard 400 bug):
-  // skip the explicit .in() above a safe size and let RLS scope it instead.
-  let q = sb.from("company_invoice_items")
-    .select(`
-      id, quantity, aeo_verification_status, aeo_verification_remarks,
-      school_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name),
-      company_invoices(invoice_number, invoice_date, delivery_date, status)
-    `);
-  if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
-  const { data, error } = await q.order("created_at", { ascending: false });
+  // Paged read (a plain select is silently capped at 1,000 rows). Skip the explicit .in() above a safe
+  // size and let RLS scope it instead.
+  const { data, error } = await smpFetchAll(() => {
+    let q = sb.from("company_invoice_items")
+      .select(`
+        id, quantity, aeo_verification_status, aeo_verification_remarks, created_at,
+        school_id, product_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name),
+        company_invoices(invoice_number, invoice_date, delivery_date, status)
+      `);
+    if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
+    return q.order("created_at", { ascending: false }).order("id");
+  });
 
   const tbody = document.querySelector("#companyTable tbody");
   if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
+  companyRowsAll = (data || []).filter(r => r.company_invoices?.status !== "void");
+  renderCompanyRows(schoolIds);
+}
 
-  const rows = (data || []).filter(r => r.company_invoices?.status !== "void");
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
+function renderCompanyRows(schoolIds){
+  const tbody = document.querySelector("#companyTable tbody");
+  const productId = (document.getElementById("companyProduct") || {}).value || "";
+  const rows = companyRowsAll.filter(r => !productId || r.product_id === productId);
+  companyRowsShown = rows;
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">${companyRowsAll.length ? "No company data for this product." : "No company data uploaded yet."}</td></tr>`; return; }
 
   const statusPill = (s, remarks) => s === "received" ? '<span class="pill pill-ok">Received</span>'
     : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
