@@ -539,6 +539,17 @@ async function trySaveReceipt(inp, visibleSchoolIds){
 // instead of once per product saved (was a genuine duplicate-request: a
 // row with both Milk and Biscuit filled in used to reload that entire
 // table twice for one Submit click).
+// After a receipt is saved or edited, matching company data certifies it automatically and the database sets the
+// receipt's date to the company delivery date when the AEO entered a different (wrong) one. Report that back.
+async function receiptDateNote(receiptId, enteredDate){
+  try{
+    if(!receiptId || !enteredDate) return "";
+    const { data } = await sb.from("school_receipts").select("receipt_date").eq("id", receiptId).single();
+    if(data && data.receipt_date && data.receipt_date !== enteredDate) return ` Date corrected to the company delivery date (${fmtDate(data.receipt_date)}).`;
+  }catch(e){ /* the note is informational only */ }
+  return "";
+}
+
 async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumber, reloadTable){
   ind.className = "save-indicator saving";
   ind.textContent = "Saving…";
@@ -555,9 +566,11 @@ async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumb
     });
     if(error) throw error;
     ind.className = "save-indicator ok";
-    ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified"
+    const dateNote = data?.[0]?.auto_certified ? await receiptDateNote(data?.[0]?.id, date) : "";
+    ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified" + (dateNote ? " - date set to company date" : "")
       : data?.[0]?.flagged_mismatch ? "✓ Saved - ⚠ flagged for review"
       : "✓ Saved";
+    if(dateNote) toast("Receipt saved and certified." + dateNote);
     inp.disabled = false;
     inp.value = "";
     if(reloadTable) loadReceiptsTable(reloadTable === true ? [] : reloadTable);
@@ -651,7 +664,8 @@ function showEditReceiptModal(existing, school, product, onSaved){
       });
       if(error) throw error;
       const r = data?.[0];
-      toast(r?.auto_certified ? "Receipt updated - auto-certified against company data"
+      const dateNote = r?.auto_certified ? await receiptDateNote(existing.id, fd.get("receipt_date")) : "";
+      toast(r?.auto_certified ? "Receipt updated - auto-certified against company data." + dateNote
         : r?.flagged_mismatch ? "Receipt updated - flagged for admin/TR review (quantity matches a different invoice)"
         : "Receipt updated");
       close();
