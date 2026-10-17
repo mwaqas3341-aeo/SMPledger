@@ -205,6 +205,7 @@ function renderJurisdictionFilter(container, onApply){
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
+        <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
       </div>
     </div>
   `;
@@ -244,14 +245,16 @@ function renderJurisdictionFilter(container, onApply){
     onApply(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id));
   }
   refreshTehsil(); refreshMarkaz();
-  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); apply(); });
-  tEl.addEventListener("change", () => { refreshMarkaz(); apply(); });
+  // Filters only take effect when "Apply filter" is clicked (or Enter is pressed in the EMIS box) - nothing
+  // reloads while the pickers are being changed. The pickers still narrow each other's options as you go.
+  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); });
+  tEl.addEventListener("change", () => { refreshMarkaz(); });
   // Changing Wing always resets the Markaz selection - a previously chosen
   // Markaz may not even belong to the new Wing's list.
-  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); apply(); });
-  mEl.addEventListener("change", apply);
-  eEl.addEventListener("input", apply);
-  apply();
+  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
+  eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
+  document.getElementById("jfApply").addEventListener("click", apply);
+  apply();   // one initial load with the default scope
 }
 
 /* ===================== GRID ===================== */
@@ -260,10 +263,10 @@ async function renderGrid(){
   content.innerHTML = `
     <div class="card">
       <h3>Date</h3>
-      <p class="sub">Defaults to today. Pick an earlier date to review or correct that day's entries.</p>
+      <p class="sub">Defaults to today. Pick an earlier date, then click Apply filter to review or correct that day's entries.</p>
       <div class="form-row">
         <div><label>Consumption date</label><input type="date" id="dateInput" value="${selectedDate}" max="${todayStr()}" /></div>
-        <div style="align-self:end;"><button class="btn-secondary" id="todayBtn" type="button">Jump to today</button></div>
+        <div style="align-self:end;"><button class="btn-primary" id="applyDateBtn" type="button">Apply filter</button> <button class="btn-secondary" id="todayBtn" type="button">Jump to today</button></div>
       </div>
     </div>
     <div id="filterMount"></div>
@@ -278,14 +281,15 @@ async function renderGrid(){
 
   // Selecting a date loads that date's entries right away - no separate
   // "Load" click needed.
+  // The date only takes effect when "Apply filter" is clicked.
   document.getElementById("dateInput").addEventListener("change", (e) => {
-    let v = e.target.value || todayStr();
-    if(v > todayStr()){
+    if(e.target.value && e.target.value > todayStr()){
       toast("Consumption can't be dated in the future - check the day and month.", "bad");
-      v = todayStr();
-      e.target.value = v;
+      e.target.value = todayStr();
     }
-    selectedDate = v;
+  });
+  document.getElementById("applyDateBtn").addEventListener("click", () => {
+    selectedDate = document.getElementById("dateInput").value || todayStr();
     renderGrid();
   });
   document.getElementById("todayBtn").addEventListener("click", () => {
