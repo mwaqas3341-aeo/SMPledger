@@ -127,3 +127,43 @@ function renderSidebarNav(){
     }
   }
 }
+
+
+/* ===== Live "search by word" for tables =====
+   smpLiveSearch(input, scope, tableSelector, countEl): as the user types, hide every row of the matching tables
+   (inside `scope`) that does not contain ALL the words typed - school name, EMIS, markaz, invoice #, product,
+   remarks, anything shown in the row. Invoice-style words also match with O/0 and punctuation ignored.
+   Rows re-rendered later (after a filter/reload) are filtered again automatically. */
+function smpLiveSearch(input, scope, tableSelector, countEl){
+  if(!input || !scope) return;
+  if(scope.__smpLive) scope.__smpLive.disconnect();
+  const norm = v => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/O/g, "0");
+  let queued = false;
+  function apply(){
+    queued = false;
+    const words = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0, total = 0;
+    scope.querySelectorAll(tableSelector).forEach(table => {
+      table.querySelectorAll("tbody tr").forEach(tr => {
+        // single-cell rows are messages ("Loading...", "No data") - never hide them
+        if(tr.children.length === 1 && tr.firstElementChild.hasAttribute("colspan")){ tr.style.display = ""; return; }
+        total++;
+        const text = tr.textContent.toLowerCase();
+        const tn = norm(text);
+        const ok = words.every(w => text.includes(w) || (norm(w).length >= 4 && tn.includes(norm(w))));
+        tr.style.display = ok ? "" : "none";
+        if(ok) shown++;
+      });
+    });
+    if(countEl){
+      const msg = words.length ? `Showing ${shown} of ${total}` : "";
+      if(countEl.textContent !== msg) countEl.textContent = msg;
+    }
+  }
+  const schedule = () => { if(!queued){ queued = true; requestAnimationFrame(apply); } };
+  input.addEventListener("input", apply);
+  const obs = new MutationObserver(schedule);
+  obs.observe(scope, { childList: true, subtree: true });
+  scope.__smpLive = obs;
+  apply();
+}

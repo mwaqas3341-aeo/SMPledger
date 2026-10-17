@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Report Comparison — School Meal Program</title>
 <script src="assets/safety.js?v=20261015a"></script>
-<script src="assets/layout.js?v=20261015a"></script>
+<script src="assets/layout.js?v=20261017b"></script>
 <script src="assets/sync-me.js?v=20261015a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -181,7 +181,9 @@ async function renderPage(){
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${[...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort().map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
-        <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option></select></div>
+        <div><label>Product</label><select name="product"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+        <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option><option value="flagged">Flagged for rectification</option></select></div>
+        <div style="flex:1 1 260px;"><label>Search <span id="cmpSearchCount" class="sub"></span></label><input type="search" id="cmpSearch" placeholder="Type to search: school, markaz, invoice #, remarks…" autocomplete="off"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply filter</button></div>
       </form>
       <div class="actions-row" style="margin-top:12px;">
@@ -200,6 +202,7 @@ async function renderPage(){
   `;
 
   if(isAdmin) renderUploadWizard(document.getElementById("uploadMount"));
+  smpLiveSearch(document.getElementById("cmpSearch"), document.getElementById("content"), "#compTable", document.getElementById("cmpSearchCount"));
   document.getElementById("dlCmpAllBtn").addEventListener("click", () => downloadComparison(false));
   document.getElementById("dlCmpIssuesBtn").addEventListener("click", () => downloadComparison(true));
   document.getElementById("dlCompanyListBtn").addEventListener("click", downloadCompanyList);
@@ -714,7 +717,7 @@ async function downloadCompanyList(){
 }
 
 async function loadComparison(fd){
-  const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter");
+  const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter"), selProduct = fd.get("product") || "";
   const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing");
   const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value, selWing = wEl.value;
   const selEmis = (document.getElementById("jfEmis")?.value || "").trim();
@@ -724,8 +727,10 @@ async function loadComparison(fd){
   let data = [];
   try{
     for(let start = 0; ; start += 1000){
-      const { data: page, error } = await sb.from("v_company_vs_aeo_comparison").select("*")
-        .gte("delivery_date", from).lte("delivery_date", to)
+      let q = sb.from("v_company_vs_aeo_comparison").select("*")
+        .gte("delivery_date", from).lte("delivery_date", to);
+      if(selProduct) q = q.eq("product_id", selProduct);
+      const { data: page, error } = await q
         .order("delivery_date", { ascending: false }).order("school_id").order("product_id").order("invoice_number")
         .range(start, start + 999);
       if(error) throw error;
@@ -750,6 +755,7 @@ async function loadComparison(fd){
     if(selWing) rows = rows.filter(r => r.school?.wing === selWing);
   }
   if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0 || r.remarks);
+  if(filter === "flagged") rows = rows.filter(r => r.aeo_flag);
 
   // date desc, EMIS asc within date - same convention as Inventory Received.
   rows.sort((a, b) => {
@@ -768,6 +774,7 @@ async function loadComparison(fd){
     <div class="stat"><div class="n">${matched}</div><div class="l">Matching</div></div>
     <div class="stat"><div class="n">${aeoOnly}</div><div class="l">AEO entered, company didn't</div></div>
     <div class="stat"><div class="n">${companyOnly}</div><div class="l">Company provided, AEO didn't</div></div>
+    <div class="stat"><div class="n">${rows.filter(r => r.aeo_flag).length}</div><div class="l">⚠ Flagged for rectification (invoice entered twice)</div></div>
   `;
 
   if(!rows.length){ tbody.innerHTML = `<tr><td colspan="12" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
@@ -803,7 +810,7 @@ async function loadComparison(fd){
       <td>${diff > 0 ? "+" : ""}${fmt(diff)}</td>
       <td>${pillFor(r.status)}</td>
       <td>${certPillFor(r.aeo_verification_status)}</td>
-      <td style="min-width:220px; font-size:12px;">${esc(r.remarks) || "—"}</td>
+      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc(r.remarks) || "—"}</td>
     </tr>`;
   }).join("");
 }

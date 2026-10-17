@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Inventory Received — School Meal Program</title>
 <script src="assets/safety.js?v=20261017a"></script>
-<script src="assets/layout.js?v=20261017a"></script>
+<script src="assets/layout.js?v=20261017b"></script>
 <script src="assets/sync-me.js?v=20261017a"></script>
 <script src="assets/config.js?v=20261017a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -215,14 +215,15 @@ function renderJurisdictionFilter(container, onApply){
     container.innerHTML = `
       <div class="card">
         <div class="form-row">
-          <div style="flex:1 1 320px;"><label>Search</label><input type="text" id="jfSearch" placeholder="Search by word: school, EMIS, invoice #, product, remarks…"/></div>
+          <div style="flex:1 1 320px;"><label>Search <span id="jfSearchCount" class="sub"></span></label><input type="search" id="jfSearch" placeholder="Type to search: school, EMIS, markaz, invoice #, product…" autocomplete="off"/></div>
           <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
         </div>
       </div>`;
     const sOnly = document.getElementById("jfSearch");
-    const go = () => { jfSearchText = sOnly.value.trim().toLowerCase(); onApply(cache.schools.map(s => s.id)); };
-    sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); go(); } });
+    const go = () => onApply(cache.schools.map(s => s.id));
+    sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
     document.getElementById("jfApply").addEventListener("click", go);
+    smpLiveSearch(sOnly, document.getElementById("content"), "#receiptsTable, #companyTable", document.getElementById("jfSearchCount"));
     onApply(cache.schools.map(s => s.id));
     return;
   }
@@ -239,7 +240,7 @@ function renderJurisdictionFilter(container, onApply){
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
-        <div style="flex:1 1 260px;"><label>Search</label><input type="text" id="jfSearch" placeholder="Search by word: school, markaz, invoice #, product…"/></div>
+        <div style="flex:1 1 260px;"><label>Search <span id="jfSearchCount" class="sub"></span></label><input type="search" id="jfSearch" placeholder="Type to search: school, markaz, invoice #, product…" autocomplete="off"/></div>
         <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
       </div>
     </div>
@@ -266,7 +267,6 @@ function renderJurisdictionFilter(container, onApply){
   function apply(){
     const d = dEl.value, t = tEl.value, mId = wEl.value ? mEl.value : "", wing = wEl.value;
     const emis = (eEl.value || "").trim();
-    jfSearchText = (sEl.value || "").trim().toLowerCase();
     // An EMIS code identifies exactly one school, so when one is entered it
     // overrides the geography/wing pickers entirely rather than intersecting
     // with them - otherwise a valid code would return nothing whenever the
@@ -285,7 +285,8 @@ function renderJurisdictionFilter(container, onApply){
   tEl.addEventListener("change", () => { refreshMarkaz(); });
   wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
   eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
-  sEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
+  sEl.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
+  smpLiveSearch(sEl, document.getElementById("content"), "#receiptsTable, #companyTable", document.getElementById("jfSearchCount"));
   document.getElementById("jfApply").addEventListener("click", apply);
   apply();   // one initial load with the default scope
 }
@@ -363,6 +364,48 @@ async function precheckReceipt(schoolId, productId, invoice, date, qty){
   }catch(e){ return null; }
 }
 
+// Same school + product + invoice number already saved. Shows what is on file (school, markaz, who entered it) and
+// lets the user go back or save anyway - the entry is flagged for rectification, never blocked.
+function showInvoiceWarningModal(chk, school, product, invoice){
+  return new Promise((resolve) => {
+    const old = document.getElementById("invoiceWarningModal");
+    if(old) old.remove();
+    const isDup = chk.status === "duplicate";
+    const body = String(chk.message || "").replace(/^[^:]+:\s*/, "");
+    const overlay = document.createElement("div");
+    overlay.id = "invoiceWarningModal";
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3>⚠ ${isDup ? "This invoice was already entered" : "Invoice number already entered with different details"}</h3>
+        <p>You are adding <b>${esc(invoice)}</b> for <b>${esc(school?.school_name || "")}</b>${product ? ` - ${esc(product.product_name)}` : ""}.</p>
+        <div class="modal-note">${esc(body)}</div>
+        <p class="sub">If the entry on file is wrong, you can edit it instead. Otherwise save yours - both entries will be flagged for rectification in Company vs AEO comparison.</p>
+        <div class="actions-row">
+          <button class="btn-secondary" id="iwCancelBtn" type="button">Go back and check</button>
+          ${chk.existing?.id ? `<button class="btn-secondary" id="iwEditBtn" type="button">Edit the existing entry</button>` : ""}
+          <button class="btn-primary" id="iwSaveBtn" type="button">Save anyway - flag it</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (v) => { overlay.remove(); resolve(v); };
+    document.getElementById("iwCancelBtn").addEventListener("click", () => done(false));
+    document.getElementById("iwSaveBtn").addEventListener("click", () => done(true));
+    const eb = document.getElementById("iwEditBtn");
+    if(eb) eb.addEventListener("click", async () => {
+      const { data: existing, error } = await sb.from("school_receipts")
+        .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, school_id, product_id")
+        .eq("id", chk.existing.id).single();
+      if(error){ toast(error.message, "bad"); return; }
+      overlay.remove();
+      document.getElementById("addInventoryModal")?.remove();
+      showEditReceiptModal(existing, cache.schools.find(s => s.id === existing.school_id) || school,
+        cache.products.find(p => p.id === existing.product_id) || product, () => renderMyReceiptsBody(lastVisibleSchoolIds));
+      resolve(false);
+    });
+  });
+}
+
 // The invoice number typed here was already entered for another school. Show exactly where and by whom - the person
 // who typed it earlier may be the one who made the mistake - and let this user cancel or confirm.
 function showOtherSchoolModal(others, school, product, invoice){
@@ -380,10 +423,10 @@ function showOtherSchoolModal(others, school, product, invoice){
         <div class="table-wrap"><table><thead><tr><th>School</th><th>Markaz</th><th>Qty</th><th>Delivery date</th><th>Entered by</th><th>Entered on</th></tr></thead><tbody>
           ${others.map(o => `<tr><td>${esc(o.school)} <span class="sub">(EMIS ${esc(o.emis)})</span></td><td>${esc(o.markaz || "-")}</td><td>${fmt(o.quantity)}</td><td>${fmtDate(o.receipt_date)}</td><td>${esc(o.entered_by)}${o.entered_by_role ? ` (${esc(o.entered_by_role)})` : ""}</td><td>${fmtDt(o.entered_at)}</td></tr>`).join("")}
         </tbody></table></div>
-        <p class="sub">One of the two entries may have a wrong invoice number. Check your challan. If yours is correct, save it - and ask the person above to check theirs.</p>
+        <p class="sub">One of the entries may have a wrong invoice number. Check your challan. If yours is correct, save it - both entries will be flagged for rectification in Company vs AEO comparison.</p>
         <div class="actions-row">
           <button class="btn-secondary" id="osCancelBtn" type="button">Go back and check</button>
-          <button class="btn-primary" id="osConfirmBtn" type="button">My invoice number is correct - save</button>
+          <button class="btn-primary" id="osConfirmBtn" type="button">Save anyway - flag it</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -536,11 +579,18 @@ function showAddInventoryModal(visibleSchoolIds){
       // Ask the database first, so an existing invoice is reported before anything is saved. The database
       // re-checks inside the save itself, so this cannot be bypassed (refresh, second tab, double click).
       const chk = await precheckReceipt(schoolId, productId, invoice, date, qty);
-      if(chk && (chk.status === "duplicate" || chk.status === "conflict")){ showProblem(chk.status, chk.message, chk.existing?.id); return; }
-      // Same invoice number already entered for a DIFFERENT school: show who/where, and let this user decide.
-      if(chk && chk.status === "other_school"){
+      // The invoice number is already in the system (same school, or another school): show exactly where and by
+      // whom, but do NOT stop the entry. If the user saves anyway, the database flags every entry sharing that
+      // invoice number and the Company vs AEO comparison lists them for rectification.
+      let savedWithWarning = false;
+      if(chk && (chk.status === "duplicate" || chk.status === "conflict")){
+        const goOn = await showInvoiceWarningModal(chk, school, product, invoice);
+        if(!goOn) return;
+        savedWithWarning = true;
+      } else if(chk && chk.status === "other_school"){
         const goOn = await showOtherSchoolModal(chk.others || [], school, product, invoice);
         if(!goOn) return;
+        savedWithWarning = true;
       }
       submitBtn.textContent = "Saving…";
       const { data, error } = await sb.rpc("fn_create_school_receipt", {
@@ -551,6 +601,7 @@ function showAddInventoryModal(visibleSchoolIds){
       const r = data?.[0];
       const dateNote = r?.auto_certified ? await receiptDateNote(r.id, date) : "";
       busy = false; overlay.remove();
+      if(savedWithWarning) toast("Saved - flagged for rectification because this invoice number is already in the system. It is listed in Company vs AEO comparison.");
       toast(r?.auto_certified ? "Inventory added and certified automatically." + dateNote
         : r?.flagged_mismatch ? "Inventory added - flagged for review (quantity matches a different invoice)."
         : "Inventory added.");
@@ -635,7 +686,7 @@ async function loadReceiptsTable(schoolIds){
   // own - school_receipts_select already limits rows to what this person
   // can see, which is exactly what an unnarrowed schoolIds list means anyway.
   let q = sb.from("school_receipts")
-    .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, status, school_id, product_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name)")
+    .select("id, receipt_date, quantity_received, invoice_number, invoice_flag, invoice_flag_note, collected_by, remarks, status, school_id, product_id, schools(emis_code, school_name, markaz_id), products(product_name, unit_name)")
     .eq("status", "active");
   if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
   const { data, error } = await q.order("receipt_date", { ascending: false });
@@ -664,7 +715,7 @@ async function loadReceiptsTable(schoolIds){
       <td>${esc(r.schools?.school_name)}</td>
       <td>${esc(r.products?.product_name)}</td>
       <td>${fmt(r.quantity_received)} ${esc(r.products?.unit_name || "")}</td>
-      <td>${esc(r.invoice_number) || "—"}</td>
+      <td>${esc(r.invoice_number) || "—"}${r.invoice_flag ? ` <span class="pill pill-warn" title="${esc(r.invoice_flag_note || "")}">⚠ Flagged: ${r.invoice_flag === "other_school" ? "also used at another school" : r.invoice_flag === "duplicate" ? "duplicate entry" : "different details on file"}</span>` : ""}</td>
       <td>${esc(r.collected_by) || "—"}</td>
       <td>${esc(r.remarks) || "—"}</td>
       <td>

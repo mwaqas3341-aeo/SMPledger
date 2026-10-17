@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Consumption — School Meal Program</title>
 <script src="assets/safety.js?v=20261015a"></script>
-<script src="assets/layout.js?v=20261015a"></script>
+<script src="assets/layout.js?v=20261017b"></script>
 <script src="assets/sync-me.js?v=20261015a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -182,19 +182,6 @@ async function loadRefData(){
 }
 
 /* ===================== JURISDICTION FILTER (admin/tr only) ===================== */
-// "Search by word": every word typed must appear in the school's name, EMIS, markaz, tehsil, district or wing.
-function schoolSearchFilter(ids, text){
-  const words = String(text || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if(!words.length) return ids;
-  const keep = new Set(ids);
-  return cache.schools.filter(sc => {
-    if(!keep.has(sc.id)) return false;
-    const mz = cache.markaz.find(m => m.id === sc.markaz_id);
-    const hay = [sc.school_name, sc.emis_code, mz?.name, mz?.tehsil, mz?.district, sc.wing].filter(Boolean).join(" ").toLowerCase();
-    return words.every(w => hay.includes(w));
-  }).map(sc => sc.id);
-}
-
 function renderJurisdictionFilter(container, onApply){
   // An AEO with only one markaz has nothing to narrow, so skip straight to their schools.
   // An AEO holding charge of several markaz gets a Markaz picker scoped to just those markaz,
@@ -205,14 +192,15 @@ function renderJurisdictionFilter(container, onApply){
     container.innerHTML = `
       <div class="card">
         <div class="form-row">
-          <div style="flex:1 1 320px;"><label>Search</label><input type="text" id="jfSearch" placeholder="Search by word: school name, EMIS, markaz…"/></div>
+          <div style="flex:1 1 320px;"><label>Search <span id="jfSearchCount" class="sub"></span></label><input type="search" id="jfSearch" placeholder="Type to search: school name, EMIS, markaz…" autocomplete="off"/></div>
           <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
         </div>
       </div>`;
     const sOnly = document.getElementById("jfSearch");
-    const go = () => onApply(schoolSearchFilter(cache.schools.map(s => s.id), sOnly.value));
-    sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); go(); } });
+    const go = () => onApply(cache.schools.map(s => s.id));
+    sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
     document.getElementById("jfApply").addEventListener("click", go);
+    smpLiveSearch(sOnly, document.getElementById("content"), "#gridTable", document.getElementById("jfSearchCount"));
     onApply(cache.schools.map(s => s.id));
     return;
   }
@@ -229,7 +217,7 @@ function renderJurisdictionFilter(container, onApply){
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
-        <div style="flex:1 1 260px;"><label>Search</label><input type="text" id="jfSearch" placeholder="Search by word: school name, markaz…"/></div>
+        <div style="flex:1 1 260px;"><label>Search <span id="jfSearchCount" class="sub"></span></label><input type="search" id="jfSearch" placeholder="Type to search: school name, markaz…" autocomplete="off"/></div>
         <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
       </div>
     </div>
@@ -263,11 +251,11 @@ function renderJurisdictionFilter(container, onApply){
     // with them - otherwise a valid code would return nothing whenever the
     // dropdowns happened to be pointed elsewhere.
     if(emis){
-      onApply(schoolSearchFilter(cache.schools.filter(s => (s.emis_code || "").includes(emis)).map(s => s.id), sEl.value));
+      onApply(cache.schools.filter(s => (s.emis_code || "").includes(emis)).map(s => s.id));
       return;
     }
     const markazIds = new Set(scopedMarkaz.filter(m => (!d || m.district === d) && (!t || m.tehsil === t) && (!mId || m.id === mId)).map(m => m.id));
-    onApply(schoolSearchFilter(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id), sEl.value));
+    onApply(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id));
   }
   refreshTehsil(); refreshMarkaz();
   // Filters only take effect when "Apply filter" is clicked (or Enter is pressed in the EMIS box) - nothing
@@ -278,7 +266,8 @@ function renderJurisdictionFilter(container, onApply){
   // Markaz may not even belong to the new Wing's list.
   wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
   eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
-  sEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
+  sEl.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
+  smpLiveSearch(sEl, document.getElementById("content"), "#gridTable", document.getElementById("jfSearchCount"));
   document.getElementById("jfApply").addEventListener("click", apply);
   apply();   // one initial load with the default scope
 }
