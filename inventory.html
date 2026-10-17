@@ -751,8 +751,8 @@ async function renderCompanyDataBody(visibleSchoolIds){
       <h3>Company-provided delivery data</h3>
       <p class="sub">Uploaded by admins from vendor invoices. Mark each row Received or Not Received against what actually arrived at the school - flagging "Not Received" surfaces it for rectification.</p>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
-        <th>Invoice date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Certify</th>
-      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Invoice date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Certify</th>
+      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
   await loadCompanyTable(visibleSchoolIds);
@@ -771,15 +771,27 @@ async function loadCompanyTable(schoolIds){
   const { data, error } = await q.order("created_at", { ascending: false });
 
   const tbody = document.querySelector("#companyTable tbody");
-  if(error){ tbody.innerHTML = `<tr><td colspan="9" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
 
   const rows = (data || []).filter(r => r.company_invoices?.status !== "void");
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="9" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No company data uploaded yet.</td></tr>`; return; }
 
   const statusPill = (s, remarks) => s === "received" ? '<span class="pill pill-ok">Received</span>'
     : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
     : s === "flagged_mismatch" ? `<span class="pill pill-warn" title="${esc(remarks || "")}">⚠ Qty matches other invoice</span>`
     : '<span class="pill pill-warn">Pending</span>';
+
+  // Whether the AEO's own receipt matched this company invoice (same invoice #, product and quantity).
+  // Auto-certification writes an "Auto-certified: matched ..." remark; anything else marked received was
+  // certified by hand.
+  const matchCell = r => {
+    const s = r.aeo_verification_status, rem = r.aeo_verification_remarks || "";
+    if(s === "received" && /^Auto-certified/i.test(rem)) return '<span class="pill pill-ok" title="Your receipt matches this company invoice (invoice #, product and quantity). Certified automatically.">✓ Matched with company invoice</span>';
+    if(s === "received") return '<span class="pill pill-ok" title="Certified manually">Certified manually</span>';
+    if(s === "flagged_mismatch") return `<span class="pill pill-warn" title="${esc(rem)}">⚠ Not matched - invoice # differs</span>`;
+    if(s === "not_received") return '<span style="color:var(--ink-soft)">—</span>';
+    return '<span style="color:var(--ink-soft)">Not matched yet</span>';
+  };
 
   tbody.innerHTML = rows.map(r => `
     <tr data-id="${r.id}">
@@ -791,6 +803,7 @@ async function loadCompanyTable(schoolIds){
       <td>${fmt(r.quantity)} ${esc(r.products?.unit_name || "")}</td>
       <td>${esc(r.company_invoices?.invoice_number) || "—"}</td>
       <td class="status-cell">${statusPill(r.aeo_verification_status, r.aeo_verification_remarks)}</td>
+      <td>${matchCell(r)}</td>
       <td>
         <button class="link-btn" data-action="received">Mark received</button>
         <button class="link-btn danger" data-action="not_received">Not received</button>
