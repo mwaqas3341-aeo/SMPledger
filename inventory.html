@@ -212,6 +212,7 @@ function renderJurisdictionFilter(container, onApply){
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
+        <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
       </div>
     </div>
   `;
@@ -249,12 +250,14 @@ function renderJurisdictionFilter(container, onApply){
     onApply(cache.schools.filter(s => markazIds.has(s.markaz_id) && (!wing || s.wing === wing)).map(s => s.id));
   }
   refreshTehsil(); refreshMarkaz();
-  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); apply(); });
-  tEl.addEventListener("change", () => { refreshMarkaz(); apply(); });
-  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); apply(); });
-  mEl.addEventListener("change", apply);
-  eEl.addEventListener("input", apply);
-  apply();
+  // Filters only take effect when "Apply filter" is clicked (or Enter is pressed in the EMIS box) - nothing
+  // reloads while the pickers are being changed. The pickers still narrow each other's options as you go.
+  dEl.addEventListener("change", () => { refreshTehsil(); refreshMarkaz(); });
+  tEl.addEventListener("change", () => { refreshMarkaz(); });
+  wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
+  eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
+  document.getElementById("jfApply").addEventListener("click", apply);
+  apply();   // one initial load with the default scope
 }
 
 /* ===================== SECTION: MY RECEIPTS ===================== */
@@ -263,77 +266,23 @@ async function renderMyReceipts(content){
   renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => renderMyReceiptsBody(schoolIds));
 }
 
-let selectedReceiptDate;
 let lastVisibleSchoolIds = [];
 
 async function renderMyReceiptsBody(visibleSchoolIds){
-  if(!selectedReceiptDate) selectedReceiptDate = todayStr();
   lastVisibleSchoolIds = visibleSchoolIds;
   const mount = document.getElementById("receiptsMount");
-  const visibleSchools = sortSchoolsStandard(cache.schools.filter(s => visibleSchoolIds.includes(s.id)));
-  const [milk, biscuit] = cache.products; // sorted milk-first in loadRefData
-
-  // Same URL-length guard used elsewhere for a large schoolIds array.
-  let existingQuery = sb.from("school_receipts")
-    .select("id, school_id, product_id, quantity_received, invoice_number")
-    .eq("receipt_date", selectedReceiptDate).eq("status", "active");
-  if(visibleSchoolIds.length <= 150) existingQuery = existingQuery.in("school_id", visibleSchoolIds);
-  const { data: existingRows } = await existingQuery;
-  const existingByKey = {};
-  (existingRows || []).forEach(r => { existingByKey[`${r.school_id}|${r.product_id}`] = r; });
-
-  // Grid entry (same pattern as the Consumption grid) instead of a
-  // single-school picker - every school in scope gets its own row. Milk
-  // and Biscuits are completely independent here: different suppliers can
-  // deliver on different dates under different invoice numbers, so each
-  // product gets its own Date/Invoice #/Qty columns - neither is ever
-  // assumed to share the other's date or invoice. Milk's block comes
-  // before Biscuit's. Invoice # is required per product - it's the join
-  // key the system uses to compare what a school actually received
-  // against what the company says it delivered, independently for each
-  // product. Picking a date above pre-fills any entries already saved for
-  // that date, same as Consumption.
-  const productCols = cache.products.map(p => `<th colspan="3">${esc(p.product_name)}</th>`).join("");
-  const productSubCols = cache.products.map(() => `<th>Date</th><th>Invoice #</th><th>Qty</th>`).join("");
-
+  // Inventory is added through a form (one delivery at a time) instead of a grid of every school.
   mount.innerHTML = `
     <div class="card">
-      <h3>Date</h3>
-      <p class="sub">Defaults to today. Pick an earlier date to review or correct that day's entries.</p>
-      <div class="form-row">
-        <div><label>Delivery date</label><input type="date" id="receiptDateInput" value="${selectedReceiptDate}" max="${todayStr()}"/></div>
-        <div style="align-self:end;"><button class="btn-secondary" id="receiptTodayBtn" type="button">Jump to today</button></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <h3 style="margin:0;">Inventory received</h3>
+          <p class="sub" style="margin:4px 0 0;">Add a delivery as per the challan. Every inventory you add is listed below, where you can edit or delete it.</p>
+        </div>
+        <button class="btn-primary" id="addInventoryBtn" type="button">+ Add inventory</button>
       </div>
     </div>
-    <div class="card">
-      <h3>Inventory received — ${esc(selectedReceiptDate)}</h3>
-      <p class="sub">Milk and Biscuits are entered completely independently - each has its own Date, Invoice #, and Quantity, since they can arrive from different suppliers on different dates under different invoices. Click Submit for that school; a school with data already saved for this date is locked - click Edit to change it.</p>
-      <div class="table-wrap"><table id="receiptGrid"><thead>
-        <tr><th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>${productCols}<th rowspan="2">Action</th></tr>
-        <tr>${productSubCols}</tr>
-      </thead><tbody>
-        ${visibleSchools.map((s, i) => {
-          const mk = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
-          let hasData = false;
-          const cells = cache.products.map(p => {
-            const existing = existingByKey[`${s.id}|${p.id}`];
-            if(existing) hasData = true;
-            return `
-            <td><input type="date" class="receiptDate" data-school="${s.id}" data-product="${p.id}" value="${existing?.receipt_date || selectedReceiptDate}" max="${todayStr()}" style="width:120px;padding:5px 6px;"/></td>
-            <td><input type="text" class="receiptInvoice" data-school="${s.id}" data-product="${p.id}" value="${esc(existing?.invoice_number || "")}" placeholder="Required" style="width:100px;padding:5px 6px;"/></td>
-            <td><input type="number" min="0" step="0.01" class="receiptQty" data-school="${s.id}" data-product="${p.id}" data-receipt-id="${existing?.id || ""}" data-orig-qty="${existing ? existing.quantity_received : ""}" data-orig-date="${existing ? selectedReceiptDate : ""}" data-orig-invoice="${esc(existing?.invoice_number || "")}" value="${existing ? existing.quantity_received : ""}" style="width:75px;padding:5px 6px;"/>
-              <span class="save-indicator" id="rind-${s.id}-${p.id}"></span></td>
-          `;
-          }).join("");
-          const actionCell = `<td>
-            <button class="btn-secondary row-action-btn" type="button" data-school="${s.id}" data-mode="${hasData ? "edit" : "submit"}">
-              ${hasData ? "Edit" : "Submit"}
-            </button>
-          </td>`;
-          return `<tr data-receipt-row-school="${s.id}"><td>${i+1}</td><td>${esc(mk)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}${actionCell}</tr>`;
-        }).join("")}
-      </tbody></table></div>
-    </div>
+
     <div class="card">
       <h3>Receipts already entered</h3>
       <p class="sub">Sorted by date (most recent first), then by EMIS code.</p>
@@ -342,220 +291,10 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
-
-  // Selecting a date loads that date's entries right away - no separate
-  // "Load" click needed.
-  document.getElementById("receiptDateInput").addEventListener("change", (e) => {
-    let v = e.target.value || todayStr();
-    if(v > todayStr()){
-      toast("A delivery can't be dated in the future - check the day and month.", "bad");
-      v = todayStr();
-      e.target.value = v;
-    }
-    selectedReceiptDate = v;
-    renderMyReceiptsBody(visibleSchoolIds);
-  });
-  document.getElementById("receiptTodayBtn").addEventListener("click", () => {
-    selectedReceiptDate = todayStr();
-    renderMyReceiptsBody(visibleSchoolIds);
-  });
-
-  // Clamp every per-row date field the moment it changes (typing or scrolling past today in the
-  // native picker isn't reliably blocked by the max="" attribute on every browser) - immediate
-  // feedback here, rather than only catching it later when Submit is pressed.
-  mount.querySelectorAll(".receiptDate").forEach(el => {
-    el.addEventListener("change", (e) => {
-      if(e.target.value && e.target.value > todayStr()){
-        toast("A delivery can't be dated in the future - check the day and month.", "bad");
-        e.target.value = todayStr();
-      }
-    });
-  });
-
-  // Locked rows (already have data for this date) start with disabled inputs.
-  mount.querySelectorAll("#receiptGrid tbody tr").forEach(tr => {
-    const btn = tr.querySelector(".row-action-btn");
-    if(btn?.dataset.mode === "edit"){
-      tr.querySelectorAll(".receiptDate, .receiptInvoice, .receiptQty").forEach(el => el.disabled = true);
-    }
-  });
-
-
-  mount.querySelectorAll(".receiptQty").forEach(inp => {
-    inp.addEventListener("input", () => {
-      const ind = document.getElementById(`rind-${inp.dataset.school}-${inp.dataset.product}`);
-      ind.className = ""; ind.textContent = "";
-    });
-  });
-
-  mount.querySelectorAll(".row-action-btn").forEach(btn => {
-    btn.addEventListener("click", () => handleReceiptRowAction(btn, visibleSchoolIds));
-  });
-
+  document.getElementById("addInventoryBtn").addEventListener("click", () => showAddInventoryModal(visibleSchoolIds));
   await loadReceiptsTable(visibleSchoolIds);
 }
 
-async function handleReceiptRowAction(btn, visibleSchoolIds){
-  const schoolId = btn.dataset.school;
-  const tr = mountReceiptRow(schoolId);
-  const fields = tr.querySelectorAll(".receiptDate, .receiptInvoice, .receiptQty");
-
-  if(btn.dataset.mode === "edit"){
-    // Unlock for editing - no save yet, just makes the cells writable again.
-    fields.forEach(el => el.disabled = false);
-    btn.dataset.mode = "submit";
-    btn.textContent = "Submit";
-    return;
-  }
-
-  // Submit mode: run every product's Qty cell in this row through the same
-  // validation/duplicate-check flow as before, one product fully at a time
-  // (trySaveReceipt now genuinely waits for a duplicate-modal decision
-  // before returning, so Milk and Biscuit can never race or clobber each
-  // other's popup). A cell left blank is simply skipped.
-  btn.disabled = true;
-  btn.textContent = "Submitting…";
-  const qtyInputs = tr.querySelectorAll(".receiptQty");
-  let anyAttempted = false, allOk = true;
-  for(const inp of qtyInputs){
-    if(inp.value === "") continue;
-    anyAttempted = true;
-    const ok = await trySaveReceipt(inp, visibleSchoolIds);
-    if(!ok) allOk = false;
-  }
-  btn.disabled = false;
-  // One reload for the whole row, not one per product - this used to fire
-  // twice (once per product) for a row with both Milk and Biscuit filled in.
-  if(anyAttempted) await loadReceiptsTable(visibleSchoolIds);
-  if(gridNeedsRefresh){ gridNeedsRefresh = false; await renderMyReceiptsBody(visibleSchoolIds); return; }
-
-  if(allOk){
-    fields.forEach(el => el.disabled = true);
-    btn.dataset.mode = "edit";
-    btn.textContent = "Edit";
-  } else {
-    // Something failed or is still pending a modal decision - leave the
-    // row open rather than locking over an incomplete/failed submission.
-    btn.textContent = "Submit";
-  }
-}
-
-function mountReceiptRow(schoolId){
-  return document.querySelector(`tr[data-receipt-row-school="${schoolId}"]`);
-}
-
-// Returns true/false once the FULL outcome is known - including, when a
-// duplicate exists, only after the user has actually made a choice in the
-// modal. This used to return as soon as the modal was shown (not once it
-// was resolved), so a row-level Submit that processes Milk then Biscuit
-// would open Biscuit's modal - a fixed, single DOM element - before the
-// user had touched Milk's, silently destroying it. That was the root
-// cause of edits only ever taking effect on Biscuits: Milk's modal was
-// being clobbered, invisibly, every time both products already had data.
-async function trySaveReceipt(inp, visibleSchoolIds){
-  const schoolId = inp.dataset.school, productId = inp.dataset.product;
-  const qty = inp.value;
-  const ind = document.getElementById(`rind-${schoolId}-${productId}`);
-  const mount = document.getElementById("receiptsMount");
-  if(qty === ""){ ind.className = ""; ind.textContent = ""; return true; }
-
-  const dateInput = mount.querySelector(`.receiptDate[data-school="${schoolId}"][data-product="${productId}"]`);
-  const invoiceInput = mount.querySelector(`.receiptInvoice[data-school="${schoolId}"][data-product="${productId}"]`);
-  const school = cache.schools.find(s => s.id === schoolId);
-  const product = cache.products.find(p => p.id === productId);
-
-  // Milk and Biscuits are independent deliveries - different suppliers,
-  // different invoices, different dates - so each product's Date/Invoice #
-  // is required on its own; neither is ever assumed to share the other's.
-  const effectiveDate = dateInput.value, effectiveInvoice = invoiceInput.value.trim();
-
-  if(effectiveDate && effectiveDate > todayStr()){
-    toast(`${product?.product_name} date can't be in the future - check the day and month.`, "bad");
-    dateInput.value = todayStr();
-    dateInput.focus();
-    return false;
-  }
-
-  // Invoice # is required - it's what the system matches against company
-  // data to compare what was actually delivered, independently per product.
-  if(!effectiveInvoice){
-    toast(`Invoice # is required for ${product?.product_name} before a quantity can be saved`, "bad");
-    invoiceInput.focus();
-    return false;
-  }
-  if(!effectiveDate){
-    toast(`Date is required for ${product?.product_name} before a quantity can be saved`, "bad");
-    dateInput.focus();
-    return false;
-  }
-
-  // Zero is a real, save-able answer (a delivery genuinely didn't arrive),
-  // but it's also the easiest number to enter by mistake - confirm intent
-  // rather than silently accepting it.
-  if(Number(qty) === 0){
-    if(!confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${effectiveDate})? Confirm only if this school genuinely received none.`)){
-      return false;
-    }
-  }
-
-  // A row that already has a saved receipt is EDITED in place - never inserted again.
-  if(inp.dataset.receiptId){
-    return await updateReceiptFromGrid(inp, ind, school, product, effectiveDate, qty, effectiveInvoice);
-  }
-  // New entry: ask the database whether this invoice already exists (same school, product and invoice #)
-  // before anything is saved. The database re-checks on save, so this can never be bypassed.
-  const chk = await precheckReceipt(schoolId, productId, effectiveInvoice, effectiveDate, qty);
-  if(chk && (chk.status === "duplicate" || chk.status === "conflict")){
-    ind.className = "save-indicator bad";
-    ind.textContent = chk.status === "duplicate" ? "✗ Duplicate invoice" : "✗ Invoice number conflict";
-    await showInvoiceProblemModal({ kind: chk.status, message: chk.message, existingId: chk.existing?.id, school, product });
-    return false;
-  }
-
-  // A second entry for the same school/product/date - same invoice or a
-  // different one - is unusual enough to confirm rather than silently
-  // create, and common enough (a correction, or a genuine second delivery)
-  // that the person should see what's already there before deciding.
-  const { data: existing } = await sb.from("school_receipts")
-    .select("id, quantity_received, invoice_number, collected_by, remarks")
-    .eq("school_id", schoolId).eq("product_id", productId).eq("receipt_date", effectiveDate)
-    .eq("status", "active").maybeSingle();
-
-  if(existing){
-    // Wrapped in a Promise so this call genuinely waits for the modal to
-    // be resolved (any of its three buttons) before returning - the row
-    // loop in handleReceiptRowAction processes one product fully before
-    // ever touching the next, so two modals can never coexist or clobber
-    // each other again.
-    return await new Promise((resolve) => {
-      showDuplicateReceiptModal({
-        existing, school, product, date: effectiveDate,
-        onAddSecond: async () => {
-          const ok = await saveReceipt(inp, ind, schoolId, productId, effectiveDate, qty, effectiveInvoice, false);
-          resolve(ok);
-        },
-        onEdit: () => {
-          showEditReceiptModal(existing, school, product, () => {
-            inp.value = ""; ind.className = ""; ind.textContent = "";
-            loadReceiptsTable(visibleSchoolIds);
-          });
-          // Not saved via this input's own path (routed to the edit modal
-          // instead) - the row shouldn't be treated as freshly submitted.
-          resolve(false);
-        },
-        onCancel: () => resolve(false),
-      });
-    });
-  }
-
-  return await saveReceipt(inp, ind, schoolId, productId, effectiveDate, qty, effectiveInvoice, false);
-}
-
-// reloadTable=false by default now - handleReceiptRowAction reloads the
-// "already entered" table exactly once after the whole row is done,
-// instead of once per product saved (was a genuine duplicate-request: a
-// row with both Milk and Biscuit filled in used to reload that entire
-// table twice for one Submit click).
 // After a receipt is saved or edited, matching company data certifies it automatically and the database sets the
 // receipt's date to the company delivery date when the AEO entered a different (wrong) one. Report that back.
 async function receiptDateNote(receiptId, enteredDate){
@@ -567,48 +306,7 @@ async function receiptDateNote(receiptId, enteredDate){
   return "";
 }
 
-async function saveReceipt(inp, ind, schoolId, productId, date, qty, invoiceNumber, reloadTable){
-  ind.className = "save-indicator saving";
-  ind.textContent = "Saving…";
-  inp.disabled = true;
-  try{
-    const { data, error } = await sb.rpc("fn_create_school_receipt", {
-      p_school_id: schoolId,
-      p_product_id: productId,
-      p_receipt_date: date,
-      p_quantity_received: qty,
-      p_invoice_number: invoiceNumber.trim(),
-      p_collected_by: null,
-      p_remarks: null,
-    });
-    if(error) throw error;
-    ind.className = "save-indicator ok";
-    const dateNote = data?.[0]?.auto_certified ? await receiptDateNote(data?.[0]?.id, date) : "";
-    ind.textContent = data?.[0]?.auto_certified ? "✓ Saved & certified" + (dateNote ? " - date set to company date" : "")
-      : data?.[0]?.flagged_mismatch ? "✓ Saved - ⚠ flagged for review"
-      : "✓ Saved";
-    if(dateNote) toast("Receipt saved and certified." + dateNote);
-    inp.disabled = false;
-    inp.value = "";
-    if(reloadTable) loadReceiptsTable(reloadTable === true ? [] : reloadTable);
-    return true;
-  }catch(err){
-    inp.disabled = false;
-    ind.className = "save-indicator bad";
-    const prob = invoiceProblemFromError(err);
-    if(prob){
-      ind.textContent = prob.kind === "duplicate" ? "✗ Duplicate invoice" : "✗ Invoice number conflict";
-      await showInvoiceProblemModal({ ...prob, school: cache.schools.find(s => s.id === schoolId), product: cache.products.find(p => p.id === productId) });
-    } else {
-      ind.textContent = "✗ Not saved";
-      toast(err.message, "bad");
-    }
-    return false;
-  }
-}
-
 // ---- Duplicate-invoice protection (the database is the authority; these helpers only explain its answer) ----
-let gridNeedsRefresh = false;
 
 // Maps a database error to a duplicate / conflict problem, or null if it is some other error.
 function invoiceProblemFromError(err){
@@ -676,71 +374,129 @@ function showInvoiceProblemModal({ kind, message, existingId, school, product })
   });
 }
 
-// Editing a row that already has a saved receipt updates THAT receipt in place. It never inserts a second one
-// (changing the date in an unlocked row used to look like a brand-new entry, which is how invoices got doubled).
-async function updateReceiptFromGrid(inp, ind, school, product, date, qty, invoice){
-  const unchanged = Number(inp.dataset.origQty) === Number(qty) && inp.dataset.origDate === date && (inp.dataset.origInvoice || "") === invoice;
-  if(unchanged){ ind.className = "save-indicator ok"; ind.textContent = "✓ No changes"; return true; }
-  ind.className = "save-indicator saving"; ind.textContent = "Saving…";
-  inp.disabled = true;
-  try{
-    const { data, error } = await sb.rpc("fn_update_school_receipt", {
-      p_receipt_id: inp.dataset.receiptId, p_quantity_received: qty, p_invoice_number: invoice, p_receipt_date: date,
-    });
-    if(error) throw error;
-    const r = data?.[0];
-    const dateNote = r?.auto_certified ? await receiptDateNote(inp.dataset.receiptId, date) : "";
-    ind.className = "save-indicator ok";
-    ind.textContent = r?.auto_certified ? "✓ Updated & certified" : r?.flagged_mismatch ? "✓ Updated - ⚠ flagged for review" : "✓ Updated";
-    toast("Receipt updated" + (r?.auto_certified ? " - auto-certified against company data." : r?.flagged_mismatch ? " - flagged for review (quantity matches a different invoice)." : ".") + dateNote);
-    inp.dataset.origQty = qty; inp.dataset.origDate = date; inp.dataset.origInvoice = invoice;
-    if(date !== selectedReceiptDate) gridNeedsRefresh = true;
-    inp.disabled = false;
-    return true;
-  }catch(err){
-    inp.disabled = false;
-    ind.className = "save-indicator bad";
-    const prob = invoiceProblemFromError(err);
-    if(prob){
-      ind.textContent = prob.kind === "duplicate" ? "✗ Duplicate invoice" : "✗ Invoice number conflict";
-      await showInvoiceProblemModal({ ...prob, school, product });
-    } else {
-      ind.textContent = "✗ Not saved";
-      toast(err.message, "bad");
-    }
-    return false;
-  }
-}
+// "Add inventory" form: School, Product, Invoice no / Challan no, Date received (as per challan), Total pieces/packs.
+function showAddInventoryModal(visibleSchoolIds){
+  const old = document.getElementById("addInventoryModal");
+  if(old) old.remove();
+  // EMIS is looked up against every school this person is allowed to work with (not just the filtered list).
+  const mySchools = cache.schools;
+  if(!mySchools.length){ toast("No schools are available for your account.", "bad"); return; }
+  const findSchool = (emis) => mySchools.find(s => String(s.emis_code).trim() === String(emis || "").trim());
+  const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
 
-function showDuplicateReceiptModal({ existing, school, product, date, onAddSecond, onEdit, onCancel }){
-  const existingEl = document.getElementById("dupReceiptModal");
-  if(existingEl) existingEl.remove();
   const overlay = document.createElement("div");
-  overlay.id = "dupReceiptModal";
+  overlay.id = "addInventoryModal";
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
     <div class="modal-box">
-      <h3>⚠ Entry Already Exists</h3>
-      <p><b>${esc(school?.school_name)}</b> already has a ${esc(product?.product_name)} receipt on <b>${fmtDate(date)}</b>:</p>
-      <div class="modal-note">
-        Qty: <b>${fmt(existing.quantity_received)}</b> &middot; Invoice #: <b>${esc(existing.invoice_number) || "—"}</b>${existing.collected_by ? ` &middot; Collected by: ${esc(existing.collected_by)}` : ""}${existing.remarks ? ` &middot; ${esc(existing.remarks)}` : ""}
-      </div>
-      <p>Was there genuinely a second, separate delivery on this same date - or are you correcting the entry above?</p>
-      <div class="actions-row">
-        <button class="btn-secondary" id="dupCancelBtn" type="button">Cancel</button>
-        <button class="btn-secondary" id="dupEditBtn" type="button">Edit the existing entry</button>
-        <button class="btn-primary" id="dupAddBtn" type="button">Yes, add as a second delivery</button>
-      </div>
-    </div>
-  `;
+      <h3>Add inventory</h3>
+      <form id="addInventoryForm" class="form-row" style="grid-template-columns:1fr;">
+        <div><label>EMIS code *</label><input type="text" name="emis_code" required autocomplete="off" inputmode="numeric" placeholder="Enter the school's EMIS code"/>
+          <div id="addInvSchoolName" class="sub" style="margin:4px 0 0;"></div></div>
+        <div><label>Product *</label><select name="product_id" required><option value="">Select…</option>${productOpts}</select></div>
+        <div><label>Invoice no / Challan no *</label><input type="text" name="invoice_number" required autocomplete="off"/></div>
+        <div><label>Date of inventory received (as per challan) *</label><input type="date" name="receipt_date" max="${todayStr()}" required/></div>
+        <div><label>Total pieces / packs received *</label><input type="number" name="quantity_received" min="0" step="0.01" required/></div>
+        <div id="addInvError"></div>
+        <div class="actions-row">
+          <button class="btn-secondary" id="addInvCancel" type="button">Cancel</button>
+          <button class="btn-primary" id="addInvSubmit" type="submit">Submit</button>
+        </div>
+      </form>
+    </div>`;
   document.body.appendChild(overlay);
-  let resolved = false;
-  const close = () => overlay.remove();
-  const finish = (fn) => { if(resolved) return; resolved = true; close(); fn(); };
-  document.getElementById("dupCancelBtn").addEventListener("click", () => finish(onCancel || (() => {})));
-  overlay.addEventListener("click", (e) => { if(e.target === overlay) finish(onCancel || (() => {})); });
-  document.getElementById("dupAddBtn").addEventListener("click", () => finish(onAddSecond));
-  document.getElementById("dupEditBtn").addEventListener("click", () => finish(onEdit));
+
+  const form = document.getElementById("addInventoryForm");
+  const errBox = document.getElementById("addInvError");
+  const submitBtn = document.getElementById("addInvSubmit");
+  let busy = false;
+  const close = () => { if(!busy) overlay.remove(); };
+  document.getElementById("addInvCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+
+  const nameBox = document.getElementById("addInvSchoolName");
+  form.elements.emis_code.addEventListener("input", (e) => {
+    const v = e.target.value.trim();
+    if(!v){ nameBox.textContent = ""; return; }
+    const s = findSchool(v);
+    const mk = s ? cache.markaz.find(m => m.id === s.markaz_id)?.name : "";
+    nameBox.innerHTML = s ? `<span style="color:var(--ok-fg);">✓ ${esc(s.school_name)}${mk ? ` (${esc(mk)})` : ""}</span>`
+                          : `<span style="color:var(--bad-fg);">No school with this EMIS code in your list</span>`;
+  });
+  form.elements.receipt_date.addEventListener("change", (e) => {
+    if(e.target.value && e.target.value > todayStr()){
+      toast("A delivery can't be dated in the future - check the day and month.", "bad");
+      e.target.value = todayStr();
+    }
+  });
+
+  const showErr = (msg) => { errBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);">${esc(msg)}</div>`; };
+  const showProblem = (kind, message, existingId) => {
+    const isDup = kind === "duplicate";
+    const title = isDup ? "Duplicate Invoice Detected" : "Invoice Number Conflict";
+    const fallback = isDup ? "This invoice already exists in the system. The invoice cannot be added again."
+      : "This invoice number already exists with different invoice details. Please verify the date, product, and quantity before proceeding.";
+    const body = String(message || "").replace(/^[^:]+:\s*/, "") || fallback;
+    errBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);"><b>⚠ ${esc(title)}</b><br>${esc(body)}<br>Nothing was saved.${existingId ? ` <button class="link-btn edit" id="addInvEditExisting" type="button">Edit the existing entry</button>` : ""}</div>`;
+    const b = document.getElementById("addInvEditExisting");
+    if(b) b.addEventListener("click", async () => {
+      const { data: existing, error } = await sb.from("school_receipts")
+        .select("id, receipt_date, quantity_received, invoice_number, collected_by, remarks, school_id, product_id")
+        .eq("id", existingId).single();
+      if(error){ toast(error.message, "bad"); return; }
+      overlay.remove();
+      showEditReceiptModal(existing, cache.schools.find(s => s.id === existing.school_id), cache.products.find(p => p.id === existing.product_id),
+        () => loadReceiptsTable(visibleSchoolIds));
+    });
+  };
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if(busy) return;                                    // no double submission
+    errBox.innerHTML = "";
+    const fd = new FormData(form);
+    const school = findSchool(fd.get("emis_code")), schoolId = school ? school.id : "";
+    const productId = fd.get("product_id");
+    const invoice = String(fd.get("invoice_number") || "").trim();
+    const date = fd.get("receipt_date"), qty = fd.get("quantity_received");
+    const product = cache.products.find(p => p.id === productId);
+    if(!String(fd.get("emis_code") || "").trim()){ showErr("EMIS code is required."); return; }
+    if(!schoolId){ showErr("This EMIS code was not found among your schools. Check the code and try again."); return; }
+    if(!productId){ showErr("Choose the product."); return; }
+    if(!invoice){ showErr("Invoice no / Challan no is required."); return; }
+    if(!date){ showErr("Enter the date of inventory received as per the challan."); return; }
+    if(date > todayStr()){ showErr("A delivery can't be dated in the future - check the day and month."); return; }
+    if(qty === "" || isNaN(Number(qty)) || Number(qty) < 0){ showErr("Enter the total pieces / packs received."); return; }
+    // Zero is a real answer (a delivery genuinely didn't arrive) but easy to enter by mistake - confirm intent.
+    if(Number(qty) === 0 && !confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${date})? Confirm only if this school genuinely received none.`)) return;
+
+    busy = true; submitBtn.disabled = true; submitBtn.textContent = "Checking…";
+    try{
+      // Ask the database first, so an existing invoice is reported before anything is saved. The database
+      // re-checks inside the save itself, so this cannot be bypassed (refresh, second tab, double click).
+      const chk = await precheckReceipt(schoolId, productId, invoice, date, qty);
+      if(chk && (chk.status === "duplicate" || chk.status === "conflict")){ showProblem(chk.status, chk.message, chk.existing?.id); return; }
+      submitBtn.textContent = "Saving…";
+      const { data, error } = await sb.rpc("fn_create_school_receipt", {
+        p_school_id: schoolId, p_product_id: productId, p_receipt_date: date,
+        p_quantity_received: qty, p_invoice_number: invoice, p_collected_by: null, p_remarks: null,
+      });
+      if(error) throw error;
+      const r = data?.[0];
+      const dateNote = r?.auto_certified ? await receiptDateNote(r.id, date) : "";
+      busy = false; overlay.remove();
+      toast(r?.auto_certified ? "Inventory added and certified automatically." + dateNote
+        : r?.flagged_mismatch ? "Inventory added - flagged for review (quantity matches a different invoice)."
+        : "Inventory added.");
+      await loadReceiptsTable(visibleSchoolIds);
+    }catch(err){
+      const prob = invoiceProblemFromError(err);
+      if(prob) showProblem(prob.kind, prob.message, prob.existingId);
+      else showErr(err.message || "Could not save. Nothing was added.");
+    }finally{
+      busy = false; submitBtn.disabled = false; submitBtn.textContent = "Submit";
+    }
+  });
 }
 
 function showEditReceiptModal(existing, school, product, onSaved){
@@ -875,10 +631,6 @@ async function deleteExistingReceipt(receiptId, schoolIds){
     if(delErr) throw delErr;
     toast("Receipt deleted");
     await loadReceiptsTable(schoolIds);
-    // If the deleted entry was for the date currently shown in the grid
-    // above, refresh it too so the now-empty cell and unlocked row show
-    // immediately instead of still displaying the deleted values.
-    if(existing.receipt_date === selectedReceiptDate) await renderMyReceiptsBody(schoolIds);
   }catch(err){
     toast(err.message, "bad");
   }
@@ -898,14 +650,14 @@ async function renderCompanyDataBody(visibleSchoolIds){
       <p class="sub">Uploaded by admins from vendor invoices. Rows whose invoice, product and quantity match your receipt are certified automatically - there is no manual certification. If a row is not matched, correct it in My Receipts: add the missing receipt, or edit or delete a wrong or doubled one, and it is re-checked automatically.</p>
       <div class="form-row" style="margin-bottom:12px;">
         <div><label>Product</label><select id="companyProduct"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
-        <div style="align-self:end;"><button class="btn-secondary" type="button" id="companyDlBtn">Download Excel</button></div>
+        <div style="align-self:end;"><button class="btn-primary" type="button" id="companyApplyBtn">Apply filter</button> <button class="btn-secondary" type="button" id="companyDlBtn">Download Excel</button></div>
       </div>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
         <th>Company date</th><th>AEO receipt date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Next step</th>
       </tr></thead><tbody><tr><td colspan="11" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
-  document.getElementById("companyProduct").addEventListener("change", () => renderCompanyRows(visibleSchoolIds));
+  document.getElementById("companyApplyBtn").addEventListener("click", () => renderCompanyRows(visibleSchoolIds));
   document.getElementById("companyDlBtn").addEventListener("click", downloadCompanyRows);
   await loadCompanyTable(visibleSchoolIds);
 }
