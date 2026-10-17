@@ -469,7 +469,7 @@ function renderUploadResult({ status, fileName, total, valid, skipped, invoices,
         <div class="stat"><div class="n">${skipped.alreadyInSystem}</div><div class="l">Skipped - invoice already in system</div></div>
         <div class="stat"><div class="n">${skipped.duplicate}</div><div class="l">Skipped - duplicate in file</div></div>
         <div class="stat"><div class="n">${skipped.other}</div><div class="l">Skipped - out of scope / invalid</div></div>
-        <div class="stat"><div class="n">${status === "uploading" ? "…" : certified}</div><div class="l">Auto-certified against AEO receipts</div></div>
+        <div class="stat"><div class="n">${status === "uploading" ? "…" : certified === null ? "Next" : certified}</div><div class="l">${certified === null ? "Auto-certification starts after import" : "Auto-certified against AEO receipts"}</div></div>
       </div>
       <p class="sub" style="margin-top:8px;">Invoices created: ${status === "uploading" ? "…" : invoices}. Records not auto-certified stay pending for the AEO to certify.</p>
       ${failures.length ? `<div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Rows</th><th>Error</th></tr></thead><tbody>${failures.map(f => `<tr><td>${esc(f.invoice)}</td><td>${f.rows}</td><td class="err">${esc(f.message)}</td></tr>`).join("")}</tbody></table></div>` : ""}
@@ -502,7 +502,8 @@ async function runImport(){
 
   const createdInvoiceIds = [];
   const failures = [];
-  let certified = 0;
+  const createdGroups = [];
+  let certified = null;
   for(const key in groups){
     const rows = groups[key];
     const { invoiceNumber, deliveryDate, product } = rows[0];
@@ -528,11 +529,8 @@ async function runImport(){
       const { error: itemErr } = await sb.from("company_invoice_items").insert(items);
       if(itemErr) throw itemErr;
       createdInvoiceIds.push(invoice.id);
-
-      // Company data arriving second: certify any AEO receipts already on file that match.
-      const { data: certCount, error: certErr } = await sb.rpc("fn_auto_certify_for_invoice", { p_invoice_id: invoice.id });
-      if(certErr) console.error("[SMP] auto-certify failed for invoice", invoiceNumber, certErr.message);
-      else certified += Number(certCount || 0);
+      // Certification is deliberately NOT done here - it starts after the whole import has finished.
+      createdGroups.push({ id: invoice.id, invoiceNumber, schools: rows.map(r => r.school) });
     }catch(err){
       let message = (err && err.message) || "Unknown database error";
       if(err && (err.code === "23505" || /duplicate key/i.test(message))) message = "Invoice already in the database - not uploaded";
@@ -564,14 +562,100 @@ async function runImport(){
   const status = verifiedItems === 0 ? "failed"
     : (verifiedItems === validRows.length && !failures.length) ? "saved" : "partial";
   renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
-  console.info("[SMP] company upload", { file: fileName, valid: validRows.length, invoices: createdInvoiceIds.length, verifiedItems, failedRows, certified, status });
+  console.info("[SMP] company upload", { file: fileName, valid: validRows.length, invoices: createdInvoiceIds.length, verifiedItems, failedRows, status });
   toast(status === "saved" ? `Saved: ${verifiedItems} records confirmed in Supabase`
       : status === "partial" ? `Partially saved: ${verifiedItems} of ${validRows.length} confirmed - see result panel`
       : "Upload failed - nothing was saved. See result panel.",
     status === "saved" ? "ok" : "bad");
 
+  // Import is finished and confirmed - only now does auto-certification start, with its own progress popup.
+  if(createdGroups.length){
+    const cert = await runAutoCertification(createdGroups);
+    certified = cert.certified;
+    renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
+  }
+
   await loadComparison(new FormData(document.getElementById("filterForm")));
   renderUploadWizard(document.getElementById("uploadMount"));
+}
+
+// Auto-certification after an import: for every school on the newly imported invoices, certify it when the
+// AEO's own receipt already matches (same invoice, product and quantity). Shows a popup with school-wise
+// progress. Schools with no matching AEO receipt yet stay pending and certify themselves later, when the AEO
+// saves a matching receipt.
+async function runAutoCertification(groups){
+  const total = groups.reduce((n, g) => n + g.schools.length, 0);
+  const counts = { done: 0, certified: 0, pending: 0, flagged: 0, failed: 0 };
+  const ov = document.createElement("div");
+  ov.setAttribute("role", "dialog"); ov.setAttribute("aria-modal", "true");
+  ov.style.cssText = "position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;";
+  ov.innerHTML = `
+    <div class="card" style="width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;margin:0;">
+      <h3 id="acTitle" style="margin-bottom:4px;">Auto-certification in progress</h3>
+      <p class="sub" id="acSub">Import finished. Now checking each school's imported invoices against what the AEOs already received.</p>
+      <div style="height:10px;background:var(--line);border-radius:6px;overflow:hidden;margin:8px 0;"><div id="acBar" style="height:100%;width:0;background:var(--ok-fg, #2e7d32);transition:width .2s;"></div></div>
+      <p class="sub" id="acCount" style="margin:0 0 8px;">0 of ${total} schools</p>
+      <div class="grid-4" style="margin-bottom:8px;">
+        <div class="stat"><div class="n" id="acCert">0</div><div class="l">Certified automatically</div></div>
+        <div class="stat"><div class="n" id="acPend">0</div><div class="l">Pending - no matching AEO receipt yet</div></div>
+        <div class="stat"><div class="n" id="acFlag">0</div><div class="l">Flagged - invoice # differs</div></div>
+        <div class="stat"><div class="n" id="acFail">0</div><div class="l">Failed</div></div>
+      </div>
+      <div class="table-wrap" id="acScroll" style="overflow:auto;flex:1;min-height:120px;"><table><thead><tr><th>EMIS</th><th>School</th><th>Invoice #</th><th>Result</th></tr></thead><tbody id="acBody"></tbody></table></div>
+      <div class="actions-row" style="margin-top:10px;"><button class="btn-primary" type="button" id="acClose" disabled>Please wait…</button></div>
+    </div>`;
+  document.body.appendChild(ov);
+  const $ = id => ov.querySelector("#" + id);
+  function refresh(){
+    $("acBar").style.width = (total ? Math.round(counts.done / total * 100) : 100) + "%";
+    $("acCount").textContent = `${counts.done} of ${total} schools`;
+    $("acCert").textContent = counts.certified; $("acPend").textContent = counts.pending;
+    $("acFlag").textContent = counts.flagged; $("acFail").textContent = counts.failed;
+  }
+  const label = { certified: '<span class="pill pill-ok">✓ Certified automatically</span>',
+    pending: '<span class="pill pill-warn">Pending - no matching AEO receipt yet</span>',
+    flagged: '<span class="pill pill-warn">⚠ Invoice # differs - needs review</span>' };
+  const CHUNK = 5;
+  for(let i = 0; i < groups.length; i += CHUNK){
+    const chunk = groups.slice(i, i + CHUNK);
+    const errors = {};
+    await Promise.all(chunk.map(async g => {
+      const { error } = await sb.rpc("fn_auto_certify_for_invoice", { p_invoice_id: g.id });
+      if(error){ errors[g.id] = error.message || "Certification failed"; console.error("[SMP] auto-certify failed for invoice", g.invoiceNumber, error.message); }
+    }));
+    // Read the real outcome back for every school of these invoices.
+    const { data: items, error: readErr } = await sb.from("company_invoice_items")
+      .select("invoice_id, school_id, aeo_verification_status").in("invoice_id", chunk.map(g => g.id));
+    const statusByKey = {};
+    (items || []).forEach(it => { statusByKey[it.invoice_id + "|" + it.school_id] = it.aeo_verification_status; });
+    let html = "";
+    chunk.forEach(g => {
+      g.schools.forEach(sc => {
+        let res;
+        if(errors[g.id] || readErr){ counts.failed++; res = `<span class="pill pill-bad" title="${esc(errors[g.id] || readErr.message)}">Failed - ${esc(errors[g.id] || readErr.message)}</span>`; }
+        else {
+          const st = statusByKey[g.id + "|" + sc.id];
+          if(st === "received"){ counts.certified++; res = label.certified; }
+          else if(st === "flagged_mismatch"){ counts.flagged++; res = label.flagged; }
+          else { counts.pending++; res = label.pending; }
+        }
+        counts.done++;
+        html += `<tr><td>${esc(sc.emis_code)}</td><td>${esc(sc.school_name)}</td><td>${esc(g.invoiceNumber)}</td><td>${res}</td></tr>`;
+      });
+    });
+    $("acBody").insertAdjacentHTML("beforeend", html);
+    refresh();
+    const sc = $("acScroll"); sc.scrollTop = sc.scrollHeight;
+  }
+
+  $("acTitle").textContent = counts.failed ? "Auto-certification finished with errors" : "Auto-certification complete";
+  $("acSub").textContent = `${counts.certified} school(s) certified automatically. ${counts.pending} pending - they certify automatically as soon as the AEO saves a matching receipt.`
+    + (counts.flagged ? ` ${counts.flagged} flagged for review.` : "") + (counts.failed ? ` ${counts.failed} failed - see the list.` : "");
+  const closeBtn = $("acClose");
+  closeBtn.disabled = false; closeBtn.textContent = "Close";
+  await new Promise(resolve => closeBtn.addEventListener("click", () => { ov.remove(); resolve(); }, { once: true }));
+  console.info("[SMP] auto-certification", counts);
+  return counts;
 }
 
 // Excel export of exactly what the filters currently show (period, district/tehsil/wing/markaz/EMIS),
