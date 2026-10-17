@@ -4,13 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Inventory Received — School Meal Program</title>
-<script src="assets/safety.js?v=20261015a"></script>
-<script src="assets/layout.js?v=20261015a"></script>
-<script src="assets/sync-me.js?v=20261015a"></script>
-<script src="assets/config.js?v=20261015a"></script>
+<script src="assets/safety.js?v=20261017a"></script>
+<script src="assets/layout.js?v=20261017a"></script>
+<script src="assets/sync-me.js?v=20261017a"></script>
+<script src="assets/config.js?v=20261017a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
+<link rel="stylesheet" href="assets/styles.css?v=20261017a" />
 </head>
 <body>
 
@@ -770,8 +770,8 @@ async function renderCompanyDataBody(visibleSchoolIds){
         <div style="align-self:end;"><button class="btn-secondary" type="button" id="companyDlBtn">Download Excel</button></div>
       </div>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
-        <th>Invoice date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Certify</th>
-      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Company date</th><th>AEO receipt date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Certify</th>
+      </tr></thead><tbody><tr><td colspan="11" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
   document.getElementById("companyProduct").addEventListener("change", () => renderCompanyRows(visibleSchoolIds));
@@ -780,16 +780,37 @@ async function renderCompanyDataBody(visibleSchoolIds){
 }
 
 // Rows currently listed (after the product filter) - the Excel download exports exactly these.
-let companyRowsAll = [], companyRowsShown = [];
+let companyRowsAll = [], companyRowsShown = [], aeoReceiptMap = {};
+// Mirrors the database's fn_norm_invoice (upper-case, letters/digits only, letter O read as zero).
+function normInvoice(v){ return String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/O/g, "0"); }
+// The AEO receipt(s) behind a company row, read live from school_receipts (never cached with the company row),
+// so a date changed by the AEO or auto-corrected by the system shows up here immediately.
+function aeoReceiptsFor(r){
+  const inv = normInvoice(r.company_invoices?.invoice_number);
+  return aeoReceiptMap[`${r.school_id}|${r.product_id}|${inv}`] || [];
+}
+function aeoDateText(r){
+  const recs = aeoReceiptsFor(r);
+  return recs.length ? [...new Set(recs.map(x => x.receipt_date))].map(d => new Date(d).toLocaleDateString("en-GB")).join(", ") : "";
+}
+function aeoDateCell(r){
+  const recs = aeoReceiptsFor(r);
+  if(!recs.length) return '<span style="color:var(--ink-soft)">No AEO receipt</span>';
+  const compDate = r.company_invoices?.delivery_date || r.company_invoices?.invoice_date;
+  const dates = [...new Set(recs.map(x => x.receipt_date))];
+  const main = dates.map(d => `<span style="${compDate && d !== compDate ? "color:#b45309;font-weight:600" : ""}">${fmtDate(d)}</span>`).join(", ");
+  const corrected = recs.find(x => x.original_receipt_date && x.original_receipt_date !== x.receipt_date);
+  return main + (corrected ? `<div style="font-size:11px;color:var(--ink-soft)">corrected from ${fmtDate(corrected.original_receipt_date)}</div>` : "");
+}
 function downloadCompanyRows(){
   if(!companyRowsShown.length){ toast("Nothing to download for this selection.", "bad"); return; }
   const dmy = d => d ? new Date(d).toLocaleDateString("en-GB") : "";
-  const header = ["Delivery date","Markaz","EMIS","School","Product","Quantity","Unit","Invoice #","Status","Matched with company invoice"];
+  const header = ["Delivery date","AEO receipt date","Markaz","EMIS","School","Product","Quantity","Unit","Invoice #","Status","Matched with company invoice"];
   const rows = companyRowsShown.map(r => {
     const s = r.aeo_verification_status, rem = r.aeo_verification_remarks || "";
     const matched = s === "received" && /^Auto-certified/i.test(rem) ? "Matched - certified automatically"
       : s === "received" ? "Certified manually" : s === "flagged_mismatch" ? "Not matched - invoice # differs" : s === "not_received" ? "Marked not received" : "Not matched yet";
-    return [dmy(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date),
+    return [dmy(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date), aeoDateText(r),
       cache.markaz.find(m => m.id === r.schools?.markaz_id)?.name || "", r.schools?.emis_code || "", r.schools?.school_name || "",
       r.products?.product_name || "", Number(r.quantity) || 0, r.products?.unit_name || "", r.company_invoices?.invoice_number || "",
       s || "pending", matched];
@@ -816,8 +837,17 @@ async function loadCompanyTable(schoolIds){
   });
 
   const tbody = document.querySelector("#companyTable tbody");
-  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
+  if(error){ tbody.innerHTML = `<tr><td colspan="11" class="err">${esc(error.message)}</td></tr>`; return; }
   companyRowsAll = (data || []).filter(r => r.company_invoices?.status !== "void");
+  // Current AEO receipt dates, read fresh on every load.
+  aeoReceiptMap = {};
+  const rc = await smpFetchAll(() => {
+    let q = sb.from("school_receipts").select("id, school_id, product_id, receipt_date, original_receipt_date, invoice_number").eq("status", "active");
+    if(schoolIds.length <= 150) q = q.in("school_id", schoolIds);
+    return q.order("id");
+  });
+  if(rc.error){ toast("Could not load AEO receipt dates: " + rc.error.message, "bad"); }
+  (rc.data || []).forEach(x => { (aeoReceiptMap[`${x.school_id}|${x.product_id}|${normInvoice(x.invoice_number)}`] ||= []).push(x); });
   renderCompanyRows(schoolIds);
 }
 
@@ -826,7 +856,7 @@ function renderCompanyRows(schoolIds){
   const productId = (document.getElementById("companyProduct") || {}).value || "";
   const rows = companyRowsAll.filter(r => !productId || r.product_id === productId);
   companyRowsShown = rows;
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">${companyRowsAll.length ? "No company data for this product." : "No company data uploaded yet."}</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">${companyRowsAll.length ? "No company data for this product." : "No company data uploaded yet."}</td></tr>`; return; }
 
   const statusPill = (s, remarks) => s === "received" ? '<span class="pill pill-ok">Received</span>'
     : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
@@ -850,6 +880,7 @@ function renderCompanyRows(schoolIds){
   tbody.innerHTML = rows.map(r => `
     <tr data-id="${r.id}">
       <td>${fmtDate(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date)}</td>
+      <td>${aeoDateCell(r)}</td>
       <td>${esc(cache.markaz.find(m => m.id === r.schools?.markaz_id)?.name || "—")}</td>
       <td>${esc(r.schools?.emis_code)}</td>
       <td>${esc(r.schools?.school_name)}</td>
