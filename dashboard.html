@@ -350,6 +350,7 @@ async function renderOverview(content){
         <div><label>To date</label><input type="date" id="fTo"/></div>
       </div>
       <div class="actions-row" style="margin-top:12px;">
+        <button class="btn-primary" type="button" id="applyFilterBtn">Apply filter</button>
         <button class="btn-secondary" type="button" id="resetPeriodBtn">Clear / Reset Period</button>
         <button class="btn-secondary" type="button" id="resetFiltersBtn">Reset filters</button>
         <button class="btn-secondary" type="button" id="refreshBtn">Refresh data</button>
@@ -410,18 +411,17 @@ async function renderOverview(content){
     return !msg;
   }
 
-  $("fWing").addEventListener("change", e => { F.wing = e.target.value; F.markaz = ""; F.school = ""; rebuildOptions(); syncSummaryHeader(); refreshGeo(); });
-  $("fTehsil").addEventListener("change", e => { F.tehsil = e.target.value; F.markaz = ""; F.school = ""; rebuildOptions(); syncSummaryHeader(); refreshGeo(); });
-  $("fMarkaz").addEventListener("change", e => { F.markaz = e.target.value; F.school = ""; rebuildOptions(); syncSummaryHeader(); refreshGeo(); });
-  $("fSchool").addEventListener("change", e => { F.school = e.target.value; syncSummaryHeader(); refreshGeo(); });
-  const onDate = () => {
-    F.from = $("fFrom").value; F.to = $("fTo").value;
-    syncSummaryHeader();
-    if(validateDates()) refreshDates();
-  };
-  $("fFrom").addEventListener("change", onDate);
-  $("fTo").addEventListener("change", onDate);
-  $("resetPeriodBtn").addEventListener("click", () => { $("fFrom").value = ""; $("fTo").value = ""; onDate(); });
+  // Filters only take effect when "Apply filter" is clicked - changing a picker just updates the other pickers' options.
+  $("fWing").addEventListener("change", e => { F.wing = e.target.value; F.markaz = ""; F.school = ""; rebuildOptions(); });
+  $("fTehsil").addEventListener("change", e => { F.tehsil = e.target.value; F.markaz = ""; F.school = ""; rebuildOptions(); });
+  $("fMarkaz").addEventListener("change", e => { F.markaz = e.target.value; F.school = ""; rebuildOptions(); });
+  $("fSchool").addEventListener("change", e => { F.school = e.target.value; });
+  const readDates = () => { F.from = $("fFrom").value; F.to = $("fTo").value; return validateDates(); };
+  const applyFilters = () => { if(!readDates()) return; syncSummaryHeader(); refreshGeo(); };
+  $("fFrom").addEventListener("change", readDates);
+  $("fTo").addEventListener("change", readDates);
+  $("applyFilterBtn").addEventListener("click", applyFilters);
+  $("resetPeriodBtn").addEventListener("click", () => { $("fFrom").value = ""; $("fTo").value = ""; applyFilters(); });
   $("resetFiltersBtn").addEventListener("click", () => {
     F.wing = ""; F.markaz = ""; F.school = ""; F.tehsil = (!isAdmin && currentProfile.tehsil) ? currentProfile.tehsil : "";
     rebuildOptions(); syncSummaryHeader(); refreshGeo();
