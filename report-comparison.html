@@ -314,7 +314,7 @@ function renderColumnMapping(){
         <div><label>Delivery date column *</label><select id="mapDate">${headerOpts}</select></div>
         <div><label>Product column (optional)</label><select id="mapProduct">${headerOpts}</select></div>
       </div>
-      <div class="actions-row"><button class="btn-primary" type="button" id="previewBtn">Preview</button></div>
+      <div class="actions-row"><button class="btn-secondary" type="button" id="previewBtn">Preview</button><button class="btn-primary" type="button" id="importBtn" disabled>Import</button><span class="sub" id="importHint" style="align-self:center;">Click Preview first, then Import to save.</span></div>
       <div id="wizardStep3"></div>
     </div>
   `;
@@ -427,12 +427,15 @@ async function renderPreview(){
         </tbody></table></div>
       ` : ""}
       <p class="sub" style="margin-top:12px; color:var(--edit);"><strong>Not saved yet.</strong> Preview only checks the file. Nothing is written to the database until you click Import.${uploadState.ignoredRows ? ` (${uploadState.ignoredRows} blank/summary row(s) ignored.)` : ""}</p>
-      <div class="actions-row">
-        <button class="btn-primary" type="button" id="importBtn" ${validCount ? "" : "disabled"}>Import ${validCount} rows</button>
-      </div>
+
     </div>
   `;
-  document.getElementById("importBtn").addEventListener("click", runImport);
+  // The Import button lives next to Preview (top of the wizard) so nobody has to scroll to find it.
+  const importBtn = document.getElementById("importBtn");
+  importBtn.disabled = !validCount;
+  importBtn.textContent = `Import ${validCount} rows`;
+  importBtn.onclick = runImport;
+  document.getElementById("importHint").textContent = validCount ? "Preview done - nothing is saved until you click Import." : "No valid rows to import - see the skipped list below.";
 }
 
 function renderUploadResult({ status, fileName, total, valid, skipped, invoices, expectedItems, verifiedItems, failures, certified, startedAt, finishedAt }){
