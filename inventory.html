@@ -784,6 +784,8 @@ async function loadCompanyTable(schoolIds){
   // Whether the AEO's own receipt matched this company invoice (same invoice #, product and quantity).
   // Auto-certification writes an "Auto-certified: matched ..." remark; anything else marked received was
   // certified by hand.
+  // A row whose company invoice matched the AEO receipt was certified by the database - nothing to ask for.
+  const autoCertified = r => r.aeo_verification_status === "received" && /^Auto-certified/i.test(r.aeo_verification_remarks || "");
   const matchCell = r => {
     const s = r.aeo_verification_status, rem = r.aeo_verification_remarks || "";
     if(s === "received" && /^Auto-certified/i.test(rem)) return '<span class="pill pill-ok" title="Your receipt matches this company invoice (invoice #, product and quantity). Certified automatically.">✓ Matched with company invoice</span>';
@@ -804,9 +806,9 @@ async function loadCompanyTable(schoolIds){
       <td>${esc(r.company_invoices?.invoice_number) || "—"}</td>
       <td class="status-cell">${statusPill(r.aeo_verification_status, r.aeo_verification_remarks)}</td>
       <td>${matchCell(r)}</td>
-      <td>
+      <td>${autoCertified(r) ? '<span style="color:var(--ink-soft)">Certified automatically - no action needed</span>' : `
         <button class="link-btn" data-action="received">Mark received</button>
-        <button class="link-btn danger" data-action="not_received">Not received</button>
+        <button class="link-btn danger" data-action="not_received">Not received</button>`}
       </td>
     </tr>
   `).join("");
