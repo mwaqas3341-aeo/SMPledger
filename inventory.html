@@ -189,13 +189,40 @@ async function navigate(id){
 // Cascading District -> Tehsil -> Markaz filter. AEOs are already scoped to
 // their own markaz and never see this. Calls onApply(filteredSchoolIds)
 // whenever a selection changes, including once on initial render.
+// "Search by word" - free text typed in the filter box. Every word must appear somewhere in the row (school name,
+// EMIS, markaz, product, invoice #, remarks ...). Invoice-style words also match with O/0 and punctuation ignored.
+let jfSearchText = "";
+function searchMatches(parts){
+  const words = jfSearchText.split(/\s+/).filter(Boolean);
+  if(!words.length) return true;
+  const hay = parts.filter(v => v !== null && v !== undefined && v !== "").join(" ").toLowerCase();
+  const hayNorm = normInvoice(hay);
+  return words.every(w => {
+    if(hay.includes(w)) return true;
+    const wn = normInvoice(w);
+    return wn.length >= 4 && hayNorm.includes(wn);
+  });
+}
+
 function renderJurisdictionFilter(container, onApply){
+  jfSearchText = "";
   // An AEO with only one markaz has nothing to narrow, so skip straight to their schools.
   // An AEO holding charge of several markaz gets a Markaz picker scoped to just those markaz,
   // same as everyone else - previously this whole filter was skipped for every AEO, so someone
   // with multiple markaz had no way to work on one at a time.
   const isAeoMulti = currentProfile.role === "aeo" && myMarkazIds().length > 1;
   if(!["admin","super_admin","tr"].includes(currentProfile.role) && !isAeoMulti){
+    container.innerHTML = `
+      <div class="card">
+        <div class="form-row">
+          <div style="flex:1 1 320px;"><label>Search</label><input type="text" id="jfSearch" placeholder="Search by word: school, EMIS, invoice #, product, remarks…"/></div>
+          <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
+        </div>
+      </div>`;
+    const sOnly = document.getElementById("jfSearch");
+    const go = () => { jfSearchText = sOnly.value.trim().toLowerCase(); onApply(cache.schools.map(s => s.id)); };
+    sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); go(); } });
+    document.getElementById("jfApply").addEventListener("click", go);
     onApply(cache.schools.map(s => s.id));
     return;
   }
@@ -212,11 +239,12 @@ function renderJurisdictionFilter(container, onApply){
         <div><label>Wing</label><select id="jfWing"><option value="">All</option>${wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
+        <div style="flex:1 1 260px;"><label>Search</label><input type="text" id="jfSearch" placeholder="Search by word: school, markaz, invoice #, product…"/></div>
         <div style="align-self:end;"><button class="btn-primary" id="jfApply" type="button">Apply filter</button></div>
       </div>
     </div>
   `;
-  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing"), eEl = document.getElementById("jfEmis");
+  const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing"), eEl = document.getElementById("jfEmis"), sEl = document.getElementById("jfSearch");
 
   function refreshTehsil(){
     const d = dEl.value;
@@ -238,6 +266,7 @@ function renderJurisdictionFilter(container, onApply){
   function apply(){
     const d = dEl.value, t = tEl.value, mId = wEl.value ? mEl.value : "", wing = wEl.value;
     const emis = (eEl.value || "").trim();
+    jfSearchText = (sEl.value || "").trim().toLowerCase();
     // An EMIS code identifies exactly one school, so when one is entered it
     // overrides the geography/wing pickers entirely rather than intersecting
     // with them - otherwise a valid code would return nothing whenever the
@@ -256,6 +285,7 @@ function renderJurisdictionFilter(container, onApply){
   tEl.addEventListener("change", () => { refreshMarkaz(); });
   wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
   eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
+  sEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
   document.getElementById("jfApply").addEventListener("click", apply);
   apply();   // one initial load with the default scope
 }
@@ -331,6 +361,37 @@ async function precheckReceipt(schoolId, productId, invoice, date, qty){
     if(error) return null;          // the save itself is still checked by the database
     return data;
   }catch(e){ return null; }
+}
+
+// The invoice number typed here was already entered for another school. Show exactly where and by whom - the person
+// who typed it earlier may be the one who made the mistake - and let this user cancel or confirm.
+function showOtherSchoolModal(others, school, product, invoice){
+  return new Promise((resolve) => {
+    const old = document.getElementById("otherSchoolModal");
+    if(old) old.remove();
+    const fmtDt = d => d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "";
+    const overlay = document.createElement("div");
+    overlay.id = "otherSchoolModal";
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3>⚠ Invoice number already used at another school</h3>
+        <p>You are adding <b>${esc(invoice)}</b> for <b>${esc(school?.school_name || "")}</b>${product ? ` - ${esc(product.product_name)}` : ""}. The same invoice number was already entered for:</p>
+        <div class="table-wrap"><table><thead><tr><th>School</th><th>Markaz</th><th>Qty</th><th>Delivery date</th><th>Entered by</th><th>Entered on</th></tr></thead><tbody>
+          ${others.map(o => `<tr><td>${esc(o.school)} <span class="sub">(EMIS ${esc(o.emis)})</span></td><td>${esc(o.markaz || "-")}</td><td>${fmt(o.quantity)}</td><td>${fmtDate(o.receipt_date)}</td><td>${esc(o.entered_by)}${o.entered_by_role ? ` (${esc(o.entered_by_role)})` : ""}</td><td>${fmtDt(o.entered_at)}</td></tr>`).join("")}
+        </tbody></table></div>
+        <p class="sub">One of the two entries may have a wrong invoice number. Check your challan. If yours is correct, save it - and ask the person above to check theirs.</p>
+        <div class="actions-row">
+          <button class="btn-secondary" id="osCancelBtn" type="button">Go back and check</button>
+          <button class="btn-primary" id="osConfirmBtn" type="button">My invoice number is correct - save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (v) => { overlay.remove(); resolve(v); };
+    document.getElementById("osCancelBtn").addEventListener("click", () => done(false));
+    document.getElementById("osConfirmBtn").addEventListener("click", () => done(true));
+    overlay.addEventListener("click", (e) => { if(e.target === overlay) done(false); });
+  });
 }
 
 function showInvoiceProblemModal({ kind, message, existingId, school, product }){
@@ -476,6 +537,11 @@ function showAddInventoryModal(visibleSchoolIds){
       // re-checks inside the save itself, so this cannot be bypassed (refresh, second tab, double click).
       const chk = await precheckReceipt(schoolId, productId, invoice, date, qty);
       if(chk && (chk.status === "duplicate" || chk.status === "conflict")){ showProblem(chk.status, chk.message, chk.existing?.id); return; }
+      // Same invoice number already entered for a DIFFERENT school: show who/where, and let this user decide.
+      if(chk && chk.status === "other_school"){
+        const goOn = await showOtherSchoolModal(chk.others || [], school, product, invoice);
+        if(!goOn) return;
+      }
       submitBtn.textContent = "Saving…";
       const { data, error } = await sb.rpc("fn_create_school_receipt", {
         p_school_id: schoolId, p_product_id: productId, p_receipt_date: date,
@@ -578,12 +644,17 @@ async function loadReceiptsTable(schoolIds){
   if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
 
   // Requested sort: date descending, then EMIS code ascending within each date.
-  const rows = (data || []).sort((a, b) => {
+  const sortedRows = (data || []).sort((a, b) => {
     if(a.receipt_date !== b.receipt_date) return a.receipt_date < b.receipt_date ? 1 : -1;
     return (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || "");
   });
+  const rows = sortedRows.filter(r => {
+    const mz = cache.markaz.find(m => m.id === r.schools?.markaz_id);
+    return searchMatches([fmtDate(r.receipt_date), r.receipt_date, mz?.name, mz?.tehsil, mz?.district, r.schools?.emis_code,
+      r.schools?.school_name, r.products?.product_name, r.quantity_received, r.invoice_number, r.collected_by, r.remarks]);
+  });
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No receipts entered yet.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">${sortedRows.length ? "No receipts match your search." : "No receipts entered yet."}</td></tr>`; return; }
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -737,9 +808,12 @@ async function loadCompanyTable(schoolIds){
 function renderCompanyRows(schoolIds){
   const tbody = document.querySelector("#companyTable tbody");
   const productId = (document.getElementById("companyProduct") || {}).value || "";
-  const rows = companyRowsAll.filter(r => !productId || r.product_id === productId);
+  const rows = companyRowsAll.filter(r => (!productId || r.product_id === productId) && searchMatches([
+    fmtDate(r.company_invoices?.delivery_date || r.company_invoices?.invoice_date), r.schools?.emis_code, r.schools?.school_name,
+    cache.markaz.find(m => m.id === r.schools?.markaz_id)?.name, r.products?.product_name, r.quantity,
+    r.company_invoices?.invoice_number, r.aeo_verification_status, r.aeo_verification_remarks]));
   companyRowsShown = rows;
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">${companyRowsAll.length ? "No company data for this product." : "No company data uploaded yet."}</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">${companyRowsAll.length ? "No company data matches your filter or search." : "No company data uploaded yet."}</td></tr>`; return; }
 
   const statusPill = (s, remarks) => s === "received" ? '<span class="pill pill-ok">Received</span>'
     : s === "not_received" ? '<span class="pill pill-bad">Not received</span>'
