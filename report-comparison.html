@@ -240,7 +240,7 @@ async function renderPage(){
 let uploadState = { rows: null, headers: null, mapping: null, productId: null, manualInvoiceNumber: null, manualDate: null };
 
 function renderUploadWizard(mount){
-  uploadState = { rows: null, headers: null, mapping: null, productId: null };
+  uploadState = { rows: null, headers: null, mapping: null, productId: null, allowMulti: false, importing: false };
   const productOpts = cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
   const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
   mount.innerHTML = `
@@ -326,6 +326,16 @@ function renderColumnMapping(){
   document.getElementById("previewBtn").addEventListener("click", renderPreview);
 }
 
+// Labels for the validation report returned by fn_validate_company_invoice_upload / fn_import_company_invoices.
+const UPLOAD_STATUS_LABEL = {
+  duplicate_in_file:    ["Duplicate Invoice Detected", "pill-bad"],
+  duplicate_existing:   ["Duplicate Invoice Detected", "pill-bad"],
+  conflict_in_file:     ["Invoice Number Conflict", "pill-bad"],
+  conflict_existing:    ["Invoice Number Conflict", "pill-bad"],
+  review_other_product: ["Needs review", "pill-warn"],
+  invalid:              ["Invalid row", "pill-bad"],
+};
+
 async function renderPreview(){
   const defaultProductId = document.getElementById("upProduct").value;
   const emisCol = document.getElementById("mapEmis").value;
@@ -345,14 +355,10 @@ async function renderPreview(){
   if(!upTehsil || !upWing){ toast("Pick the Tehsil and Wing you're importing first", "bad"); return; }
   const markazTehsil = Object.fromEntries(cache.markaz.map(m => [m.id, m.tehsil]));
   // Only schools inside the chosen Tehsil + Wing resolve here - anything else in the file (another
-  // tehsil, another wing, or an EMIS SMP doesn't know) falls through to the "EMIS not found / out of
-  // scope" branch below, exactly like a genuinely unknown code, so nothing outside the chosen scope
-  // is ever considered for import regardless of what else the file contains.
+  // tehsil, another wing, or an EMIS SMP doesn't know) is skipped and listed, exactly as before.
   const inScopeSchools = cache.schools.filter(s => s.wing === upWing && markazTehsil[s.markaz_id] === upTehsil);
   const schoolByEmis = Object.fromEntries(inScopeSchools.map(s => [String(s.emis_code).trim(), s]));
   const anySchoolByEmis = Object.fromEntries(cache.schools.map(s => [String(s.emis_code).trim(), s]));
-  // Match a cell's text against a product name by substring (e.g. a file
-  // saying "Milk Packs" or "Powder Milk" both resolve to the Milk product).
   function resolveProduct(cellText){
     if(!cellText) return defaultProductId ? cache.products.find(p => p.id === defaultProductId) : null;
     const t = String(cellText).trim().toLowerCase();
@@ -360,11 +366,8 @@ async function renderPreview(){
       || (defaultProductId ? cache.products.find(p => p.id === defaultProductId) : null);
   }
 
-  // Parse every row, resolve school + product, and read invoice/date per-row
-  // from the file (no batch-wide fallback - a real file spans many dates/
-  // invoices, and now potentially both products too).
-  // Blank/summary rows (e.g. "Total Packs Delivered" footers) have neither an EMIS code nor an
-  // invoice number - they are not deliveries, so they are ignored rather than listed as errors.
+  // Blank/summary rows (e.g. "Total Packs Delivered" footers) have neither an EMIS code nor an invoice number -
+  // they are not deliveries, so they are ignored rather than listed as errors.
   const ignoredRows = uploadState.rows.filter(r => String(r[emisCol] ?? "").trim() === "" && String(r[invoiceCol] ?? "").trim() === "").length;
   uploadState.ignoredRows = ignoredRows;
   const parsed = uploadState.rows.map((r, i) => ({ r, i })).filter(({ r }) => !(String(r[emisCol] ?? "").trim() === "" && String(r[invoiceCol] ?? "").trim() === "")).map(({ r, i }) => {
@@ -373,179 +376,154 @@ async function renderPreview(){
     const invoiceNumber = String(r[invoiceCol] ?? "").trim();
     const deliveryDate = normalizeDate(String(r[dateCol] ?? "").trim());
     const school = schoolByEmis[emis];
-    const outOfScope = !school && !!anySchoolByEmis[emis];   // real EMIS, just not in the chosen Tehsil + Wing
+    const outOfScope = !school && !!anySchoolByEmis[emis];
     const product = productCol !== "" ? resolveProduct(r[productCol]) : cache.products.find(p => p.id === defaultProductId);
     return { rowNum: i + 2, emis, qty, invoiceNumber, deliveryDate, school, product, outOfScope, valid: !!school && !!product && !isNaN(qty) && qty >= 0 && !!invoiceNumber && !!deliveryDate };
   });
 
-  // Dedupe within this batch: same EMIS + invoice number + product for this
-  // upload -> keep the first occurrence, flag the rest.
-  const seen = new Set();
-  parsed.forEach(row => {
-    if(!row.valid) return;
-    const key = `${row.emis}|${normInvoice(row.invoiceNumber)}|${row.product.id}`;
-    if(seen.has(key)){ row.duplicate = true; row.valid = false; }
-    else seen.add(key);
-  });
-
-  // Also check against invoice numbers already in the system (not just
-  // duplicates within this one file) - re-uploading the same vendor
-  // invoice a second time (a common mistake with weekly/monthly sheets
-  // that overlap) would otherwise fail row-by-row with a raw DB error
-  // instead of being cleanly skipped up front.
-  const productIdsInFile = [...new Set(parsed.filter(r => r.valid).map(r => r.product.id))];
-  if(productIdsInFile.length){
-    // Paged read: a plain select is silently capped at 1,000 rows, which would let duplicates through
-    // once more than 1,000 invoices exist.
-    const { data: existingInvoices, error: existErr } = await smpFetchAll(() => sb.from("company_invoices")
-      .select("id, invoice_number, product_id")
-      .eq("status", "active")
-      .in("product_id", productIdsInFile)
-      .order("id"));
-    if(existErr){
-      toast("Could not check which invoices are already in the database: " + existErr.message + ". Nothing can be imported until this check works.", "bad");
-      parsed.forEach(row => { if(row.valid){ row.valid = false; row.checkFailed = true; } });
-    } else {
-      const existingKeys = new Set((existingInvoices || []).map(inv => `${normInvoice(inv.invoice_number)}|${inv.product_id}`));
-      parsed.forEach(row => {
-        if(!row.valid) return;
-        const key = `${normInvoice(row.invoiceNumber)}|${row.product.id}`;
-        if(existingKeys.has(key)){ row.alreadyInSystem = true; row.valid = false; }
-      });
-    }
-  }
-
+  // Duplicate / conflict detection is NOT done here any more. Every in-scope row is sent to the database,
+  // which checks it against all existing invoices AND against the rest of this file (rows far apart included).
+  const sendable = parsed.filter(r => r.valid);
+  const skippedRows = parsed.filter(r => !r.valid);
   uploadState.parsed = parsed;
+  uploadState.sendMeta = sendable;                       // RPC row n  =>  sendable[n-1]
+  uploadState.sendRows = sendable.map(r => ({
+    invoice_number: r.invoiceNumber, invoice_date: r.deliveryDate, delivery_date: r.deliveryDate,
+    product_id: r.product.id, school_id: r.school.id, quantity: String(r.qty),
+  }));
+  uploadState.report = null;
 
-  const validCount = parsed.filter(r => r.valid).length;
-  const invalidRows = parsed.filter(r => !r.valid);
+  const importBtn = document.getElementById("importBtn");
+  const previewBtn = document.getElementById("previewBtn");
+  importBtn.disabled = true;
+  let report = { total: 0, new: 0, duplicates: 0, conflicts: 0, needs_review: 0, invalid: 0, can_import: false, issues: [] };
+  let checkError = null;
+  if(sendable.length){
+    previewBtn.disabled = true; previewBtn.textContent = "Checking…";
+    try{
+      const { data, error } = await sb.rpc("fn_validate_company_invoice_upload", { p_rows: uploadState.sendRows, p_allow_multi_product: !!uploadState.allowMulti });
+      if(error) throw error;
+      report = data;
+    }catch(err){ checkError = (err && err.message) || "Unknown error"; }
+    previewBtn.disabled = false; previewBtn.textContent = "Preview";
+  }
+  // Fail closed: if the database check did not complete, nothing can be imported.
+  uploadState.report = checkError ? null : report;
+
+  const fileRow = n => (uploadState.sendMeta[n - 1] || {}).rowNum || "—";
+  const skipReason = r => r.outOfScope ? `EMIS not in ${esc(upTehsil)} / ${esc(upWing)} - out of scope for this import`
+    : !r.school ? "EMIS not found in SMP" : !r.product ? "Product not recognized" : "Missing quantity, invoice #, or date";
 
   const step3 = document.getElementById("wizardStep3");
   step3.innerHTML = `
     <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--line);">
+      ${checkError ? `<p class="err">Could not check the file against the database: ${esc(checkError)}. Nothing can be imported until this check works.</p>` : ""}
       <div class="grid-4">
-        <div class="stat"><div class="n">${parsed.length}</div><div class="l">Rows in file</div></div>
-        <div class="stat"><div class="n">${validCount}</div><div class="l">Ready to import</div></div>
-        <div class="stat"><div class="n">${invalidRows.filter(r => r.duplicate).length}</div><div class="l">Duplicates in this file</div></div>
-        <div class="stat"><div class="n">${invalidRows.filter(r => r.alreadyInSystem).length}</div><div class="l">Invoice already in database - will NOT be uploaded</div></div>
-        <div class="stat"><div class="n">${invalidRows.filter(r => r.outOfScope).length}</div><div class="l">Outside ${esc(upTehsil)} / ${esc(upWing)}</div></div>
+        <div class="stat"><div class="n">${parsed.length}</div><div class="l">Total records detected</div></div>
+        <div class="stat"><div class="n">${report.new}</div><div class="l">Valid new invoices</div></div>
+        <div class="stat"><div class="n">${report.duplicates}</div><div class="l">Exact duplicates</div></div>
+        <div class="stat"><div class="n">${report.conflicts}</div><div class="l">Invoice-number conflicts</div></div>
+        <div class="stat"><div class="n">${report.needs_review}</div><div class="l">Need review (number used for another product)</div></div>
+        <div class="stat"><div class="n">${skippedRows.length}</div><div class="l">Outside ${esc(upTehsil)} / ${esc(upWing)} or invalid (skipped)</div></div>
       </div>
-      ${invalidRows.length ? `
-        <p class="sub" style="margin-top:12px;">Rows that will be skipped:</p>
+      ${report.issues.length ? `
+        <p class="sub" style="margin-top:12px;"><strong>Nothing will be imported while any of these remain.</strong> The import is all-or-nothing - fix or remove these rows in the file and upload again.</p>
+        <div class="table-wrap"><table><thead><tr><th>Row</th><th>Invoice #</th><th>Date</th><th>Product</th><th>Qty</th><th>EMIS</th><th>Result</th><th>Details</th></tr></thead><tbody>
+          ${report.issues.map(i => { const [lbl, cls] = UPLOAD_STATUS_LABEL[i.status] || [i.status, "pill-warn"]; return `<tr>
+            <td>${esc(fileRow(i.row))}</td><td>${esc(i.invoice_number)}</td><td>${esc(i.invoice_date)}</td><td>${esc(i.product)}</td><td>${esc(i.quantity)}</td><td>${esc(i.school_emis)}</td>
+            <td><span class="pill ${cls}">${esc(lbl)}</span></td><td>${esc(i.detail)}</td></tr>`; }).join("")}
+        </tbody></table></div>
+      ` : ""}
+      ${(report.needs_review > 0 || uploadState.allowMulti) ? `
+        <p class="sub" style="margin-top:12px;"><label><input type="checkbox" id="allowMulti" ${uploadState.allowMulti ? "checked" : ""}/> This is a genuine multi-product invoice - allow invoice numbers that already exist under another product</label></p>` : ""}
+      ${skippedRows.length ? `
+        <p class="sub" style="margin-top:12px;">Rows skipped (not part of this import):</p>
         <div class="table-wrap"><table><thead><tr><th>Row</th><th>EMIS</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Date</th><th>Reason</th></tr></thead><tbody>
-          ${invalidRows.map(r => `<tr>
-            <td>${r.rowNum}</td><td>${esc(r.emis)}</td><td>${esc(r.product?.product_name || "—")}</td><td>${esc(r.qty)}</td><td>${esc(r.invoiceNumber)}</td><td>${esc(r.deliveryDate)}</td>
-            <td>${r.checkFailed ? "Could not check existing invoices" : r.alreadyInSystem ? "Duplicate - this invoice was already uploaded earlier, not imported" : r.duplicate ? "Duplicate EMIS+invoice+product in this file" : r.outOfScope ? `EMIS not in ${esc(upTehsil)} / ${esc(upWing)} - out of scope for this import` : !r.school ? "EMIS not found in SMP" : !r.product ? "Product not recognized" : "Missing quantity, invoice #, or date"}</td>
-          </tr>`).join("")}
+          ${skippedRows.map(r => `<tr><td>${r.rowNum}</td><td>${esc(r.emis)}</td><td>${esc(r.product?.product_name || "—")}</td><td>${esc(r.qty)}</td><td>${esc(r.invoiceNumber)}</td><td>${esc(r.deliveryDate)}</td><td>${skipReason(r)}</td></tr>`).join("")}
         </tbody></table></div>
       ` : ""}
       <p class="sub" style="margin-top:12px; color:var(--edit);"><strong>Not saved yet.</strong> Preview only checks the file. Nothing is written to the database until you click Import.${uploadState.ignoredRows ? ` (${uploadState.ignoredRows} blank/summary row(s) ignored.)` : ""}</p>
-
     </div>
   `;
+  const multiBox = document.getElementById("allowMulti");
+  if(multiBox) multiBox.addEventListener("change", () => { uploadState.allowMulti = multiBox.checked; renderPreview(); });
+
   // The Import button lives next to Preview (top of the wizard) so nobody has to scroll to find it.
-  const importBtn = document.getElementById("importBtn");
-  importBtn.disabled = !validCount;
-  importBtn.textContent = `Import ${validCount} rows`;
+  const ok = !!(uploadState.report && uploadState.report.can_import);
+  importBtn.disabled = !ok;
+  importBtn.textContent = `Import ${sendable.length} rows`;
   importBtn.onclick = runImport;
-  document.getElementById("importHint").textContent = validCount ? "Preview done - nothing is saved until you click Import." : "No valid rows to import - see the skipped list below.";
+  document.getElementById("importHint").textContent = ok ? "All rows are new - nothing is saved until you click Import."
+    : checkError ? "The database check failed - nothing can be imported."
+    : sendable.length ? "Import is blocked until every row listed above is fixed or removed."
+    : "No valid rows to import - see the skipped list below.";
 }
 
 function renderUploadResult({ status, fileName, total, valid, skipped, invoices, expectedItems, verifiedItems, failures, certified, startedAt, finishedAt }){
   const mount = document.getElementById("uploadResult");
   if(!mount) return;
-  const label = { uploading: "Uploading… database operation in progress", saved: "Saved successfully", partial: "Partially saved", failed: "Failed - nothing was confirmed saved" }[status];
+  const label = { uploading: "Uploading… database operation in progress", saved: "Saved successfully", partial: "Partially saved", failed: "Failed - nothing was imported" }[status];
   const pill = status === "saved" ? "pill-ok" : status === "uploading" ? "pill-warn" : "pill-bad";
-  const failedRows = failures.reduce((n, f) => n + f.rows, 0);
+  const rejectedRows = failures.reduce((n, f) => n + f.rows, 0);
   mount.innerHTML = `
     <div class="card">
       <h3>Company upload result <span class="pill ${pill}">${esc(label)}</span></h3>
-      <p class="sub">Source: Company${fileName ? ` · File: ${esc(fileName)}` : ""} · Started ${esc(startedAt.toLocaleString())}${finishedAt ? ` · Finished ${esc(finishedAt.toLocaleString())}` : ""}${status === "uploading" ? "" : " · Counts below are re-read from Supabase after saving."}</p>
+      <p class="sub">Source: Company${fileName ? ` · File: ${esc(fileName)}` : ""} · Started ${esc(startedAt.toLocaleString())}${finishedAt ? ` · Finished ${esc(finishedAt.toLocaleString())}` : ""}${status === "uploading" ? "" : " · Saved counts below are re-read from Supabase."}</p>
       <div class="grid-4">
         <div class="stat"><div class="n">${total}</div><div class="l">Records in file</div></div>
-        <div class="stat"><div class="n">${valid}</div><div class="l">Valid, sent to database</div></div>
+        <div class="stat"><div class="n">${valid}</div><div class="l">Sent to database</div></div>
         <div class="stat"><div class="n">${status === "uploading" ? "…" : verifiedItems}</div><div class="l">Confirmed saved in Supabase (of ${expectedItems})</div></div>
-        <div class="stat"><div class="n">${status === "uploading" ? "…" : failedRows}</div><div class="l">Failed records</div></div>
-        <div class="stat"><div class="n">${skipped.alreadyInSystem}</div><div class="l">Skipped - invoice already in system</div></div>
-        <div class="stat"><div class="n">${skipped.duplicate}</div><div class="l">Skipped - duplicate in file</div></div>
+        <div class="stat"><div class="n">${status === "uploading" ? "…" : rejectedRows}</div><div class="l">Rejected / failed records</div></div>
+        <div class="stat"><div class="n">${skipped.duplicates}</div><div class="l">Rejected - duplicate</div></div>
+        <div class="stat"><div class="n">${skipped.conflicts}</div><div class="l">Rejected - invoice-number conflict</div></div>
         <div class="stat"><div class="n">${skipped.other}</div><div class="l">Skipped - out of scope / invalid</div></div>
         <div class="stat"><div class="n">${status === "uploading" ? "…" : certified === null ? "Next" : certified}</div><div class="l">${certified === null ? "Auto-certification starts after import" : "Auto-certified against AEO receipts"}</div></div>
       </div>
-      <p class="sub" style="margin-top:8px;">Invoices created: ${status === "uploading" ? "…" : invoices}. Records not auto-certified stay pending for the AEO to certify.</p>
-      ${failures.length ? `<div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Rows</th><th>Error</th></tr></thead><tbody>${failures.map(f => `<tr><td>${esc(f.invoice)}</td><td>${f.rows}</td><td class="err">${esc(f.message)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      <p class="sub" style="margin-top:8px;">Invoices created: ${status === "uploading" ? "…" : invoices}. Records not auto-certified stay pending until the AEO's matching receipt is saved.</p>
+      ${failures.length ? `<div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Rows</th><th>Problem</th></tr></thead><tbody>${failures.map(f => `<tr><td>${esc(f.invoice)}</td><td>${f.rows}</td><td class="err">${esc(f.message)}</td></tr>`).join("")}</tbody></table></div>` : ""}
     </div>`;
 }
 
 async function runImport(){
-  const btn = document.getElementById("importBtn");
-  btn.disabled = true;
+  if(uploadState.importing) return;                      // second click / double submit
+  if(!uploadState.report || !uploadState.report.can_import){ toast("Run Preview first - the import is blocked until the file passes validation.", "bad"); return; }
+  uploadState.importing = true;
+  const btn = document.getElementById("importBtn"), pbtn = document.getElementById("previewBtn");
+  btn.disabled = true; pbtn.disabled = true;
   btn.textContent = "Importing…";
-  const validRows = uploadState.parsed.filter(r => r.valid);
+  const sendRows = uploadState.sendRows, sendMeta = uploadState.sendMeta;
   const fileName = uploadState.fileName || "";
   const startedAt = new Date();
-  const skipped = {
-    alreadyInSystem: uploadState.parsed.filter(r => r.alreadyInSystem).length,
-    duplicate: uploadState.parsed.filter(r => r.duplicate).length,
-    other: uploadState.parsed.filter(r => !r.valid && !r.alreadyInSystem && !r.duplicate).length,
-  };
-  const base = { fileName, total: uploadState.parsed.length, valid: validRows.length, skipped, startedAt, invoices: 0, expectedItems: validRows.length, verifiedItems: 0, failures: [], certified: 0 };
+  const base = { fileName, total: uploadState.parsed.length, valid: sendRows.length, skipped: { duplicates: 0, conflicts: 0, other: uploadState.parsed.filter(r => !r.valid).length }, startedAt, invoices: 0, expectedItems: sendRows.length, verifiedItems: 0, failures: [], certified: 0 };
   renderUploadResult({ ...base, status: "uploading" });
 
-  // Group by invoice number + delivery date + product (a file can mix products per row, so
-  // product is part of the grouping key) so each distinct invoice becomes one company_invoices
-  // row with its line items underneath.
-  const groups = {};
-  validRows.forEach(r => {
-    const key = `${r.invoiceNumber}|${r.deliveryDate}|${r.product.id}`;
-    (groups[key] = groups[key] || []).push(r);
-  });
+  let res = null, rpcErr = null;
+  try{
+    // One database transaction: every invoice and line item is saved, or none is.
+    const { data, error } = await sb.rpc("fn_import_company_invoices", { p_rows: sendRows, p_allow_multi_product: !!uploadState.allowMulti, p_auto_certify: false });
+    if(error) throw error;
+    res = data;
+  }catch(err){ rpcErr = (err && err.message) || "Unknown database error"; }
 
-  const createdInvoiceIds = [];
-  const failures = [];
-  const createdGroups = [];
-  let certified = null;
-  for(const key in groups){
-    const rows = groups[key];
-    const { invoiceNumber, deliveryDate, product } = rows[0];
-    let invoiceId = null;
-    try{
-      const { data: invoice, error: invErr } = await sb.from("company_invoices").insert({
-        invoice_number: invoiceNumber,
-        product_id: product.id,
-        invoice_date: deliveryDate,
-        delivery_date: deliveryDate,
-        entered_by: currentUser.id,
-      }).select("id").single();
-      if(invErr) throw invErr;
-      invoiceId = invoice.id;
+  uploadState.importing = false;
+  pbtn.disabled = false;
 
-      const items = rows.map(r => ({
-        invoice_id: invoice.id,
-        school_id: r.school.id,
-        product_id: product.id,
-        quantity: r.qty,
-        unit: product.unit_name,
-      }));
-      const { error: itemErr } = await sb.from("company_invoice_items").insert(items);
-      if(itemErr) throw itemErr;
-      createdInvoiceIds.push(invoice.id);
-      // Certification is deliberately NOT done here - it starts after the whole import has finished.
-      createdGroups.push({ id: invoice.id, invoiceNumber, schools: rows.map(r => r.school) });
-    }catch(err){
-      let message = (err && err.message) || "Unknown database error";
-      if(err && (err.code === "23505" || /duplicate key/i.test(message))) message = "Invoice already in the database - not uploaded";
-      // Never leave an invoice header behind without its items.
-      if(invoiceId){
-        const { error: delErr } = await sb.from("company_invoices").delete().eq("id", invoiceId);
-        message += delErr ? " (could not remove the incomplete invoice - ask an admin to check it)" : " (incomplete invoice was rolled back)";
-      }
-      failures.push({ invoice: invoiceNumber, rows: rows.length, message });
-      console.error("[SMP] company import failed for invoice", invoiceNumber, err && err.message);
-    }
+  if(rpcErr || !res || !res.imported){
+    // Nothing was written. Show exactly why (the data may also have changed since Preview).
+    const failures = rpcErr ? [{ invoice: "(upload)", rows: sendRows.length, message: rpcErr + " - nothing was imported." }]
+      : (res.issues || []).map(i => ({ invoice: i.invoice_number || "—", rows: 1,
+          message: `File row ${(sendMeta[i.row - 1] || {}).rowNum || "—"}: ${(UPLOAD_STATUS_LABEL[i.status] || [i.status])[0]} - ${i.detail || ""}` }));
+    const skipped = res ? { duplicates: res.duplicates || 0, conflicts: res.conflicts || 0, other: base.skipped.other } : base.skipped;
+    renderUploadResult({ ...base, skipped, status: "failed", failures, certified: 0, finishedAt: new Date() });
+    toast("Upload rejected - nothing was imported. See the result panel.", "bad");
+    btn.textContent = "Import"; btn.disabled = true;
+    return;
   }
 
-  // Confirm what is really in the database: re-read the line items for the invoices we created.
-  let verifiedItems = 0, verifyError = null;
+  // Confirm what is really in the database: re-read the line items for the invoices that were created.
+  const created = res.created || [];
+  const createdInvoiceIds = created.map(c => c.invoice_id);
+  let verifiedItems = 0; const failures = [];
   try{
     for(let i = 0; i < createdInvoiceIds.length; i += 100){
       const chunk = createdInvoiceIds.slice(i, i + 100);
@@ -554,26 +532,21 @@ async function runImport(){
       verifiedItems += count || 0;
     }
   }catch(err){
-    verifyError = (err && err.message) || "Could not re-read saved records";
-    failures.push({ invoice: "(verification)", rows: 0, message: "Saved, but confirmation read-back failed: " + verifyError });
+    failures.push({ invoice: "(verification)", rows: 0, message: "Saved, but confirmation read-back failed: " + ((err && err.message) || "unknown error") });
   }
-
-  const failedRows = failures.reduce((n, f) => n + f.rows, 0);
-  const status = verifiedItems === 0 ? "failed"
-    : (verifiedItems === validRows.length && !failures.length) ? "saved" : "partial";
-  renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
-  console.info("[SMP] company upload", { file: fileName, valid: validRows.length, invoices: createdInvoiceIds.length, verifiedItems, failedRows, status });
-  toast(status === "saved" ? `Saved: ${verifiedItems} records confirmed in Supabase`
-      : status === "partial" ? `Partially saved: ${verifiedItems} of ${validRows.length} confirmed - see result panel`
-      : "Upload failed - nothing was saved. See result panel.",
-    status === "saved" ? "ok" : "bad");
+  const status = (verifiedItems === sendRows.length && !failures.length) ? "saved" : verifiedItems === 0 ? "failed" : "partial";
+  renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified: null, finishedAt: new Date() });
+  toast(status === "saved" ? `Saved: ${verifiedItems} records confirmed in Supabase` : "Saved, but the confirmation count differs - see result panel", status === "saved" ? "ok" : "bad");
 
   // Import is finished and confirmed - only now does auto-certification start, with its own progress popup.
-  if(createdGroups.length){
+  let certified = 0;
+  if(created.length){
+    const createdGroups = created.map(c => ({ id: c.invoice_id, invoiceNumber: c.invoice_number,
+      schools: (c.school_ids || []).map(id => cache.schools.find(s => s.id === id)).filter(Boolean) }));
     const cert = await runAutoCertification(createdGroups);
     certified = cert.certified;
-    renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
   }
+  renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
 
   await loadComparison(new FormData(document.getElementById("filterForm")));
   renderUploadWizard(document.getElementById("uploadMount"));
@@ -806,9 +779,8 @@ async function loadComparison(fd){
     return '<span class="pill pill-bad">' + esc(status) + '</span>'; // Short/Excess Received
   };
 
-  // aeo_verification_status is set by AEOs from Inventory Received's
-  // Company Data & Certification section (fn_verify_company_item) - only
-  // meaningful on rows where company data actually exists.
+  // aeo_verification_status is set automatically by the database when an AEO receipt matches the
+  // company invoice (manual certification was removed) - only meaningful on rows where company data exists.
   const certPillFor = (status) => {
     if(!status) return "—";
     if(status === "flagged_mismatch") return '<span class="pill pill-warn">⚠ Qty matches other invoice</span>';
