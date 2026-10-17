@@ -190,6 +190,7 @@ async function renderPage(){
         <button class="btn-secondary" type="button" id="dlCmpAllBtn">Download Excel - all rows</button>
         <button class="btn-secondary" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
         <button class="btn-secondary" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
+        ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button>' : ""}
       </div>
     </div>
     <div class="grid-4" id="statCards"></div>
@@ -206,6 +207,29 @@ async function renderPage(){
   document.getElementById("dlCmpAllBtn").addEventListener("click", () => downloadComparison(false));
   document.getElementById("dlCmpIssuesBtn").addEventListener("click", () => downloadComparison(true));
   document.getElementById("dlCompanyListBtn").addEventListener("click", downloadCompanyList);
+  const rb = document.getElementById("reconcileBtn");
+  if(rb) rb.addEventListener("click", async () => {
+    rb.disabled = true;
+    try{
+      const { data: preview, error: pErr } = await sb.rpc("fn_reconcile_company_invoices", { p_invoice_ids: null, p_dry_run: true });
+      if(pErr) throw pErr;
+      const fixes = (preview || []).filter(r => r.action === "invoice_corrected" || r.action === "school_corrected");
+      const c = reconSummary(preview);
+      if(!fixes.length){
+        toast(`Nothing to correct automatically.${c.skipped_ambiguous ? " " + c.skipped_ambiguous + " delivery(ies) have several possible AEO entries and need manual review." : ""}`);
+        return;
+      }
+      if(!confirm(`The company data identifies ${c.invoice_corrected} AEO entr${c.invoice_corrected === 1 ? "y" : "ies"} with a wrong invoice number and ${c.school_corrected} under the wrong school.\n\nCorrect them now? Each change is logged and can be undone. Only entries users already added are changed.`)) return;
+      const { data: done, error: aErr } = await sb.rpc("fn_reconcile_company_invoices", { p_invoice_ids: null, p_dry_run: false });
+      if(aErr) throw aErr;
+      const d = reconSummary(done);
+      toast(`Corrected ${d.invoice_corrected} invoice number(s) and moved ${d.school_corrected} entr${d.school_corrected === 1 ? "y" : "ies"}; matching entries certified automatically.`);
+      await loadComparison(new FormData(document.getElementById("filterForm")));
+    }catch(err){
+      console.error("[SMP] reconcile failed:", err && err.message);
+      toast("Could not reconcile: " + ((err && err.message) || "unknown error"), "bad");
+    }finally{ rb.disabled = false; }
+  });
 
   const dEl = document.getElementById("jfDistrict"), tEl = document.getElementById("jfTehsil"), mEl = document.getElementById("jfMarkaz"), wEl = document.getElementById("jfWing");
   function refreshTehsil(){
@@ -546,7 +570,14 @@ async function runImport(){
   if(created.length){
     const createdGroups = created.map(c => ({ id: c.invoice_id, invoiceNumber: c.invoice_number,
       schools: (c.school_ids || []).map(id => cache.schools.find(s => s.id === id)).filter(Boolean) }));
-    const cert = await runAutoCertification(createdGroups);
+    // Step 1: use the company's invoice -> school (EMIS) mapping to fix AEO entries that carry a wrong invoice number
+    // or sit under the wrong school. Only entries users already added are touched; everything else stays flagged.
+    const recon = { rows: [], error: null };
+    const { data: reconRows, error: reconErr } = await sb.rpc("fn_reconcile_company_invoices", { p_invoice_ids: createdInvoiceIds, p_dry_run: false });
+    if(reconErr){ recon.error = reconErr.message; console.error("[SMP] reconciliation failed:", reconErr.message); }
+    else recon.rows = reconRows || [];
+    // Step 2: auto-certification (with date alignment) with its school-wise progress popup.
+    const cert = await runAutoCertification(createdGroups, recon);
     certified = cert.certified;
   }
   renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
@@ -555,11 +586,28 @@ async function runImport(){
   renderUploadWizard(document.getElementById("uploadMount"));
 }
 
+// Plain-language summary + table of what the invoice/EMIS reconciliation did (or would do).
+function reconSummary(rows){
+  const c = { invoice_corrected: 0, school_corrected: 0, skipped_ambiguous: 0, skipped_blocked: 0 };
+  (rows || []).forEach(r => { if(r.action in c) c[r.action]++; });
+  return c;
+}
+function reconTableHtml(rows){
+  const nameOf = id => { const sc = cache.schools.find(x => x.id === id); return sc ? `${esc(sc.emis_code)} - ${esc(sc.school_name)}` : "-"; };
+  const label = { invoice_corrected: "Invoice number corrected", school_corrected: "Moved to the school the company delivered to",
+    skipped_ambiguous: "Needs manual review - several possible entries", skipped_blocked: "Not changed - blocked" };
+  return `<div class="table-wrap" style="max-height:220px;overflow:auto;"><table><thead><tr><th>School</th><th>AEO entered</th><th>Company invoice</th><th>What happened</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${nameOf(r.school_id)}${r.old_school_id ? `<br><span class="sub">was under ${nameOf(r.old_school_id)}</span>` : ""}</td>
+      <td>${esc(r.old_invoice_number || "-")}</td><td>${esc(r.company_invoice_number || "")}</td>
+      <td>${esc(label[r.action] || r.action)}${r.action === "skipped_blocked" ? `<br><span class="sub">${esc(r.note || "")}</span>` : ""}</td></tr>`).join("")}
+  </tbody></table></div>`;
+}
+
 // Auto-certification after an import: for every school on the newly imported invoices, certify it when the
 // AEO's own receipt already matches (same invoice, product and quantity). Shows a popup with school-wise
 // progress. Schools with no matching AEO receipt yet stay pending and certify themselves later, when the AEO
 // saves a matching receipt.
-async function runAutoCertification(groups){
+async function runAutoCertification(groups, recon){
   const total = groups.reduce((n, g) => n + g.schools.length, 0);
   const counts = { done: 0, certified: 0, pending: 0, flagged: 0, failed: 0 };
   const ov = document.createElement("div");
@@ -569,6 +617,18 @@ async function runAutoCertification(groups){
     <div class="card" style="width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;margin:0;">
       <h3 id="acTitle" style="margin-bottom:4px;">Auto-certification in progress</h3>
       <p class="sub" id="acSub">Import finished. Now checking each school's imported invoices against what the AEOs already received.</p>
+      ${(() => {
+        if(!recon) return "";
+        if(recon.error) return `<p class="sub err">Invoice-number matching could not run: ${esc(recon.error)}. Certification continues without it.</p>`;
+        const c = reconSummary(recon.rows);
+        const lines = [];
+        if(c.invoice_corrected) lines.push(`${c.invoice_corrected} AEO entr${c.invoice_corrected === 1 ? "y" : "ies"} had a wrong invoice number - corrected from company data`);
+        if(c.school_corrected) lines.push(`${c.school_corrected} entr${c.school_corrected === 1 ? "y was" : "ies were"} under the wrong school - moved to the school the company delivered to`);
+        if(c.skipped_ambiguous) lines.push(`${c.skipped_ambiguous} company deliver${c.skipped_ambiguous === 1 ? "y has" : "ies have"} several possible AEO entries - left for manual review`);
+        if(c.skipped_blocked) lines.push(`${c.skipped_blocked} correction(s) blocked by the duplicate-invoice rule - left flagged`);
+        if(!lines.length) return `<p class="sub">Invoice numbers checked against EMIS codes: no AEO entry needed correcting.</p>`;
+        return `<p class="sub"><b>Step 1 - invoice numbers matched to EMIS codes:</b> ${lines.join("; ")}.</p>${reconTableHtml(recon.rows)}`;
+      })()}
       <div style="height:10px;background:var(--line);border-radius:6px;overflow:hidden;margin:8px 0;"><div id="acBar" style="height:100%;width:0;background:var(--ok-fg, #2e7d32);transition:width .2s;"></div></div>
       <p class="sub" id="acCount" style="margin:0 0 8px;">0 of ${total} schools</p>
       <div class="grid-4" style="margin-bottom:8px;">
