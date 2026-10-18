@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Consumption — School Meal Program</title>
 <script src="assets/safety.js?v=20261015a"></script>
-<script src="assets/layout.js?v=20261017b"></script>
+<script src="assets/layout.js?v=20261018a"></script>
 <script src="assets/sync-me.js?v=20261015a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -200,7 +200,7 @@ function renderJurisdictionFilter(container, onApply){
     const go = () => onApply(cache.schools.map(s => s.id));
     sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
     document.getElementById("jfApply").addEventListener("click", go);
-    smpLiveSearch(sOnly, document.getElementById("content"), "#consumptionTable", document.getElementById("jfSearchCount"));
+    smpLiveSearch(sOnly, document.getElementById("content"), "#summaryTable, #consumptionTable", document.getElementById("jfSearchCount"));
     onApply(cache.schools.map(s => s.id));
     return;
   }
@@ -267,7 +267,7 @@ function renderJurisdictionFilter(container, onApply){
   wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
   eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
   sEl.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
-  smpLiveSearch(sEl, document.getElementById("content"), "#consumptionTable", document.getElementById("jfSearchCount"));
+  smpLiveSearch(sEl, document.getElementById("content"), "#summaryTable, #consumptionTable", document.getElementById("jfSearchCount"));
   document.getElementById("jfApply").addEventListener("click", apply);
   apply();   // one initial load with the default scope
 }
@@ -309,12 +309,21 @@ async function renderConsumption(){
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
         <div>
-          <h3 style="margin:0;">Consumption — ${esc(selectedDate)}</h3>
+          <h3 style="margin:0;">Consumption</h3>
           <p class="sub" id="consDaySub" style="margin:4px 0 0;">Checking which product is scheduled…</p>
         </div>
         <button class="btn-primary" id="addConsumptionBtn" type="button">+ Add consumption</button>
       </div>
-      <div class="table-wrap" style="margin-top:12px;"><table id="consumptionTable"><thead><tr>
+    </div>
+    <div class="card" id="summaryCard">
+      <h3>All schools summary — ${esc(selectedDate)}</h3>
+      <p class="sub">Every school in your filter: opening balance, received on this date, consumption and remaining. Use the filter above to look at one markaz.</p>
+      <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
+    </div>
+    <div class="card">
+      <h3>Entries added — ${esc(selectedDate)}</h3>
+      <p class="sub">Every consumption entry for this date. Edit or delete an entry here.</p>
+      <div class="table-wrap"><table id="consumptionTable"><thead><tr>
         <th>Sr#</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Opening</th><th>Received</th><th>Consumed</th><th>Remaining</th><th></th>
       </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
@@ -350,13 +359,18 @@ async function renderConsumption(){
 async function loadConsumptionList(visibleSchoolIds){
   currentVisibleIds = visibleSchoolIds;
   const tbody = document.querySelector("#consumptionTable tbody");
-  if(!tbody) return;
+  const sBody = document.querySelector("#summaryTable tbody");
+  if(!tbody || !sBody) return;
+  const sHead = document.querySelector("#summaryTable thead"), sFoot = document.querySelector("#summaryTable tfoot");
   if(!visibleSchoolIds.length){
+    sHead.innerHTML = ""; sFoot.innerHTML = "";
+    sBody.innerHTML = `<tr><td colspan="6" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
     tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
     return;
   }
   const idSet = new Set(visibleSchoolIds);
-  // Paged read (a plain select is silently capped at 1,000 rows).
+
+  // Entries already added for this date (paged: a plain select is silently capped at 1,000 rows).
   const { data, error } = await smpFetchAll(() => {
     let q = sb.from("consumption").select("id, school_id, product_id, quantity")
       .eq("consumption_date", selectedDate).eq("status", "active");
@@ -365,21 +379,71 @@ async function loadConsumptionList(visibleSchoolIds){
   });
   if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
   const entries = (data || []).filter(r => idSet.has(r.school_id));
+
+  // Opening / received / consumed / remaining for EVERY school in the filter on this date.
+  const grid = {};
+  for(let i = 0; i < visibleSchoolIds.length; i += 100){
+    const chunk = visibleSchoolIds.slice(i, i + 100);
+    const { data: g, error: gErr } = await smpFetchAll(() => sb.rpc("fn_consumption_grid", { p_school_ids: chunk, p_date: selectedDate }).order("school_id").order("product_id"));
+    if(gErr){
+      sBody.innerHTML = `<tr><td colspan="6" class="err">${esc(gErr.message)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(gErr.message)}</td></tr>`;
+      return;
+    }
+    (g || []).forEach(r => { grid[r.school_id + "|" + r.product_id] = r; });
+  }
+
+  renderSchoolsSummary(visibleSchoolIds, grid, await scheduledProductsFor(selectedDate));
+  renderConsumptionEntries(entries, grid);
+}
+
+// Read-only summary of every school in the filter, for the scheduled product(s) of the selected date (all products
+// on a day with nothing scheduled, so the balances can still be seen).
+function renderSchoolsSummary(visibleSchoolIds, grid, scheduled){
+  const head = document.querySelector("#summaryTable thead"), body = document.querySelector("#summaryTable tbody"), foot = document.querySelector("#summaryTable tfoot");
+  if(!head || !body || !foot) return;
+  const shown = scheduled.length ? scheduled : cache.products;
+  const visible = new Set(visibleSchoolIds);
+  const schools = cache.schools.filter(s => visible.has(s.id));
+  const grp = p => (p.product_name || "").toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
+  head.innerHTML = `<tr>
+      <th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
+      ${shown.map(p => `<th colspan="4" class="${grp(p)}">${esc(p.product_name)}</th>`).join("")}
+      <th rowspan="2">${scheduled.length ? "Status" : ""}</th>
+    </tr><tr>
+      ${shown.map(p => `<th class="${grp(p)}">Opening</th><th class="${grp(p)}">Received</th><th class="${grp(p)}">Consumption</th><th class="${grp(p)}">Remaining</th>`).join("")}
+    </tr>`;
+  const colspan = 5 + shown.length * 4;
+  if(!schools.length){ body.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`; foot.innerHTML = ""; return; }
+
+  const totals = shown.map(() => ({ opening: 0, received: 0, consumed: 0, remaining: 0 }));
+  let entered = 0;
+  body.innerHTML = schools.map((s, i) => {
+    const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
+    let didEnter = false;
+    const cells = shown.map((p, pi) => {
+      const g = grid[s.id + "|" + p.id] || { opening: 0, received: 0, consumed: 0, remaining: 0 };
+      totals[pi].opening += Number(g.opening); totals[pi].received += Number(g.received);
+      totals[pi].consumed += Number(g.consumed); totals[pi].remaining += Number(g.remaining);
+      if(scheduled.some(sp => sp.id === p.id) && Number(g.consumed) > 0) didEnter = true;
+      return `<td class="${grp(p)}">${fmt(g.opening)}</td><td class="${grp(p)}">${fmt(g.received)}</td><td class="${grp(p)}"><b>${fmt(g.consumed)}</b></td><td class="${grp(p)}">${fmt(g.remaining)}</td>`;
+    }).join("");
+    if(didEnter) entered++;
+    const status = scheduled.length ? (didEnter ? '<span class="pill pill-ok">✓ Entered</span>' : '<span class="pill pill-warn">Not entered</span>') : "";
+    return `<tr><td>${i + 1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}<td>${status}</td></tr>`;
+  }).join("");
+  foot.innerHTML = `<tr style="font-weight:700;"><td colspan="4">Total - ${schools.length} school${schools.length === 1 ? "" : "s"}</td>
+    ${totals.map(t => `<td>${fmt(t.opening)}</td><td>${fmt(t.received)}</td><td>${fmt(t.consumed)}</td><td>${fmt(t.remaining)}</td>`).join("")}
+    <td>${scheduled.length ? `${entered} of ${schools.length} entered` : ""}</td></tr>`;
+}
+
+function renderConsumptionEntries(entries, grid){
+  const tbody = document.querySelector("#consumptionTable tbody");
+  if(!tbody) return;
   if(!entries.length){
     tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No consumption has been added for ${esc(selectedDate)} yet. Click “+ Add consumption”.</td></tr>`;
     return;
   }
-
-  // Opening / received / remaining for just the schools that have entries.
-  const schoolIds = [...new Set(entries.map(r => r.school_id))];
-  const grid = {};
-  for(let i = 0; i < schoolIds.length; i += 100){
-    const chunk = schoolIds.slice(i, i + 100);
-    const { data: g, error: gErr } = await smpFetchAll(() => sb.rpc("fn_consumption_grid", { p_school_ids: chunk, p_date: selectedDate }).order("school_id").order("product_id"));
-    if(gErr){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(gErr.message)}</td></tr>`; return; }
-    (g || []).forEach(r => { grid[r.school_id + "|" + r.product_id] = r; });
-  }
-
   const schoolOrder = Object.fromEntries(cache.schools.map((s, i) => [s.id, i]));
   const productOrder = Object.fromEntries(cache.products.map((p, i) => [p.id, i]));
   entries.sort((a, b) => ((schoolOrder[a.school_id] ?? 1e9) - (schoolOrder[b.school_id] ?? 1e9)) || ((productOrder[a.product_id] ?? 0) - (productOrder[b.product_id] ?? 0)));

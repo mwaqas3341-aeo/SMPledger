@@ -143,16 +143,16 @@ function smpLiveSearch(input, scope, tableSelector, countEl){
     queued = false;
     const words = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let shown = 0, total = 0;
-    scope.querySelectorAll(tableSelector).forEach(table => {
+    scope.querySelectorAll(tableSelector).forEach((table, tIdx) => {
       table.querySelectorAll("tbody tr").forEach(tr => {
         // single-cell rows are messages ("Loading...", "No data") - never hide them
         if(tr.children.length === 1 && tr.firstElementChild.hasAttribute("colspan")){ tr.style.display = ""; return; }
-        total++;
         const text = tr.textContent.toLowerCase();
         const tn = norm(text);
         const ok = words.every(w => text.includes(w) || (norm(w).length >= 4 && tn.includes(norm(w))));
         tr.style.display = ok ? "" : "none";
-        if(ok) shown++;
+        // The "Showing X of Y" count refers to the first (main) table when a page has several.
+        if(tIdx === 0){ total++; if(ok) shown++; }
       });
     });
     if(countEl){
