@@ -1,6 +1,5 @@
 // Asks each signed-in user for the Gmail address that consumption-report emails will be sent to.
-// - On the first page after a login, anyone without a saved address is asked once (they may "Skip for now";
-//   they are asked again at the next login).
+// - Anyone without a saved address is asked on every page until they save one (no skip option).
 // - A small "Email" button next to Sync lets anyone view/correct their address at any time.
 // It only talks to two database functions (fn_my_notify_email / fn_set_my_notify_email), is self-contained
 // (own styles, no dependency on the page's CSS) and never throws into the page.
@@ -42,14 +41,14 @@
     o.innerHTML =
       '<div class="smp-em-box" role="dialog" aria-modal="true">' +
         '<h3>Your Gmail address</h3>' +
-        '<p>Consumption reports for your markaz will be emailed here. Enter the Gmail address you check regularly.</p>' +
+        '<p>Consumption reports for your markaz will be emailed here. Enter the Gmail address you check regularly.' + (required ? ' <b>This is required to continue.</b>' : '') + '</p>' +
         '<label for="smpEmA">Gmail address</label>' +
         '<input id="smpEmA" type="email" inputmode="email" autocomplete="email" placeholder="name@gmail.com" />' +
         '<label for="smpEmB">Confirm Gmail address</label>' +
         '<input id="smpEmB" type="email" inputmode="email" autocomplete="off" placeholder="name@gmail.com" />' +
         '<div class="smp-em-err" id="smpEmErr"></div>' +
         '<div class="smp-em-actions">' +
-          '<button type="button" id="smpEmSkip">' + (required ? "Skip for now" : "Cancel") + '</button>' +
+          (required ? '' : '<button type="button" id="smpEmSkip">Cancel</button>') +
           '<button type="button" id="smpEmSave" class="smp-em-primary">Save</button>' +
         '</div>' +
       '</div>';
@@ -60,13 +59,13 @@
     if(current) a.value = current;
     a.focus();
     function close(){ if(!busy) o.remove(); }
-    skip.addEventListener("click", close);
+    if(skip) skip.addEventListener("click", close);
     async function submit(){
       if(busy) return;
       var v = (a.value || "").trim().toLowerCase(), c = (b.value || "").trim().toLowerCase();
       if(!GMAIL_RE.test(v)){ err.textContent = "Please enter a valid Gmail address (name@gmail.com)."; return; }
       if(v !== c){ err.textContent = "The two addresses don't match - check for typos."; return; }
-      err.textContent = ""; busy = true; save.disabled = true; skip.disabled = true; save.textContent = "Saving…";
+      err.textContent = ""; busy = true; save.disabled = true; if(skip) skip.disabled = true; save.textContent = "Saving…";
       try{
         var res = await sb.rpc("fn_set_my_notify_email", { p_email: v });
         if(res.error) throw res.error;
@@ -74,7 +73,7 @@
         busy = false; o.remove();
         say("Gmail address saved: " + v);
       }catch(e2){
-        busy = false; save.disabled = false; skip.disabled = false; save.textContent = "Save";
+        busy = false; save.disabled = false; if(skip) skip.disabled = false; save.textContent = "Save";
         err.textContent = (e2 && e2.message) || "Could not save. Please try again.";
       }
     }
@@ -92,8 +91,8 @@
     try{
       if(sessionStorage.getItem(ASKED_KEY)) return;
       var cur = await currentEmail();
-      try{ sessionStorage.setItem(ASKED_KEY, "1"); }catch(e){}
-      if(!cur) openModal("", true);
+      if(cur){ try{ sessionStorage.setItem(ASKED_KEY, "1"); }catch(e){} return; }   // has one: stop checking this session
+      openModal("", true);                                                           // none yet: ask on every page until saved
     }catch(e){ /* never block the page over this */ }
   }
 
