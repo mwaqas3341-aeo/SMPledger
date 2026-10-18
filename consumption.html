@@ -587,6 +587,26 @@ function showAddConsumptionModal(){
     await refreshFigures();
   }
 
+  // One row: Opening | Received that day | Total | Remaining. Remaining follows the quantity typed below.
+  const figureCell = (label, id, value) => `<div class="stat" style="margin:0;"><div class="n" ${id ? `id="${id}"` : ""}>${value}</div><div class="l">${label}</div></div>`;
+  const figuresRowHtml = (f, product) => `
+    <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-top:4px;">
+      ${figureCell("Opening", "", fmt(f.opening))}
+      ${figureCell("Received on this date", "", fmt(f.received))}
+      ${figureCell("Total available", "", fmt(Number(f.opening) + Number(f.received)))}
+      ${figureCell("Remaining after consumption", "addConsRemaining", "—")}
+    </div>
+    <div class="sub" style="margin:4px 0 0;">${esc(product.product_name)} in ${esc(product.unit_name || "packs")}. Total = opening + received on this date.</div>`;
+  function updateRemaining(){
+    const el = document.getElementById("addConsRemaining");
+    if(!el) return;
+    const raw = form.elements.quantity.value;
+    if(!figures || raw === "" || isNaN(Number(raw))){ el.textContent = "—"; el.style.color = ""; return; }
+    const remaining = Number(figures.opening) + Number(figures.received) - Number(raw);
+    el.textContent = fmt(remaining);
+    el.style.color = remaining < 0 ? "var(--bad-fg)" : "";
+  }
+
   // Shows opening + received for the chosen school/product/date, and stops a second entry for the same day.
   async function refreshFigures(){
     const my = ++figToken;
@@ -603,7 +623,7 @@ function showAddConsumptionModal(){
       const available = Number(f.opening) + Number(f.received);
       if(Number(f.consumed) > 0){
         availBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);"><b>⚠ ${esc(product.product_name)} consumption is already recorded for this school on ${esc(date)}</b> (${fmt(f.consumed)}). It cannot be added again - edit the existing entry instead.
-          <button class="link-btn edit" id="addConsEditExisting" type="button">Edit the existing entry</button></div>`;
+          <button class="link-btn edit" id="addConsEditExisting" type="button">Edit the existing entry</button></div>${figuresRowHtml(f, product)}`;
         submitBtn.disabled = true;
         document.getElementById("addConsEditExisting").addEventListener("click", async () => {
           const { data: ex, error } = await sb.from("consumption").select("id, school_id, product_id, quantity, consumption_date")
@@ -614,8 +634,9 @@ function showAddConsumptionModal(){
           showEditConsumptionModal(ex);
         });
       } else {
-        availBox.innerHTML = `<div class="modal-note">Opening ${fmt(f.opening)} + received today ${fmt(f.received)} = <b>${fmt(available)} ${esc(product.unit_name || "packs")} available</b>.</div>`;
+        availBox.innerHTML = figuresRowHtml(f, product);
         submitBtn.disabled = false;
+        updateRemaining();
       }
     }catch(err){
       if(my === figToken) showErr(err.message || "Could not load the school's stock.");
@@ -638,6 +659,7 @@ function showAddConsumptionModal(){
     refreshType();
   });
   typeSel.addEventListener("change", refreshFigures);
+  form.elements.quantity.addEventListener("input", updateRemaining);
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
