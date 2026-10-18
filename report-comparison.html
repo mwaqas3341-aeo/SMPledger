@@ -213,17 +213,17 @@ async function renderPage(){
     try{
       const { data: preview, error: pErr } = await sb.rpc("fn_reconcile_company_invoices", { p_invoice_ids: null, p_dry_run: true });
       if(pErr) throw pErr;
-      const fixes = (preview || []).filter(r => r.action === "invoice_corrected" || r.action === "school_corrected");
+      const fixes = (preview || []).filter(r => r.action === "invoice_corrected");
       const c = reconSummary(preview);
       if(!fixes.length){
         toast(`Nothing to correct automatically.${c.skipped_ambiguous ? " " + c.skipped_ambiguous + " delivery(ies) have several possible AEO entries and need manual review." : ""}`);
         return;
       }
-      if(!confirm(`The company data identifies ${c.invoice_corrected} AEO entr${c.invoice_corrected === 1 ? "y" : "ies"} with a wrong invoice number and ${c.school_corrected} under the wrong school.\n\nCorrect them now? Each change is logged and can be undone. Only entries users already added are changed.`)) return;
+      if(!confirm(`The company data identifies ${c.invoice_corrected} AEO entr${c.invoice_corrected === 1 ? "y" : "ies"} with a wrong invoice number at the right school.\n\nCorrect the invoice number${c.invoice_corrected === 1 ? "" : "s"} now? Entries are never moved to another school. Each change is logged and can be undone.`)) return;
       const { data: done, error: aErr } = await sb.rpc("fn_reconcile_company_invoices", { p_invoice_ids: null, p_dry_run: false });
       if(aErr) throw aErr;
       const d = reconSummary(done);
-      toast(`Corrected ${d.invoice_corrected} invoice number(s) and moved ${d.school_corrected} entr${d.school_corrected === 1 ? "y" : "ies"}; matching entries certified automatically.`);
+      toast(`Corrected ${d.invoice_corrected} invoice number(s); matching entries certified automatically.`);
       await loadComparison(new FormData(document.getElementById("filterForm")));
     }catch(err){
       console.error("[SMP] reconcile failed:", err && err.message);
@@ -594,10 +594,10 @@ function reconSummary(rows){
 }
 function reconTableHtml(rows){
   const nameOf = id => { const sc = cache.schools.find(x => x.id === id); return sc ? `${esc(sc.emis_code)} - ${esc(sc.school_name)}` : "-"; };
-  const label = { invoice_corrected: "Invoice number corrected", school_corrected: "Moved to the school the company delivered to",
+  const label = { invoice_corrected: "Invoice number corrected",
     skipped_ambiguous: "Needs manual review - several possible entries", skipped_blocked: "Not changed - blocked" };
   return `<div class="table-wrap" style="max-height:220px;overflow:auto;"><table><thead><tr><th>School</th><th>AEO entered</th><th>Company invoice</th><th>What happened</th></tr></thead><tbody>
-    ${rows.map(r => `<tr><td>${nameOf(r.school_id)}${r.old_school_id ? `<br><span class="sub">was under ${nameOf(r.old_school_id)}</span>` : ""}</td>
+    ${rows.map(r => `<tr><td>${nameOf(r.school_id)}</td>
       <td>${esc(r.old_invoice_number || "-")}</td><td>${esc(r.company_invoice_number || "")}</td>
       <td>${esc(label[r.action] || r.action)}${r.action === "skipped_blocked" ? `<br><span class="sub">${esc(r.note || "")}</span>` : ""}</td></tr>`).join("")}
   </tbody></table></div>`;
@@ -623,7 +623,6 @@ async function runAutoCertification(groups, recon){
         const c = reconSummary(recon.rows);
         const lines = [];
         if(c.invoice_corrected) lines.push(`${c.invoice_corrected} AEO entr${c.invoice_corrected === 1 ? "y" : "ies"} had a wrong invoice number - corrected from company data`);
-        if(c.school_corrected) lines.push(`${c.school_corrected} entr${c.school_corrected === 1 ? "y was" : "ies were"} under the wrong school - moved to the school the company delivered to`);
         if(c.skipped_ambiguous) lines.push(`${c.skipped_ambiguous} company deliver${c.skipped_ambiguous === 1 ? "y has" : "ies have"} several possible AEO entries - left for manual review`);
         if(c.skipped_blocked) lines.push(`${c.skipped_blocked} correction(s) blocked by the duplicate-invoice rule - left flagged`);
         if(!lines.length) return `<p class="sub">Invoice numbers checked against EMIS codes: no AEO entry needed correcting.</p>`;
@@ -870,7 +869,7 @@ async function loadComparison(fd){
       <td>${diff > 0 ? "+" : ""}${fmt(diff)}</td>
       <td>${pillFor(r.status)}</td>
       <td>${certPillFor(r.aeo_verification_status)}</td>
-      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc(r.remarks) || "—"}</td>
+      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("wrong_invoice") ? "invoice belongs to another school" : r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc(r.remarks) || "—"}</td>
     </tr>`;
   }).join("");
 }
