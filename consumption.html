@@ -156,7 +156,7 @@ boot();
 function showApp(){
   document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
   renderSidebarNav();
-  renderGrid();
+  renderConsumption();
 }
 
 async function loadRefData(){
@@ -200,7 +200,7 @@ function renderJurisdictionFilter(container, onApply){
     const go = () => onApply(cache.schools.map(s => s.id));
     sOnly.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
     document.getElementById("jfApply").addEventListener("click", go);
-    smpLiveSearch(sOnly, document.getElementById("content"), "#gridTable", document.getElementById("jfSearchCount"));
+    smpLiveSearch(sOnly, document.getElementById("content"), "#consumptionTable", document.getElementById("jfSearchCount"));
     onApply(cache.schools.map(s => s.id));
     return;
   }
@@ -267,18 +267,39 @@ function renderJurisdictionFilter(container, onApply){
   wEl.addEventListener("change", () => { mEl.value = ""; refreshMarkaz(); });
   eEl.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); apply(); } });
   sEl.addEventListener("keydown", (e) => { if(e.key === "Enter") e.preventDefault(); });
-  smpLiveSearch(sEl, document.getElementById("content"), "#gridTable", document.getElementById("jfSearchCount"));
+  smpLiveSearch(sEl, document.getElementById("content"), "#consumptionTable", document.getElementById("jfSearchCount"));
   document.getElementById("jfApply").addEventListener("click", apply);
   apply();   // one initial load with the default scope
 }
 
 /* ===================== GRID ===================== */
-async function renderGrid(){
+/* ===================== CONSUMPTION: ADD FORM + ENTRIES LIST ===================== */
+// Consumption is entered through a form (one school and one product at a time), like inventory - there is no grid of
+// every school. The product is chosen automatically from the date: only products scheduled for that day can be entered
+// (schedule_dow, overridden by schedule_exceptions - the same rule the database enforces when it saves).
+let currentVisibleIds = [];
+
+async function scheduledProductsFor(dateStr){
+  const { data: exceptions } = await sb.from("schedule_exceptions")
+    .select("product_id, status").eq("exception_date", dateStr);
+  const exceptionByProduct = {};
+  (exceptions || []).forEach(e => { exceptionByProduct[e.product_id] = e.status; });
+  const dow = new Date(dateStr + "T00:00:00").getDay();
+  return cache.products.filter(p => {
+    const ex = exceptionByProduct[p.id];
+    if(ex === "blocked") return false;
+    if(ex === "allowed") return true;
+    return (p.schedule_dow || []).includes(dow);
+  });
+}
+const weekdayName = d => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" });
+
+async function renderConsumption(){
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="card">
       <h3>Date</h3>
-      <p class="sub">Defaults to today. Pick an earlier date, then click Apply filter to review or correct that day's entries.</p>
+      <p class="sub">Defaults to today. Pick a date and click Apply filter to see that day's entries.</p>
       <div class="form-row">
         <div><label>Consumption date</label><input type="date" id="dateInput" value="${selectedDate}" max="${todayStr()}" /></div>
         <div style="align-self:end;"><button class="btn-primary" id="applyDateBtn" type="button">Apply filter</button> <button class="btn-secondary" id="todayBtn" type="button">Jump to today</button></div>
@@ -286,17 +307,19 @@ async function renderGrid(){
     </div>
     <div id="filterMount"></div>
     <div class="card">
-      <h3>Schools — ${esc(selectedDate)}</h3>
-      <p class="sub">Enter figures for a school, then click Submit to save the whole row at once. A row with data already saved for this date is locked - click Edit to change it.</p>
-      <div class="table-wrap"><table id="gridTable"><thead></thead><tbody>
-        <tr><td colspan="20" style="color:var(--ink-soft)">Loading…</td></tr>
-      </tbody></table></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <h3 style="margin:0;">Consumption — ${esc(selectedDate)}</h3>
+          <p class="sub" id="consDaySub" style="margin:4px 0 0;">Checking which product is scheduled…</p>
+        </div>
+        <button class="btn-primary" id="addConsumptionBtn" type="button">+ Add consumption</button>
+      </div>
+      <div class="table-wrap" style="margin-top:12px;"><table id="consumptionTable"><thead><tr>
+        <th>Sr#</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Opening</th><th>Received</th><th>Consumed</th><th>Remaining</th><th></th>
+      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
-  // Selecting a date loads that date's entries right away - no separate
-  // "Load" click needed.
-  // The date only takes effect when "Apply filter" is clicked.
   document.getElementById("dateInput").addEventListener("change", (e) => {
     if(e.target.value && e.target.value > todayStr()){
       toast("Consumption can't be dated in the future - check the day and month.", "bad");
@@ -305,257 +328,340 @@ async function renderGrid(){
   });
   document.getElementById("applyDateBtn").addEventListener("click", () => {
     selectedDate = document.getElementById("dateInput").value || todayStr();
-    renderGrid();
+    renderConsumption();
   });
   document.getElementById("todayBtn").addEventListener("click", () => {
     selectedDate = todayStr();
-    renderGrid();
+    renderConsumption();
+  });
+  document.getElementById("addConsumptionBtn").addEventListener("click", () => showAddConsumptionModal());
+
+  scheduledProductsFor(selectedDate).then(list => {
+    const el = document.getElementById("consDaySub");
+    if(!el) return;
+    el.textContent = list.length
+      ? `${weekdayName(selectedDate)}: ${list.map(p => p.product_name).join(" and ")} ${list.length === 1 ? "day - only " + list[0].product_name + " can be added" : "can be added"}. Every entry is listed below, where you can edit or delete it.`
+      : `${weekdayName(selectedDate)}: no product is scheduled for consumption on this date, so nothing can be added.`;
   });
 
-  renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => loadGridData(schoolIds));
+  renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => loadConsumptionList(schoolIds));
 }
 
-async function loadGridData(visibleSchoolIds){
-  const schoolIds = visibleSchoolIds;
-  const visibleSchools = cache.schools.filter(s => schoolIds.includes(s.id));
-  const thead = document.querySelector("#gridTable thead");
-  const tbody = document.querySelector("#gridTable tbody");
-
-  if(!schoolIds.length){
-    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
+async function loadConsumptionList(visibleSchoolIds){
+  currentVisibleIds = visibleSchoolIds;
+  const tbody = document.querySelector("#consumptionTable tbody");
+  if(!tbody) return;
+  if(!visibleSchoolIds.length){
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
     return;
   }
-
-  const { data, error } = await smpFetchAll(() => sb.rpc("fn_consumption_grid", { p_school_ids: schoolIds, p_date: selectedDate }).order("school_id").order("product_id"));
-  if(error){
-    tbody.innerHTML = `<tr><td colspan="3" class="err">${esc(error.message)}</td></tr>`;
-    return;
-  }
-
-  // Only show a product's columns at all if it's actually scheduled for
-  // this date (schedule_dow, overridden by schedule_exceptions - same
-  // logic Missing Consumption and Report Generation already use). If
-  // Biscuits isn't due on a Monday, there's nothing to enter for it, so
-  // the columns don't appear rather than sitting there disabled/confusing.
-  const { data: exceptions } = await sb.from("schedule_exceptions")
-    .select("product_id, status").eq("exception_date", selectedDate);
-  const exceptionByProduct = {};
-  (exceptions || []).forEach(e => { exceptionByProduct[e.product_id] = e.status; });
-  const dow = new Date(selectedDate + "T00:00:00").getDay();
-  const scheduledProducts = cache.products.filter(p => {
-    const ex = exceptionByProduct[p.id];
-    if(ex === "blocked") return false;
-    if(ex === "allowed") return true;
-    return (p.schedule_dow || []).includes(dow);
+  const idSet = new Set(visibleSchoolIds);
+  // Paged read (a plain select is silently capped at 1,000 rows).
+  const { data, error } = await smpFetchAll(() => {
+    let q = sb.from("consumption").select("id, school_id, product_id, quantity")
+      .eq("consumption_date", selectedDate).eq("status", "active");
+    if(visibleSchoolIds.length <= 150) q = q.in("school_id", visibleSchoolIds);
+    return q.order("id");
   });
-
-  if(!scheduledProducts.length){
-    thead.innerHTML = "";
-    tbody.innerHTML = `<tr><td style="color:var(--ink-soft)">No products are scheduled for consumption on ${esc(selectedDate)}.</td></tr>`;
+  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
+  const entries = (data || []).filter(r => idSet.has(r.school_id));
+  if(!entries.length){
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No consumption has been added for ${esc(selectedDate)} yet. Click “+ Add consumption”.</td></tr>`;
     return;
   }
 
-  // Pivot the long RPC result (one row per school+product) into a wide row per school.
-  const bySchool = {};
-  (data || []).forEach(r => {
-    bySchool[r.school_id] = bySchool[r.school_id] || {};
-    bySchool[r.school_id][r.product_id] = r;
-  });
+  // Opening / received / remaining for just the schools that have entries.
+  const schoolIds = [...new Set(entries.map(r => r.school_id))];
+  const grid = {};
+  for(let i = 0; i < schoolIds.length; i += 100){
+    const chunk = schoolIds.slice(i, i + 100);
+    const { data: g, error: gErr } = await smpFetchAll(() => sb.rpc("fn_consumption_grid", { p_school_ids: chunk, p_date: selectedDate }).order("school_id").order("product_id"));
+    if(gErr){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(gErr.message)}</td></tr>`; return; }
+    (g || []).forEach(r => { grid[r.school_id + "|" + r.product_id] = r; });
+  }
 
-  // Header: Sr#, Markaz, EMIS, School, then Opening/Received/Consumed/Remaining
-  // per scheduled product. Markaz is shown so an AEO holding additional charge
-  // can always tell which markaz a row belongs to before entering against it.
-  thead.innerHTML = `<tr>
-    <th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
-    ${scheduledProducts.map(p => `<th colspan="4" class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">${esc(p.product_name)}</th>`).join("")}
-    <th rowspan="2">Action</th>
-  </tr><tr>
-    ${scheduledProducts.map(p => `
-      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Opening</th>
-      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Received</th>
-      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Consumed</th>
-      <th class="${p.product_name.toLowerCase().includes('milk') ? 'col-group-milk' : 'col-group-biscuit'}">Remaining</th>
-    `).join("")}
-  </tr>`;
+  const schoolOrder = Object.fromEntries(cache.schools.map((s, i) => [s.id, i]));
+  const productOrder = Object.fromEntries(cache.products.map((p, i) => [p.id, i]));
+  entries.sort((a, b) => ((schoolOrder[a.school_id] ?? 1e9) - (schoolOrder[b.school_id] ?? 1e9)) || ((productOrder[a.product_id] ?? 0) - (productOrder[b.product_id] ?? 0)));
 
-  tbody.innerHTML = visibleSchools.map((s, i) => {
-    // A row with any recorded consumption for this date is treated as
-    // "already submitted" - locked (read-only) until Edit is clicked, so a
-    // saved figure can't be nudged by an accidental keystroke. A row with
-    // nothing recorded yet (a fresh day) starts unlocked for entry.
-    let hasData = false;
-    const cells = scheduledProducts.map(p => {
-      const r = (bySchool[s.id] || {})[p.id] || { opening:0, received:0, consumed:0, remaining:0 };
-      if(Number(r.consumed) > 0) hasData = true;
-      const cls = p.product_name.toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
-      return `
-        <td class="${cls}">${fmt(r.opening)}</td>
-        <td class="${cls}">${fmt(r.received)}</td>
-        <td class="${cls}">
-          <input type="number" min="0" step="0.01" class="consumed-input" style="width:80px;padding:5px 6px;"
-                 data-school="${s.id}" data-product="${p.id}" data-opening="${r.opening}" data-received="${r.received}" value="${r.consumed}" />
-          <span class="save-indicator" id="ind-${s.id}-${p.id}"></span>
-          <button type="button" class="link-btn danger delete-consumed-btn" id="del-${s.id}-${p.id}"
-                  data-school="${s.id}" data-product="${p.id}" style="display:${Number(r.consumed) > 0 ? "inline" : "none"};">Delete</button>
-        </td>
-        <td class="${cls}" id="rem-${s.id}-${p.id}">${fmt(r.remaining)}</td>
-      `;
-    }).join("");
+  tbody.innerHTML = entries.map((r, i) => {
+    const s = cache.schools.find(x => x.id === r.school_id) || {};
+    const p = cache.products.find(x => x.id === r.product_id) || {};
+    const g = grid[r.school_id + "|" + r.product_id] || { opening: 0, received: 0, remaining: 0 };
+    const cls = (p.product_name || "").toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
     const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
-    const actionCell = `<td>
-      <button class="btn-secondary row-action-btn" type="button" data-school="${s.id}" data-mode="${hasData ? "edit" : "submit"}">
-        ${hasData ? "Edit" : "Submit"}
-      </button>
-    </td>`;
-    return `<tr data-row-school="${s.id}"><td>${i+1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}${actionCell}</tr>`;
+    return `<tr data-entry="${r.id}">
+      <td>${i + 1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>
+      <td class="${cls}">${esc(p.product_name)}</td><td>${fmt(g.opening)}</td><td>${fmt(g.received)}</td>
+      <td><b>${fmt(r.quantity)}</b></td><td>${fmt(g.remaining)}</td>
+      <td><button class="link-btn edit" type="button" data-act="edit" data-id="${r.id}">Edit</button>
+          <button class="link-btn danger" type="button" data-act="delete" data-id="${r.id}">Delete</button></td></tr>`;
   }).join("");
 
-  // Locked rows start with disabled inputs - only Edit re-enables them.
-  tbody.querySelectorAll("tr").forEach(tr => {
-    const btn = tr.querySelector(".row-action-btn");
-    if(btn?.dataset.mode === "edit"){
-      tr.querySelectorAll(".consumed-input").forEach(inp => inp.disabled = true);
-    }
-  });
-
-  tbody.querySelectorAll(".row-action-btn").forEach(btn => {
-    btn.addEventListener("click", () => handleRowAction(btn));
-  });
-  tbody.querySelectorAll(".delete-consumed-btn").forEach(btn => {
-    btn.addEventListener("click", () => handleDeleteConsumed(btn));
+  const byId = Object.fromEntries(entries.map(r => [r.id, r]));
+  tbody.querySelectorAll("button[data-act]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const r = byId[btn.dataset.id];
+      if(btn.dataset.act === "edit") showEditConsumptionModal(r);
+      else deleteConsumption(r, btn);
+    });
   });
 }
 
-async function handleDeleteConsumed(btn){
-  const schoolId = btn.dataset.school, productId = btn.dataset.product;
-  const school = cache.schools.find(s => s.id === schoolId);
-  const product = cache.products.find(p => p.id === productId);
-  const inp = document.querySelector(`.consumed-input[data-school="${schoolId}"][data-product="${productId}"]`);
-  const currentQty = inp.value;
-
-  if(!confirm(`Delete the ${product?.product_name} consumption entry (${fmt(currentQty)}) for ${school?.school_name} on ${selectedDate}? This cannot be undone from here.`)) return;
-
+async function deleteConsumption(r, btn){
+  const school = cache.schools.find(s => s.id === r.school_id);
+  const product = cache.products.find(p => p.id === r.product_id);
+  if(!confirm(`Delete the ${product?.product_name} consumption entry (${fmt(r.quantity)}) for ${school?.school_name} on ${selectedDate}? This cannot be undone from here.`)) return;
   btn.disabled = true;
   try{
-    const { error } = await sb.rpc("fn_delete_consumption", {
-      p_school_id: schoolId, p_product_id: productId, p_consumption_date: selectedDate,
-    });
+    const { error } = await sb.rpc("fn_delete_consumption", { p_school_id: r.school_id, p_product_id: r.product_id, p_consumption_date: selectedDate });
     if(error) throw error;
     toast("Entry deleted");
-    // Update just this cell and its row's Remaining locally - no full
-    // grid reload needed, since Opening/Received for this date don't change.
-    const opening = Number(inp.dataset.opening || 0);
-    const received = Number(inp.dataset.received || 0);
-    inp.value = "0";
-    inp.dataset.opening = opening;
-    inp.dataset.received = received;
-    const remCell = document.getElementById(`rem-${schoolId}-${productId}`);
-    if(remCell) remCell.textContent = fmt(opening + received);
-    const ind = document.getElementById(`ind-${schoolId}-${productId}`);
-    ind.className = ""; ind.textContent = "";
-    btn.style.display = "none";
-    // Row may now have no data left in either product - if so, unlock it
-    // for fresh entry instead of staying oddly locked over nothing.
-    const tr = document.querySelector(`tr[data-row-school="${schoolId}"]`);
-    const stillHasData = Array.from(tr.querySelectorAll(".consumed-input")).some(i => Number(i.value) > 0);
-    if(!stillHasData){
-      const rowBtn = tr.querySelector(".row-action-btn");
-      tr.querySelectorAll(".consumed-input").forEach(i => i.disabled = false);
-      rowBtn.dataset.mode = "submit";
-      rowBtn.textContent = "Submit";
-    }
+    await loadConsumptionList(currentVisibleIds);
   }catch(err){
     toast(err.message, "bad");
-  }finally{
     btn.disabled = false;
   }
 }
 
-async function handleRowAction(btn){
-  const schoolId = btn.dataset.school;
-  const tr = document.querySelector(`tr[data-row-school="${schoolId}"]`);
-  const inputs = tr.querySelectorAll(".consumed-input");
-
-  if(btn.dataset.mode === "edit"){
-    // Unlock for editing - no save yet, just makes the cells writable again.
-    inputs.forEach(inp => inp.disabled = false);
-    btn.dataset.mode = "submit";
-    btn.textContent = "Submit";
-    inputs[0]?.focus();
-    return;
-  }
-
-  // Submit mode: save every product cell in this row for the selected date,
-  // in one deliberate action rather than saving on every keystroke/blur.
-  btn.disabled = true;
-  btn.textContent = "Submitting…";
-  let allOk = true;
-  for(const inp of inputs){
-    const ok = await saveConsumedCell(inp);
-    if(!ok) allOk = false;
-  }
-  btn.disabled = false;
-  if(allOk){
-    inputs.forEach(inp => inp.disabled = true);
-    btn.dataset.mode = "edit";
-    btn.textContent = "Edit";
-  } else {
-    btn.textContent = "Submit";
-  }
+// Opening + received for a school/product/date, from the same function the old grid used.
+async function consumptionFigures(schoolId, productId, dateStr){
+  const { data, error } = await sb.rpc("fn_consumption_grid", { p_school_ids: [schoolId], p_date: dateStr });
+  if(error) throw error;
+  return (data || []).find(r => r.product_id === productId) || { opening: 0, received: 0, consumed: 0, remaining: 0 };
 }
 
-// Returns true on success, false on failure - lets the row-level Submit
-// button know whether it's safe to lock the row afterward.
-async function saveConsumedCell(inp){
-  const schoolId = inp.dataset.school;
-  const productId = inp.dataset.product;
-  const qty = Number(inp.value || 0);
-  const ind = document.getElementById(`ind-${schoolId}-${productId}`);
-  if(selectedDate > todayStr()){
-    toast("Consumption can't be dated in the future - check the day and month.", "bad");
-    return false;
+// Save through the existing database function (it re-checks the schedule, the date and the available stock).
+async function saveConsumption(school, product, dateStr, qty){
+  const { error } = await sb.rpc("fn_upsert_consumption", {
+    p_school_id: school.id, p_product_id: product.id, p_consumption_date: dateStr, p_quantity: qty,
+  });
+  if(!error) return { ok: true };
+  const m = /Insufficient inventory\. Available quantity: ([\d.]+)/.exec(error.message || "");
+  if(m){
+    showInsufficientStockModal({ productName: product.product_name, unitName: product.unit_name, available: Number(m[1]),
+                                 emisCode: school.emis_code, schoolName: school.school_name });
+    return { ok: false, handled: true };
   }
-  ind.className = "save-indicator saving";
-  ind.textContent = "Saving…";
-  try{
-    const { error } = await sb.rpc("fn_upsert_consumption", {
-      p_school_id: schoolId,
-      p_product_id: productId,
-      p_consumption_date: selectedDate,
-      p_quantity: qty,
-    });
-    if(error) throw error;
-    ind.className = "save-indicator ok";
-    ind.textContent = "✓ Saved";
-    // Update this cell's Remaining and Delete button locally instead of
-    // reloading the whole grid - Opening/Received for this date don't
-    // change from a Consumed edit, so this is exact, not an approximation.
-    const opening = Number(inp.dataset.opening || 0);
-    const received = Number(inp.dataset.received || 0);
-    const remCell = document.getElementById(`rem-${schoolId}-${productId}`);
-    if(remCell) remCell.textContent = fmt(opening + received - qty);
-    const delBtn = document.getElementById(`del-${schoolId}-${productId}`);
-    if(delBtn) delBtn.style.display = qty > 0 ? "inline" : "none";
-    return true;
-  }catch(err){
-    const m = /Insufficient inventory\. Available quantity: ([\d.]+)/.exec(err.message || "");
-    if(m){
-      const product = cache.products.find(p => p.id === productId);
-      const school = cache.schools.find(s => s.id === schoolId);
-      showInsufficientStockModal({
-        productName: product?.product_name || "product",
-        unitName: product?.unit_name,
-        available: Number(m[1]),
-        emisCode: school?.emis_code,
-        schoolName: school?.school_name,
-      });
-    } else {
-      toast(err.message, "bad");
+  return { ok: false, message: error.message };
+}
+
+function showAddConsumptionModal(){
+  const old = document.getElementById("addConsumptionModal");
+  if(old) old.remove();
+  // EMIS is looked up against every school this person is allowed to work with (not just the filtered list).
+  const mySchools = cache.schools;
+  if(!mySchools.length){ toast("No schools are available for your account.", "bad"); return; }
+  const findSchool = (emis) => mySchools.find(s => String(s.emis_code).trim() === String(emis || "").trim());
+
+  const overlay = document.createElement("div");
+  overlay.id = "addConsumptionModal";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>Add consumption</h3>
+      <form id="addConsForm" class="form-row" style="grid-template-columns:1fr;">
+        <div><label>EMIS code *</label><input type="text" name="emis_code" required autocomplete="off" inputmode="numeric" placeholder="Enter the school's EMIS code"/>
+          <div id="addConsSchoolName" class="sub" style="margin:4px 0 0;"></div></div>
+        <div><label>Consumption date *</label><input type="date" name="consumption_date" value="${selectedDate}" max="${todayStr()}" required/></div>
+        <div><label>Consumption type (selected automatically for the date)</label>
+          <select name="product_id" id="addConsProduct"></select>
+          <div id="addConsTypeNote" class="sub" style="margin:4px 0 0;"></div></div>
+        <div id="addConsAvail"></div>
+        <div><label>Quantity consumed (packs) *</label><input type="number" name="quantity" min="0" step="0.01" required/></div>
+        <div id="addConsError"></div>
+        <div class="actions-row">
+          <button class="btn-secondary" id="addConsCancel" type="button">Cancel</button>
+          <button class="btn-primary" id="addConsSubmit" type="submit">Submit</button>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const form = document.getElementById("addConsForm");
+  const errBox = document.getElementById("addConsError");
+  const submitBtn = document.getElementById("addConsSubmit");
+  const nameBox = document.getElementById("addConsSchoolName");
+  const typeSel = document.getElementById("addConsProduct");
+  const typeNote = document.getElementById("addConsTypeNote");
+  const availBox = document.getElementById("addConsAvail");
+  let busy = false, typeToken = 0, figToken = 0, figures = null, scheduled = [];
+  const close = () => { if(!busy) overlay.remove(); };
+  document.getElementById("addConsCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+  const showErr = (msg) => { errBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);">${esc(msg)}</div>`; };
+
+  // Product follows the date: only what is scheduled that day, selected for the user.
+  async function refreshType(){
+    const my = ++typeToken;
+    const date = form.elements.consumption_date.value;
+    if(!date){ typeSel.innerHTML = ""; typeNote.textContent = "Choose the date first."; scheduled = []; return refreshFigures(); }
+    scheduled = await scheduledProductsFor(date);
+    if(my !== typeToken) return;
+    typeSel.innerHTML = scheduled.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
+    typeNote.innerHTML = scheduled.length
+      ? (scheduled.length === 1 ? `${esc(weekdayName(date))} is a <b>${esc(scheduled[0].product_name)}</b> day - only ${esc(scheduled[0].product_name)} can be entered.`
+                                : `${esc(weekdayName(date))}: choose from the products scheduled for this day.`)
+      : `<span style="color:var(--bad-fg);">No product is scheduled for consumption on ${esc(date)} (${esc(weekdayName(date))}). Pick another date.</span>`;
+    await refreshFigures();
+  }
+
+  // Shows opening + received for the chosen school/product/date, and stops a second entry for the same day.
+  async function refreshFigures(){
+    const my = ++figToken;
+    figures = null; availBox.innerHTML = ""; errBox.innerHTML = "";
+    const school = findSchool(form.elements.emis_code.value);
+    const date = form.elements.consumption_date.value, productId = typeSel.value;
+    const product = cache.products.find(p => p.id === productId);
+    submitBtn.disabled = !scheduled.length;
+    if(!school || !product || !date) return;
+    try{
+      const f = await consumptionFigures(school.id, product.id, date);
+      if(my !== figToken) return;
+      figures = f;
+      const available = Number(f.opening) + Number(f.received);
+      if(Number(f.consumed) > 0){
+        availBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);"><b>⚠ ${esc(product.product_name)} consumption is already recorded for this school on ${esc(date)}</b> (${fmt(f.consumed)}). It cannot be added again - edit the existing entry instead.
+          <button class="link-btn edit" id="addConsEditExisting" type="button">Edit the existing entry</button></div>`;
+        submitBtn.disabled = true;
+        document.getElementById("addConsEditExisting").addEventListener("click", async () => {
+          const { data: ex, error } = await sb.from("consumption").select("id, school_id, product_id, quantity")
+            .eq("school_id", school.id).eq("product_id", product.id).eq("consumption_date", date).eq("status", "active").maybeSingle();
+          if(error || !ex){ toast(error ? error.message : "Entry not found.", "bad"); return; }
+          overlay.remove();
+          if(date !== selectedDate){ selectedDate = date; await renderConsumption(); }
+          showEditConsumptionModal(ex);
+        });
+      } else {
+        availBox.innerHTML = `<div class="modal-note">Opening ${fmt(f.opening)} + received today ${fmt(f.received)} = <b>${fmt(available)} ${esc(product.unit_name || "packs")} available</b>.</div>`;
+        submitBtn.disabled = false;
+      }
+    }catch(err){
+      if(my === figToken) showErr(err.message || "Could not load the school's stock.");
     }
-    ind.className = "save-indicator bad";
-    ind.textContent = "✗ Not saved - retry";
-    return false;
   }
+
+  form.elements.emis_code.addEventListener("input", (e) => {
+    const v = e.target.value.trim();
+    const s = v ? findSchool(v) : null;
+    const mk = s ? cache.markaz.find(m => m.id === s.markaz_id)?.name : "";
+    nameBox.innerHTML = !v ? "" : s ? `<span style="color:var(--ok-fg);">✓ ${esc(s.school_name)}${mk ? ` (${esc(mk)})` : ""}</span>`
+                                    : `<span style="color:var(--bad-fg);">No school with this EMIS code in your list</span>`;
+    refreshFigures();
+  });
+  form.elements.consumption_date.addEventListener("change", (e) => {
+    if(e.target.value && e.target.value > todayStr()){
+      toast("Consumption can't be dated in the future - check the day and month.", "bad");
+      e.target.value = todayStr();
+    }
+    refreshType();
+  });
+  typeSel.addEventListener("change", refreshFigures);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if(busy) return;                                    // no double submission
+    errBox.innerHTML = "";
+    const fd = new FormData(form);
+    const school = findSchool(fd.get("emis_code"));
+    const product = cache.products.find(p => p.id === fd.get("product_id"));
+    const date = fd.get("consumption_date"), qtyRaw = fd.get("quantity");
+    if(!String(fd.get("emis_code") || "").trim()){ showErr("EMIS code is required."); return; }
+    if(!school){ showErr("This EMIS code was not found among your schools. Check the code and try again."); return; }
+    if(!date){ showErr("Enter the consumption date."); return; }
+    if(date > todayStr()){ showErr("Consumption can't be dated in the future - check the day and month."); return; }
+    if(!product || !scheduled.some(p => p.id === product.id)){ showErr(`No product is scheduled for consumption on ${date}. Pick another date.`); return; }
+    if(qtyRaw === "" || isNaN(Number(qtyRaw)) || Number(qtyRaw) < 0){ showErr("Enter the quantity consumed."); return; }
+    const qty = Number(qtyRaw);
+    if(qty === 0 && !confirm(`Save a consumption of 0 for ${product.product_name} at ${school.school_name} (${date})? Confirm only if nothing was consumed.`)) return;
+    if(figures && qty > Number(figures.opening) + Number(figures.received)){
+      showInsufficientStockModal({ productName: product.product_name, unitName: product.unit_name, available: Number(figures.opening) + Number(figures.received),
+                                   emisCode: school.emis_code, schoolName: school.school_name });
+      return;
+    }
+    busy = true; submitBtn.disabled = true; submitBtn.textContent = "Saving…";
+    try{
+      const res = await saveConsumption(school, product, date, qty);
+      if(res.ok){
+        busy = false; overlay.remove();
+        toast(`${product.product_name} consumption added for ${school.school_name}`);
+        if(date !== selectedDate){ selectedDate = date; await renderConsumption(); }
+        else await loadConsumptionList(currentVisibleIds);
+        return;
+      }
+      if(!res.handled) showErr(res.message || "Could not save.");
+    }catch(err){
+      showErr(err.message || "Could not save.");
+    }finally{
+      if(document.body.contains(overlay)){ busy = false; submitBtn.disabled = false; submitBtn.textContent = "Submit"; }
+    }
+  });
+
+  form.elements.emis_code.focus();
+  refreshType();
+}
+
+function showEditConsumptionModal(entry){
+  const old = document.getElementById("editConsumptionModal");
+  if(old) old.remove();
+  const school = cache.schools.find(s => s.id === entry.school_id);
+  const product = cache.products.find(p => p.id === entry.product_id);
+  if(!school || !product){ toast("School or product not found.", "bad"); return; }
+  const overlay = document.createElement("div");
+  overlay.id = "editConsumptionModal";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>Edit consumption</h3>
+      <p><b>${esc(school.school_name)}</b> (EMIS ${esc(school.emis_code)}) - ${esc(product.product_name)} - ${esc(selectedDate)}</p>
+      <form id="editConsForm" class="form-row" style="grid-template-columns:1fr;">
+        <div id="editConsAvail"></div>
+        <div><label>Quantity consumed (packs) *</label><input type="number" name="quantity" min="0" step="0.01" value="${Number(entry.quantity)}" required/></div>
+        <div id="editConsError"></div>
+        <div class="actions-row">
+          <button class="btn-secondary" id="editConsCancel" type="button">Cancel</button>
+          <button class="btn-primary" id="editConsSubmit" type="submit">Save</button>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  const form = document.getElementById("editConsForm");
+  const errBox = document.getElementById("editConsError");
+  const submitBtn = document.getElementById("editConsSubmit");
+  let busy = false, available = null;
+  const close = () => { if(!busy) overlay.remove(); };
+  document.getElementById("editConsCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+  consumptionFigures(school.id, product.id, selectedDate).then(f => {
+    available = Number(f.opening) + Number(f.received);
+    document.getElementById("editConsAvail").innerHTML = `<div class="modal-note">Opening ${fmt(f.opening)} + received today ${fmt(f.received)} = <b>${fmt(available)} ${esc(product.unit_name || "packs")} available</b>.</div>`;
+  }).catch(() => {});
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if(busy) return;
+    errBox.innerHTML = "";
+    const qtyRaw = new FormData(form).get("quantity");
+    if(qtyRaw === "" || isNaN(Number(qtyRaw)) || Number(qtyRaw) < 0){ errBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);">Enter the quantity consumed.</div>`; return; }
+    const qty = Number(qtyRaw);
+    if(available !== null && qty > available){
+      showInsufficientStockModal({ productName: product.product_name, unitName: product.unit_name, available, emisCode: school.emis_code, schoolName: school.school_name });
+      return;
+    }
+    busy = true; submitBtn.disabled = true; submitBtn.textContent = "Saving…";
+    try{
+      const res = await saveConsumption(school, product, selectedDate, qty);
+      if(res.ok){
+        busy = false; overlay.remove();
+        toast("Consumption updated");
+        await loadConsumptionList(currentVisibleIds);
+        return;
+      }
+      if(!res.handled) errBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);">${esc(res.message || "Could not save.")}</div>`;
+    }finally{
+      if(document.body.contains(overlay)){ busy = false; submitBtn.disabled = false; submitBtn.textContent = "Save"; }
+    }
+  });
 }
 </script>
 </body>
