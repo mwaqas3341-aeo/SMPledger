@@ -107,7 +107,7 @@ async function loadRefData(){
 /* ===================== SECTION NAV ===================== */
 const SECTIONS = [
   { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
-  { id:"report", label:"Missing Consumption Report", desc:"Auto-email the remaining-schools list on a schedule" },
+  { id:"report", label:"Missing Consumption Report", desc:"Auto-email missing-consumption reports - to concerned persons and to each user" },
   { id:"health", label:"System Health", desc:"Database keep-alive status" },
 ];
 let currentSection = "schedule";
@@ -284,6 +284,114 @@ async function renderReportSection(){
       toast("Send failed - see details below", "bad");
     } finally {
       btn.disabled = false; btn.textContent = "Send Now";
+    }
+  });
+
+  // Per-user Gmail + send time sit under this same card.
+  await renderUserReportsCard();
+}
+
+/* ---- Per-user daily report settings (Gmail + send time for each user) - lives under the same Missing Consumption Report card ---- */
+async function renderUserReportsCard(){
+  const content = document.getElementById("adminSectionContent");
+  const old = document.getElementById("userReportsCard");
+  if(old) old.remove();
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "userReportsCard";
+  card.innerHTML = `<h3>Daily Report to Each User</h3><p style="color:var(--ink-soft)">Loading users…</p>`;
+  content.appendChild(card);
+
+  const [usersRes, markazRes] = await Promise.all([
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,notify_email,report_time,active").eq("active", true),
+    sb.from("markaz").select("id,name,tehsil"),
+  ]);
+  if(usersRes.error){ card.innerHTML = `<h3>Daily Report to Each User</h3><div class="err">${esc(usersRes.error.message)}</div>`; return; }
+  const markazById = Object.fromEntries((markazRes.data || []).map(m => [m.id, m]));
+  const roleOrder = { super_admin: 0, admin: 0, tr: 1, aeo: 2 };
+  const users = (usersRes.data || []).slice().sort((a, b) =>
+    (roleOrder[a.role] ?? 9) - (roleOrder[b.role] ?? 9)
+    || String(a.tehsil || markazById[a.markaz_id]?.tehsil || "").localeCompare(String(b.tehsil || markazById[b.markaz_id]?.tehsil || ""))
+    || String(markazById[a.markaz_id]?.name || "").localeCompare(String(markazById[b.markaz_id]?.name || ""))
+    || String(a.full_name || "").localeCompare(String(b.full_name || "")));
+  const hhmm = (t) => t ? String(t).slice(0, 5) : "";
+  const ready = users.filter(u => u.notify_email && u.report_time).length;
+  const GMAIL_RE = /^[a-z0-9._%+-]+@gmail\.com$/;
+
+  card.innerHTML = `
+    <h3>Daily Report to Each User</h3>
+    <p class="sub">Set the Gmail address and the daily send time (Pakistan time) for each user. A user with no Gmail or no time gets no email.
+      Users can also enter their own Gmail when they log in - whatever was saved last is used. These settings are stored now; the daily emails start once the sending service is connected.</p>
+    <div class="grid-4" style="margin-bottom:10px;">
+      <div class="stat"><div class="n">${users.length}</div><div class="l">Active users</div></div>
+      <div class="stat"><div class="n">${ready}</div><div class="l">Ready (Gmail + time set)</div></div>
+      <div class="stat"><div class="n">${users.filter(u => !u.notify_email).length}</div><div class="l">Still need a Gmail</div></div>
+    </div>
+    <div class="form-row" style="align-items:end;">
+      <div><label>Same time for everyone</label><input type="time" id="urBulkTime"/></div>
+      <div><button class="btn-secondary" type="button" id="urBulkApply">Fill this time for all users</button></div>
+    </div>
+    <div class="table-wrap" style="margin-top:12px;"><table id="urTable"><thead><tr>
+      <th>Name</th><th>Role</th><th>Markaz / Tehsil</th><th>Gmail</th><th>Send time (PKT)</th>
+    </tr></thead><tbody>
+      ${users.map(u => `<tr data-uid="${esc(u.id)}">
+        <td>${esc(u.full_name || "—")}</td>
+        <td>${esc(u.role)}</td>
+        <td>${esc(markazById[u.markaz_id]?.name || u.tehsil || "—")}</td>
+        <td><input type="email" class="urEmail" value="${esc(u.notify_email || "")}" data-orig="${esc(u.notify_email || "")}" placeholder="name@gmail.com" style="min-width:210px;"/></td>
+        <td><input type="time" class="urTime" value="${esc(hhmm(u.report_time))}" data-orig="${esc(hhmm(u.report_time))}"/></td>
+      </tr>`).join("")}
+    </tbody></table></div>
+    <div class="actions-row" style="margin-top:14px;">
+      <button class="btn-primary" type="button" id="urSaveBtn">Save changes</button>
+      <span id="urDirty" class="sub" style="align-self:center;"></span>
+    </div>
+    <div id="urStatus"></div>`;
+
+  const rows = () => [...card.querySelectorAll("#urTable tbody tr")];
+  const changedRows = () => rows().filter(tr => {
+    const e = tr.querySelector(".urEmail"), t = tr.querySelector(".urTime");
+    return e.value.trim().toLowerCase() !== e.dataset.orig || t.value !== t.dataset.orig;
+  });
+  const refreshDirty = () => {
+    const n = changedRows().length;
+    rows().forEach(tr => {
+      const e = tr.querySelector(".urEmail"), t = tr.querySelector(".urTime");
+      tr.style.background = (e.value.trim().toLowerCase() !== e.dataset.orig || t.value !== t.dataset.orig) ? "var(--edit-bg, #fff8e1)" : "";
+    });
+    document.getElementById("urDirty").textContent = n ? `${n} unsaved change${n === 1 ? "" : "s"}` : "";
+  };
+  card.addEventListener("input", refreshDirty);
+
+  document.getElementById("urBulkApply").addEventListener("click", () => {
+    const v = document.getElementById("urBulkTime").value;
+    if(!v){ toast("Pick a time first", "bad"); return; }
+    card.querySelectorAll(".urTime").forEach(i => { i.value = v; });
+    refreshDirty();
+  });
+
+  document.getElementById("urSaveBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("urSaveBtn");
+    if(btn.disabled) return;
+    const changed = changedRows();
+    if(!changed.length){ toast("No changes to save"); return; }
+    const payload = [];
+    for(const tr of changed){
+      const email = tr.querySelector(".urEmail").value.trim().toLowerCase();
+      const time = tr.querySelector(".urTime").value;
+      const name = tr.children[0].textContent;
+      if(email && !GMAIL_RE.test(email)){ toast(`${name}: enter a valid Gmail address (name@gmail.com)`, "bad"); return; }
+      payload.push({ id: tr.dataset.uid, email, time });
+    }
+    btn.disabled = true; btn.textContent = "Saving…";
+    try{
+      const { data, error } = await sb.rpc("fn_admin_set_user_reports", { p_rows: payload });
+      if(error) throw error;
+      toast(`Saved ${data} user${data === 1 ? "" : "s"}`);
+      await renderUserReportsCard();
+    }catch(err){
+      document.getElementById("urStatus").innerHTML = `<div class="err" style="margin-top:10px;">${esc(err.message)} - nothing was saved.</div>`;
+      btn.disabled = false; btn.textContent = "Save changes";
     }
   });
 }
