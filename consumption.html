@@ -294,8 +294,14 @@ async function scheduledProductsFor(dateStr){
 }
 const weekdayName = d => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" });
 
+// History shows every entry between these dates (defaults to the last 30 days, and always includes the selected date).
+let histFrom = "", histTo = "";
+const daysAgoStr = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+
 async function renderConsumption(){
   const content = document.getElementById("content");
+  histTo = todayStr();
+  histFrom = selectedDate < daysAgoStr(29) ? selectedDate : daysAgoStr(29);
   content.innerHTML = `
     <div class="card">
       <h3>Date</h3>
@@ -321,11 +327,16 @@ async function renderConsumption(){
       <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
     </div>
     <div class="card">
-      <h3>Entries added — ${esc(selectedDate)}</h3>
-      <p class="sub">Every consumption entry for this date. Edit or delete an entry here.</p>
+      <h3>Consumption history</h3>
+      <p class="sub">Every consumption entry for the schools in your filter, newest first. Edit or delete any entry.</p>
+      <div class="form-row">
+        <div><label>From</label><input type="date" id="histFrom" value="${histFrom}" max="${todayStr()}" /></div>
+        <div><label>To</label><input type="date" id="histTo" value="${histTo}" max="${todayStr()}" /></div>
+        <div style="align-self:end;"><button class="btn-secondary" id="histApply" type="button">Show history</button></div>
+      </div>
       <div class="table-wrap"><table id="consumptionTable"><thead><tr>
-        <th>Sr#</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Opening</th><th>Received</th><th>Consumed</th><th>Remaining</th><th></th>
-      </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Consumed</th><th></th>
+      </tr></thead><tbody><tr><td colspan="7" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
@@ -344,6 +355,13 @@ async function renderConsumption(){
     renderConsumption();
   });
   document.getElementById("addConsumptionBtn").addEventListener("click", () => showAddConsumptionModal());
+  document.getElementById("histApply").addEventListener("click", () => {
+    const f = document.getElementById("histFrom").value, t = document.getElementById("histTo").value;
+    if(!f || !t){ toast("Choose both dates for the history.", "bad"); return; }
+    if(f > t){ toast("The From date must not be after the To date.", "bad"); return; }
+    histFrom = f; histTo = t;
+    loadHistory(currentVisibleIds);
+  });
 
   scheduledProductsFor(selectedDate).then(list => {
     const el = document.getElementById("consDaySub");
@@ -358,43 +376,26 @@ async function renderConsumption(){
 
 async function loadConsumptionList(visibleSchoolIds){
   currentVisibleIds = visibleSchoolIds;
-  const tbody = document.querySelector("#consumptionTable tbody");
   const sBody = document.querySelector("#summaryTable tbody");
-  if(!tbody || !sBody) return;
+  if(!sBody) return;
   const sHead = document.querySelector("#summaryTable thead"), sFoot = document.querySelector("#summaryTable tfoot");
   if(!visibleSchoolIds.length){
     sHead.innerHTML = ""; sFoot.innerHTML = "";
     sBody.innerHTML = `<tr><td colspan="6" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
-    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`;
+    loadHistory(visibleSchoolIds);
     return;
   }
-  const idSet = new Set(visibleSchoolIds);
 
-  // Entries already added for this date (paged: a plain select is silently capped at 1,000 rows).
-  const { data, error } = await smpFetchAll(() => {
-    let q = sb.from("consumption").select("id, school_id, product_id, quantity")
-      .eq("consumption_date", selectedDate).eq("status", "active");
-    if(visibleSchoolIds.length <= 150) q = q.in("school_id", visibleSchoolIds);
-    return q.order("id");
-  });
-  if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
-  const entries = (data || []).filter(r => idSet.has(r.school_id));
-
-  // Opening / received / consumed / remaining for EVERY school in the filter on this date.
+  // Opening / received / consumed / remaining for EVERY school in the filter on the selected date.
   const grid = {};
   for(let i = 0; i < visibleSchoolIds.length; i += 100){
     const chunk = visibleSchoolIds.slice(i, i + 100);
     const { data: g, error: gErr } = await smpFetchAll(() => sb.rpc("fn_consumption_grid", { p_school_ids: chunk, p_date: selectedDate }).order("school_id").order("product_id"));
-    if(gErr){
-      sBody.innerHTML = `<tr><td colspan="6" class="err">${esc(gErr.message)}</td></tr>`;
-      tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(gErr.message)}</td></tr>`;
-      return;
-    }
+    if(gErr){ sBody.innerHTML = `<tr><td colspan="6" class="err">${esc(gErr.message)}</td></tr>`; break; }
     (g || []).forEach(r => { grid[r.school_id + "|" + r.product_id] = r; });
   }
-
   renderSchoolsSummary(visibleSchoolIds, grid, await scheduledProductsFor(selectedDate));
-  renderConsumptionEntries(entries, grid);
+  loadHistory(visibleSchoolIds);
 }
 
 // Read-only summary of every school in the filter, for the scheduled product(s) of the selected date (all products
@@ -437,32 +438,47 @@ function renderSchoolsSummary(visibleSchoolIds, grid, scheduled){
     <td>${scheduled.length ? `${entered} of ${schools.length} entered` : ""}</td></tr>`;
 }
 
-function renderConsumptionEntries(entries, grid){
+const HISTORY_ROW_LIMIT = 500;
+async function loadHistory(visibleSchoolIds){
   const tbody = document.querySelector("#consumptionTable tbody");
   if(!tbody) return;
+  if(!visibleSchoolIds.length){ tbody.innerHTML = `<tr><td colspan="7" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`; return; }
+  tbody.innerHTML = `<tr><td colspan="7" style="color:var(--ink-soft)">Loading…</td></tr>`;
+  const idSet = new Set(visibleSchoolIds);
+  // Paged read (a plain select is silently capped at 1,000 rows).
+  const { data, error } = await smpFetchAll(() => {
+    let q = sb.from("consumption").select("id, school_id, product_id, quantity, consumption_date")
+      .eq("status", "active").gte("consumption_date", histFrom).lte("consumption_date", histTo);
+    if(visibleSchoolIds.length <= 150) q = q.in("school_id", visibleSchoolIds);
+    return q.order("consumption_date", { ascending: false }).order("id");
+  });
+  if(error){ tbody.innerHTML = `<tr><td colspan="7" class="err">${esc(error.message)}</td></tr>`; return; }
+  const entries = (data || []).filter(r => idSet.has(r.school_id));
   if(!entries.length){
-    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">No consumption has been added for ${esc(selectedDate)} yet. Click “+ Add consumption”.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--ink-soft)">No consumption entries between ${esc(histFrom)} and ${esc(histTo)}. Click “+ Add consumption” to add one.</td></tr>`;
     return;
   }
   const schoolOrder = Object.fromEntries(cache.schools.map((s, i) => [s.id, i]));
   const productOrder = Object.fromEntries(cache.products.map((p, i) => [p.id, i]));
-  entries.sort((a, b) => ((schoolOrder[a.school_id] ?? 1e9) - (schoolOrder[b.school_id] ?? 1e9)) || ((productOrder[a.product_id] ?? 0) - (productOrder[b.product_id] ?? 0)));
+  entries.sort((a, b) => (a.consumption_date < b.consumption_date ? 1 : a.consumption_date > b.consumption_date ? -1 : 0)
+    || ((schoolOrder[a.school_id] ?? 1e9) - (schoolOrder[b.school_id] ?? 1e9)) || ((productOrder[a.product_id] ?? 0) - (productOrder[b.product_id] ?? 0)));
+  const shownEntries = entries.slice(0, HISTORY_ROW_LIMIT);
 
-  tbody.innerHTML = entries.map((r, i) => {
+  const fmtD = d => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  tbody.innerHTML = shownEntries.map(r => {
     const s = cache.schools.find(x => x.id === r.school_id) || {};
     const p = cache.products.find(x => x.id === r.product_id) || {};
-    const g = grid[r.school_id + "|" + r.product_id] || { opening: 0, received: 0, remaining: 0 };
     const cls = (p.product_name || "").toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
     const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
     return `<tr data-entry="${r.id}">
-      <td>${i + 1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>
-      <td class="${cls}">${esc(p.product_name)}</td><td>${fmt(g.opening)}</td><td>${fmt(g.received)}</td>
-      <td><b>${fmt(r.quantity)}</b></td><td>${fmt(g.remaining)}</td>
+      <td>${esc(fmtD(r.consumption_date))}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>
+      <td class="${cls}">${esc(p.product_name)}</td><td><b>${fmt(r.quantity)}</b></td>
       <td><button class="link-btn edit" type="button" data-act="edit" data-id="${r.id}">Edit</button>
           <button class="link-btn danger" type="button" data-act="delete" data-id="${r.id}">Delete</button></td></tr>`;
-  }).join("");
+  }).join("") + (entries.length > HISTORY_ROW_LIMIT
+    ? `<tr><td colspan="7" style="color:var(--ink-soft)">Showing the latest ${HISTORY_ROW_LIMIT} of ${entries.length} entries. Narrow the dates or the filter to see the rest.</td></tr>` : "");
 
-  const byId = Object.fromEntries(entries.map(r => [r.id, r]));
+  const byId = Object.fromEntries(shownEntries.map(r => [r.id, r]));
   tbody.querySelectorAll("button[data-act]").forEach(btn => {
     btn.addEventListener("click", () => {
       const r = byId[btn.dataset.id];
@@ -475,10 +491,11 @@ function renderConsumptionEntries(entries, grid){
 async function deleteConsumption(r, btn){
   const school = cache.schools.find(s => s.id === r.school_id);
   const product = cache.products.find(p => p.id === r.product_id);
-  if(!confirm(`Delete the ${product?.product_name} consumption entry (${fmt(r.quantity)}) for ${school?.school_name} on ${selectedDate}? This cannot be undone from here.`)) return;
+  const entryDate = r.consumption_date || selectedDate;
+  if(!confirm(`Delete the ${product?.product_name} consumption entry (${fmt(r.quantity)}) for ${school?.school_name} on ${entryDate}? This cannot be undone from here.`)) return;
   btn.disabled = true;
   try{
-    const { error } = await sb.rpc("fn_delete_consumption", { p_school_id: r.school_id, p_product_id: r.product_id, p_consumption_date: selectedDate });
+    const { error } = await sb.rpc("fn_delete_consumption", { p_school_id: r.school_id, p_product_id: r.product_id, p_consumption_date: entryDate });
     if(error) throw error;
     toast("Entry deleted");
     await loadConsumptionList(currentVisibleIds);
@@ -589,7 +606,7 @@ function showAddConsumptionModal(){
           <button class="link-btn edit" id="addConsEditExisting" type="button">Edit the existing entry</button></div>`;
         submitBtn.disabled = true;
         document.getElementById("addConsEditExisting").addEventListener("click", async () => {
-          const { data: ex, error } = await sb.from("consumption").select("id, school_id, product_id, quantity")
+          const { data: ex, error } = await sb.from("consumption").select("id, school_id, product_id, quantity, consumption_date")
             .eq("school_id", school.id).eq("product_id", product.id).eq("consumption_date", date).eq("status", "active").maybeSingle();
           if(error || !ex){ toast(error ? error.message : "Entry not found.", "bad"); return; }
           overlay.remove();
@@ -668,6 +685,7 @@ function showAddConsumptionModal(){
 function showEditConsumptionModal(entry){
   const old = document.getElementById("editConsumptionModal");
   if(old) old.remove();
+  const entryDate = entry.consumption_date || selectedDate;
   const school = cache.schools.find(s => s.id === entry.school_id);
   const product = cache.products.find(p => p.id === entry.product_id);
   if(!school || !product){ toast("School or product not found.", "bad"); return; }
@@ -677,7 +695,7 @@ function showEditConsumptionModal(entry){
   overlay.innerHTML = `
     <div class="modal-box">
       <h3>Edit consumption</h3>
-      <p><b>${esc(school.school_name)}</b> (EMIS ${esc(school.emis_code)}) - ${esc(product.product_name)} - ${esc(selectedDate)}</p>
+      <p><b>${esc(school.school_name)}</b> (EMIS ${esc(school.emis_code)}) - ${esc(product.product_name)} - ${esc(entryDate)}</p>
       <form id="editConsForm" class="form-row" style="grid-template-columns:1fr;">
         <div id="editConsAvail"></div>
         <div><label>Quantity consumed (packs) *</label><input type="number" name="quantity" min="0" step="0.01" value="${Number(entry.quantity)}" required/></div>
@@ -696,7 +714,7 @@ function showEditConsumptionModal(entry){
   const close = () => { if(!busy) overlay.remove(); };
   document.getElementById("editConsCancel").addEventListener("click", close);
   overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
-  consumptionFigures(school.id, product.id, selectedDate).then(f => {
+  consumptionFigures(school.id, product.id, entryDate).then(f => {
     available = Number(f.opening) + Number(f.received);
     document.getElementById("editConsAvail").innerHTML = `<div class="modal-note">Opening ${fmt(f.opening)} + received today ${fmt(f.received)} = <b>${fmt(available)} ${esc(product.unit_name || "packs")} available</b>.</div>`;
   }).catch(() => {});
@@ -714,7 +732,7 @@ function showEditConsumptionModal(entry){
     }
     busy = true; submitBtn.disabled = true; submitBtn.textContent = "Saving…";
     try{
-      const res = await saveConsumption(school, product, selectedDate, qty);
+      const res = await saveConsumption(school, product, entryDate, qty);
       if(res.ok){
         busy = false; overlay.remove();
         toast("Consumption updated");
