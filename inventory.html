@@ -299,6 +299,8 @@ async function renderMyReceipts(content){
 }
 
 let lastVisibleSchoolIds = [];
+let receiptFilter = { date: "", product: "" };   // applied History filter (changes only on "Apply filter")
+let receiptRowsCache = [];
 
 async function renderMyReceiptsBody(visibleSchoolIds){
   lastVisibleSchoolIds = visibleSchoolIds;
@@ -317,13 +319,24 @@ async function renderMyReceiptsBody(visibleSchoolIds){
 
     <div class="card">
       <h3>Receipts already entered</h3>
-      <p class="sub">Sorted by date (most recent first), then by EMIS code.</p>
+      <p class="sub">Sorted by date (most recent first), then by EMIS code. Pick a date and/or product and click Apply filter to see only those entries for checking or editing.</p>
+      <div class="form-row" style="align-items:end; margin:8px 0 12px;">
+        <div><label>Date</label><select id="rcDate"><option value="">All dates</option></select></div>
+        <div><label>Product</label><select id="rcProduct"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+        <div><button class="btn-primary" id="rcApply" type="button">Apply filter</button></div>
+      </div>
       <div class="table-wrap"><table id="receiptsTable"><thead><tr>
         <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Collected by</th><th>Remarks</th><th></th>
       </tr></thead><tbody><tr><td colspan="10" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
   document.getElementById("addInventoryBtn").addEventListener("click", () => showAddInventoryModal(visibleSchoolIds));
+  receiptFilter = { date: "", product: "" };           // a fresh section shows everything
+  document.getElementById("rcApply").addEventListener("click", () => {
+    receiptFilter.date = document.getElementById("rcDate").value;
+    receiptFilter.product = document.getElementById("rcProduct").value;
+    renderReceiptRows(visibleSchoolIds);               // uses the entries already loaded - no reload
+  });
   await loadReceiptsTable(visibleSchoolIds);
 }
 
@@ -683,19 +696,33 @@ async function loadReceiptsTable(schoolIds){
 
   const tbody = document.querySelector("#receiptsTable tbody");
   if(error){ tbody.innerHTML = `<tr><td colspan="10" class="err">${esc(error.message)}</td></tr>`; return; }
+  receiptRowsCache = data || [];
+  renderReceiptRows(schoolIds);
+}
 
+// Draws the history table from the loaded entries, applying the Date / Product filter chosen with "Apply filter".
+function renderReceiptRows(schoolIds){
+  const tbody = document.querySelector("#receiptsTable tbody");
+  if(!tbody) return;
   // Requested sort: date descending, then EMIS code ascending within each date.
-  const sortedRows = (data || []).sort((a, b) => {
+  const sortedRows = receiptRowsCache.slice().sort((a, b) => {
     if(a.receipt_date !== b.receipt_date) return a.receipt_date < b.receipt_date ? 1 : -1;
     return (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || "");
   });
-  const rows = sortedRows.filter(r => {
+  // Date dropdown lists only dates that have entries; if the applied date no longer has any, go back to "all".
+  const dates = [...new Set(sortedRows.map(r => r.receipt_date))];
+  if(receiptFilter.date && !dates.includes(receiptFilter.date)) receiptFilter.date = "";
+  const dEl = document.getElementById("rcDate"), pEl = document.getElementById("rcProduct");
+  if(dEl){ dEl.innerHTML = `<option value="">All dates</option>` + dates.map(d => `<option value="${esc(d)}">${esc(fmtDate(d))}</option>`).join(""); dEl.value = receiptFilter.date; }
+  if(pEl) pEl.value = receiptFilter.product;
+  const rows = sortedRows.filter(r => (!receiptFilter.date || r.receipt_date === receiptFilter.date)
+      && (!receiptFilter.product || r.product_id === receiptFilter.product)).filter(r => {
     const mz = cache.markaz.find(m => m.id === r.schools?.markaz_id);
     return searchMatches([fmtDate(r.receipt_date), r.receipt_date, mz?.name, mz?.tehsil, mz?.district, r.schools?.emis_code,
       r.schools?.school_name, r.products?.product_name, r.quantity_received, r.invoice_number, r.collected_by, r.remarks]);
   });
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">${sortedRows.length ? "No receipts match your search." : "No receipts entered yet."}</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="10" style="color:var(--ink-soft)">${sortedRows.length ? "No receipts match your search or filter." : "No receipts entered yet."}</td></tr>`; return; }
 
   tbody.innerHTML = rows.map(r => `
     <tr>
