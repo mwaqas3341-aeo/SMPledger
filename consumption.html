@@ -274,9 +274,8 @@ function renderJurisdictionFilter(container, onApply){
 }
 
 /* ===================== GRID ===================== */
-/* ===================== CONSUMPTION: ADD FORM + ENTRIES LIST ===================== */
-// Consumption is entered through a form (one school and one product at a time), like inventory - there is no grid of
-// every school. The product is chosen automatically from the date: only products scheduled for that day can be entered
+/* ===================== CONSUMPTION: ENTRY GRID + HISTORY ===================== */
+// Consumption is entered in a GRID (one row per school). Only products scheduled for the selected date appear
 // (schedule_dow, overridden by schedule_exceptions - the same rule the database enforces when it saves).
 let currentVisibleIds = [];
 
@@ -313,18 +312,10 @@ async function renderConsumption(){
       </div>
     </div>
     <div id="filterMount"></div>
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div>
-          <h3 style="margin:0;">Consumption</h3>
-          <p class="sub" id="consDaySub" style="margin:4px 0 0;">Checking which product is scheduled…</p>
-        </div>
-        <button class="btn-primary" id="addConsumptionBtn" type="button">+ Add consumption</button>
-      </div>
-    </div>
     <div class="card" id="summaryCard">
-      <h3>All schools summary — ${esc(selectedDate)}</h3>
-      <p class="sub">Every school in your filter: opening balance, received on this date, consumption and remaining. Use the filter above to look at one markaz.</p>
+      <h3>Schools — ${esc(selectedDate)}</h3>
+      <p class="sub" id="consDaySub">Checking which product is scheduled…</p>
+      <p class="sub">Enter the figure for a school, then click Submit to save the row. A row with data already saved for this date is locked - click Edit to change it. Use the filter above to look at one markaz.</p>
       <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
     </div>
     <div class="card">
@@ -355,7 +346,6 @@ async function renderConsumption(){
     selectedDate = todayStr();
     renderConsumption();
   });
-  document.getElementById("addConsumptionBtn").addEventListener("click", () => showAddConsumptionModal());
   document.getElementById("histApply").addEventListener("click", () => {
     const f = document.getElementById("histFrom").value, t = document.getElementById("histTo").value;
     if(!f || !t){ toast("Choose both dates for the history.", "bad"); return; }
@@ -368,8 +358,8 @@ async function renderConsumption(){
     const el = document.getElementById("consDaySub");
     if(!el) return;
     el.textContent = list.length
-      ? `${weekdayName(selectedDate)}: ${list.map(p => p.product_name).join(" and ")} ${list.length === 1 ? "day - only " + list[0].product_name + " can be added" : "can be added"}. Every entry is listed below, where you can edit or delete it.`
-      : `${weekdayName(selectedDate)}: no product is scheduled for consumption on this date, so nothing can be added.`;
+      ? `${weekdayName(selectedDate)}: ${list.map(p => p.product_name).join(" and ")} ${list.length === 1 ? "day - only " + list[0].product_name + " can be entered" : "can be entered"}.`
+      : `${weekdayName(selectedDate)}: no product is scheduled for consumption on this date, so nothing can be entered (balances are shown below).`;
   });
 
   renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => loadConsumptionList(schoolIds));
@@ -395,7 +385,9 @@ async function loadConsumptionList(visibleSchoolIds){
     if(gErr){ sBody.innerHTML = `<tr><td colspan="6" class="err">${esc(gErr.message)}</td></tr>`; break; }
     (g || []).forEach(r => { grid[r.school_id + "|" + r.product_id] = r; });
   }
-  renderSchoolsSummary(visibleSchoolIds, grid, await scheduledProductsFor(selectedDate));
+  const scheduled = await scheduledProductsFor(selectedDate);
+  if(scheduled.length) renderEntryGrid(visibleSchoolIds, grid, scheduled);          // editable grid
+  else renderSchoolsSummary(visibleSchoolIds, grid, scheduled);                      // nothing scheduled: balances only
   loadHistory(visibleSchoolIds);
 }
 
@@ -437,6 +429,159 @@ function renderSchoolsSummary(visibleSchoolIds, grid, scheduled){
   foot.innerHTML = `<tr style="font-weight:700;"><td colspan="4">Total - ${schools.length} school${schools.length === 1 ? "" : "s"}</td>
     ${totals.map(t => `<td>${fmt(t.opening)}</td><td>${fmt(t.received)}</td><td>${fmt(t.consumed)}</td><td>${fmt(t.remaining)}</td>`).join("")}
     <td>${scheduled.length ? `${entered} of ${schools.length} entered` : ""}</td></tr>`;
+}
+
+// ---- Consumption entry GRID (one row per school; type the figure, then Submit the row). Replaces the Add form. ----
+let gridScheduled = [];
+
+function renderEntryGrid(visibleSchoolIds, grid, scheduled){
+  const head = document.querySelector("#summaryTable thead"), body = document.querySelector("#summaryTable tbody"), foot = document.querySelector("#summaryTable tfoot");
+  if(!head || !body || !foot) return;
+  gridScheduled = scheduled;
+  const visible = new Set(visibleSchoolIds);
+  const schools = cache.schools.filter(s => visible.has(s.id));
+  const grp = p => (p.product_name || "").toLowerCase().includes("milk") ? "col-group-milk" : "col-group-biscuit";
+  head.innerHTML = `<tr>
+      <th rowspan="2">Sr#</th><th rowspan="2">Markaz</th><th rowspan="2">EMIS</th><th rowspan="2">School</th>
+      ${scheduled.map(p => `<th colspan="4" class="${grp(p)}">${esc(p.product_name)}</th>`).join("")}
+      <th rowspan="2">Action</th>
+    </tr><tr>
+      ${scheduled.map(p => `<th class="${grp(p)}">Opening</th><th class="${grp(p)}">Received</th><th class="${grp(p)}">Consumed</th><th class="${grp(p)}">Remaining</th>`).join("")}
+    </tr>`;
+  const colspan = 5 + scheduled.length * 4;
+  if(!schools.length){ body.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`; foot.innerHTML = ""; return; }
+
+  body.innerHTML = schools.map((s, i) => {
+    const markazName = cache.markaz.find(m => m.id === s.markaz_id)?.name || "—";
+    // A row with consumption already saved for this date is locked until Edit is clicked, so a saved figure can't be
+    // changed by an accidental keystroke. A row with nothing saved yet starts open for entry.
+    let hasData = false;
+    const cells = scheduled.map(p => {
+      const g = grid[s.id + "|" + p.id] || { opening: 0, received: 0, consumed: 0, remaining: 0 };
+      const consumed = Number(g.consumed);
+      if(consumed > 0) hasData = true;
+      const cls = grp(p);
+      return `<td class="${cls}">${fmt(g.opening)}</td><td class="${cls}">${fmt(g.received)}</td>
+        <td class="${cls}">
+          <input type="number" min="0" step="0.01" class="consumed-input" style="width:80px;padding:5px 6px;"
+                 data-school="${s.id}" data-product="${p.id}" data-opening="${g.opening}" data-received="${g.received}" data-saved="${consumed > 0 ? consumed : 0}"
+                 value="${consumed > 0 ? consumed : ""}" />
+          <span class="save-indicator" id="ind-${s.id}-${p.id}"></span>
+          <button type="button" class="link-btn danger delete-consumed-btn" data-school="${s.id}" data-product="${p.id}" style="display:${consumed > 0 ? "inline" : "none"};">Delete</button>
+        </td>
+        <td class="${cls}" id="rem-${s.id}-${p.id}">${fmt(g.remaining)}</td>`;
+    }).join("");
+    return `<tr data-row-school="${s.id}"><td>${i + 1}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>${cells}
+      <td><button class="btn-secondary row-action-btn" type="button" data-school="${s.id}" data-mode="${hasData ? "edit" : "submit"}">${hasData ? "Edit" : "Submit"}</button></td></tr>`;
+  }).join("");
+
+  body.querySelectorAll("tr").forEach(tr => {
+    if(tr.querySelector(".row-action-btn")?.dataset.mode === "edit") tr.querySelectorAll(".consumed-input").forEach(inp => { inp.disabled = true; });
+  });
+  body.querySelectorAll(".row-action-btn").forEach(btn => btn.addEventListener("click", () => handleGridRowAction(btn)));
+  body.querySelectorAll(".delete-consumed-btn").forEach(btn => btn.addEventListener("click", () => handleGridDelete(btn)));
+  refreshGridTotals();
+}
+
+// Totals row, worked out from the saved figures in the grid (so it stays right after every save or delete).
+function refreshGridTotals(){
+  const foot = document.querySelector("#summaryTable tfoot"), body = document.querySelector("#summaryTable tbody");
+  if(!foot || !body) return;
+  const rows = [...body.querySelectorAll("tr[data-row-school]")];
+  const totals = gridScheduled.map(p => {
+    const t = { opening: 0, received: 0, consumed: 0, remaining: 0 };
+    body.querySelectorAll(`.consumed-input[data-product="${p.id}"]`).forEach(inp => {
+      const o = Number(inp.dataset.opening || 0), r = Number(inp.dataset.received || 0), c = Number(inp.dataset.saved || 0);
+      t.opening += o; t.received += r; t.consumed += c; t.remaining += o + r - c;
+    });
+    return t;
+  });
+  const entered = rows.filter(tr => [...tr.querySelectorAll(".consumed-input")].some(inp => Number(inp.dataset.saved) > 0)).length;
+  foot.innerHTML = `<tr style="font-weight:700;"><td colspan="4">Total - ${rows.length} school${rows.length === 1 ? "" : "s"}</td>
+    ${totals.map(t => `<td>${fmt(t.opening)}</td><td>${fmt(t.received)}</td><td>${fmt(t.consumed)}</td><td>${fmt(t.remaining)}</td>`).join("")}
+    <td>${entered} of ${rows.length} entered</td></tr>`;
+}
+
+async function handleGridRowAction(btn){
+  const tr = btn.closest("tr");
+  const inputs = [...tr.querySelectorAll(".consumed-input")];
+  if(btn.dataset.mode === "edit"){          // unlock only - nothing is saved until Submit
+    inputs.forEach(inp => { inp.disabled = false; });
+    btn.dataset.mode = "submit"; btn.textContent = "Submit";
+    inputs[0]?.focus();
+    return;
+  }
+  if(selectedDate > todayStr()){ toast("Consumption can't be dated in the future - check the day and month.", "bad"); return; }
+  const entries = inputs.filter(inp => inp.value !== "");
+  if(!entries.length){ toast("Enter the consumed quantity first.", "bad"); return; }
+  if(entries.some(inp => !(Number(inp.value) >= 0))){ toast("Consumed quantity can't be negative.", "bad"); return; }
+  const school = cache.schools.find(s => s.id === btn.dataset.school);
+  // Zero is a real answer (nothing consumed) but easy to enter by mistake - confirm intent.
+  if(entries.some(inp => Number(inp.value) === 0) && !confirm(`Save a consumption of 0 for ${school?.school_name} on ${selectedDate}? Confirm only if this school genuinely consumed none.`)) return;
+
+  btn.disabled = true; btn.textContent = "Submitting…";
+  let allOk = true;
+  for(const inp of entries){ if(!(await saveGridCell(inp))) allOk = false; }
+  btn.disabled = false;
+  if(allOk){
+    inputs.forEach(inp => { inp.disabled = true; });
+    btn.dataset.mode = "edit"; btn.textContent = "Edit";
+  } else {
+    btn.textContent = "Submit";
+  }
+  refreshGridTotals();
+  loadHistory(currentVisibleIds);
+}
+
+// Saves one cell through the same database function as before (it re-checks schedule, date and available stock).
+async function saveGridCell(inp){
+  const school = cache.schools.find(s => s.id === inp.dataset.school);
+  const product = cache.products.find(p => p.id === inp.dataset.product);
+  const ind = document.getElementById(`ind-${inp.dataset.school}-${inp.dataset.product}`);
+  const qty = Number(inp.value);
+  ind.className = "save-indicator saving"; ind.textContent = "Saving…";
+  const r = await saveConsumption(school, product, selectedDate, qty);
+  if(r.ok){
+    ind.className = "save-indicator ok"; ind.textContent = "✓ Saved";
+    inp.dataset.saved = qty;
+    const remCell = document.getElementById(`rem-${inp.dataset.school}-${inp.dataset.product}`);
+    if(remCell) remCell.textContent = fmt(Number(inp.dataset.opening || 0) + Number(inp.dataset.received || 0) - qty);
+    const del = inp.parentElement.querySelector(".delete-consumed-btn");
+    if(del) del.style.display = qty > 0 ? "inline" : "none";
+    return true;
+  }
+  ind.className = "save-indicator bad"; ind.textContent = "✗ Not saved - retry";
+  if(!r.handled) toast(r.message || "Could not save.", "bad");
+  return false;
+}
+
+async function handleGridDelete(btn){
+  const schoolId = btn.dataset.school, productId = btn.dataset.product;
+  const school = cache.schools.find(s => s.id === schoolId), product = cache.products.find(p => p.id === productId);
+  const inp = document.querySelector(`.consumed-input[data-school="${schoolId}"][data-product="${productId}"]`);
+  if(!confirm(`Delete the ${product?.product_name} consumption entry (${fmt(inp.dataset.saved)}) for ${school?.school_name} on ${selectedDate}? This cannot be undone from here.`)) return;
+  btn.disabled = true;
+  try{
+    const { error } = await sb.rpc("fn_delete_consumption", { p_school_id: schoolId, p_product_id: productId, p_consumption_date: selectedDate });
+    if(error) throw error;
+    toast("Entry deleted");
+    inp.value = ""; inp.dataset.saved = 0;
+    const remCell = document.getElementById(`rem-${schoolId}-${productId}`);
+    if(remCell) remCell.textContent = fmt(Number(inp.dataset.opening || 0) + Number(inp.dataset.received || 0));
+    const ind = document.getElementById(`ind-${schoolId}-${productId}`); ind.className = "save-indicator"; ind.textContent = "";
+    btn.style.display = "none";
+    const tr = btn.closest("tr");
+    if(![...tr.querySelectorAll(".consumed-input")].some(i => Number(i.dataset.saved) > 0)){   // nothing left saved: open the row again
+      tr.querySelectorAll(".consumed-input").forEach(i => { i.disabled = false; });
+      const rb = tr.querySelector(".row-action-btn"); rb.dataset.mode = "submit"; rb.textContent = "Submit";
+    }
+    refreshGridTotals();
+    loadHistory(currentVisibleIds);
+  }catch(err){
+    toast(err.message, "bad");
+  }finally{
+    btn.disabled = false;
+  }
 }
 
 const HISTORY_ROW_LIMIT = 500;
@@ -526,183 +671,6 @@ async function saveConsumption(school, product, dateStr, qty){
     return { ok: false, handled: true };
   }
   return { ok: false, message: error.message };
-}
-
-function showAddConsumptionModal(){
-  const old = document.getElementById("addConsumptionModal");
-  if(old) old.remove();
-  // EMIS is looked up against every school this person is allowed to work with (not just the filtered list).
-  const mySchools = cache.schools;
-  if(!mySchools.length){ toast("No schools are available for your account.", "bad"); return; }
-  const findSchool = (emis) => mySchools.find(s => String(s.emis_code).trim() === String(emis || "").trim());
-
-  const overlay = document.createElement("div");
-  overlay.id = "addConsumptionModal";
-  overlay.className = "modal-overlay";
-  overlay.innerHTML = `
-    <div class="modal-box">
-      <h3>Add consumption</h3>
-      <form id="addConsForm" class="form-row" style="grid-template-columns:1fr;">
-        <div><label>EMIS code *</label><input type="text" name="emis_code" required autocomplete="off" inputmode="numeric" placeholder="Enter the school's EMIS code"/>
-          <div id="addConsSchoolName" class="sub" style="margin:4px 0 0;"></div></div>
-        <div><label>Consumption date *</label><input type="date" name="consumption_date" value="${selectedDate}" max="${todayStr()}" required/></div>
-        <div><label>Consumption type (selected automatically for the date)</label>
-          <select name="product_id" id="addConsProduct"></select>
-          <div id="addConsTypeNote" class="sub" style="margin:4px 0 0;"></div></div>
-        <div id="addConsAvail"></div>
-        <div><label>Quantity consumed (packs) *</label><input type="number" name="quantity" min="0" step="0.01" required/></div>
-        <div id="addConsError"></div>
-        <div class="actions-row">
-          <button class="btn-secondary" id="addConsCancel" type="button">Cancel</button>
-          <button class="btn-primary" id="addConsSubmit" type="submit">Submit</button>
-        </div>
-      </form>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  const form = document.getElementById("addConsForm");
-  const errBox = document.getElementById("addConsError");
-  const submitBtn = document.getElementById("addConsSubmit");
-  const nameBox = document.getElementById("addConsSchoolName");
-  const typeSel = document.getElementById("addConsProduct");
-  const typeNote = document.getElementById("addConsTypeNote");
-  const availBox = document.getElementById("addConsAvail");
-  let busy = false, typeToken = 0, figToken = 0, figures = null, scheduled = [];
-  const close = () => { if(!busy) overlay.remove(); };
-  document.getElementById("addConsCancel").addEventListener("click", close);
-  overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
-  const showErr = (msg) => { errBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);">${esc(msg)}</div>`; };
-
-  // Product follows the date: only what is scheduled that day, selected for the user.
-  async function refreshType(){
-    const my = ++typeToken;
-    const date = form.elements.consumption_date.value;
-    if(!date){ typeSel.innerHTML = ""; typeNote.textContent = "Choose the date first."; scheduled = []; return refreshFigures(); }
-    scheduled = await scheduledProductsFor(date);
-    if(my !== typeToken) return;
-    typeSel.innerHTML = scheduled.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("");
-    typeNote.innerHTML = scheduled.length
-      ? (scheduled.length === 1 ? `${esc(weekdayName(date))} is a <b>${esc(scheduled[0].product_name)}</b> day - only ${esc(scheduled[0].product_name)} can be entered.`
-                                : `${esc(weekdayName(date))}: choose from the products scheduled for this day.`)
-      : `<span style="color:var(--bad-fg);">No product is scheduled for consumption on ${esc(date)} (${esc(weekdayName(date))}). Pick another date.</span>`;
-    await refreshFigures();
-  }
-
-  // One row: Opening | Received that day | Total | Remaining. Remaining follows the quantity typed below.
-  const figureCell = (label, id, value) => `<div class="stat" style="margin:0;"><div class="n" ${id ? `id="${id}"` : ""}>${value}</div><div class="l">${label}</div></div>`;
-  const figuresRowHtml = (f, product) => `
-    <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-top:4px;">
-      ${figureCell("Opening", "", fmt(f.opening))}
-      ${figureCell("Received on this date", "", fmt(f.received))}
-      ${figureCell("Total available", "", fmt(Number(f.opening) + Number(f.received)))}
-      ${figureCell("Remaining after consumption", "addConsRemaining", "—")}
-    </div>
-    <div class="sub" style="margin:4px 0 0;">${esc(product.product_name)} in ${esc(product.unit_name || "packs")}. Total = opening + received on this date.</div>`;
-  function updateRemaining(){
-    const el = document.getElementById("addConsRemaining");
-    if(!el) return;
-    const raw = form.elements.quantity.value;
-    if(!figures || raw === "" || isNaN(Number(raw))){ el.textContent = "—"; el.style.color = ""; return; }
-    const remaining = Number(figures.opening) + Number(figures.received) - Number(raw);
-    el.textContent = fmt(remaining);
-    el.style.color = remaining < 0 ? "var(--bad-fg)" : "";
-  }
-
-  // Shows opening + received for the chosen school/product/date, and stops a second entry for the same day.
-  async function refreshFigures(){
-    const my = ++figToken;
-    figures = null; availBox.innerHTML = ""; errBox.innerHTML = "";
-    const school = findSchool(form.elements.emis_code.value);
-    const date = form.elements.consumption_date.value, productId = typeSel.value;
-    const product = cache.products.find(p => p.id === productId);
-    submitBtn.disabled = !scheduled.length;
-    if(!school || !product || !date) return;
-    try{
-      const f = await consumptionFigures(school.id, product.id, date);
-      if(my !== figToken) return;
-      figures = f;
-      const available = Number(f.opening) + Number(f.received);
-      if(Number(f.consumed) > 0){
-        availBox.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);"><b>⚠ ${esc(product.product_name)} consumption is already recorded for this school on ${esc(date)}</b> (${fmt(f.consumed)}). It cannot be added again - edit the existing entry instead.
-          <button class="link-btn edit" id="addConsEditExisting" type="button">Edit the existing entry</button></div>${figuresRowHtml(f, product)}`;
-        submitBtn.disabled = true;
-        document.getElementById("addConsEditExisting").addEventListener("click", async () => {
-          const { data: ex, error } = await sb.from("consumption").select("id, school_id, product_id, quantity, consumption_date")
-            .eq("school_id", school.id).eq("product_id", product.id).eq("consumption_date", date).eq("status", "active").maybeSingle();
-          if(error || !ex){ toast(error ? error.message : "Entry not found.", "bad"); return; }
-          overlay.remove();
-          if(date !== selectedDate){ selectedDate = date; await renderConsumption(); }
-          showEditConsumptionModal(ex);
-        });
-      } else {
-        availBox.innerHTML = figuresRowHtml(f, product);
-        submitBtn.disabled = false;
-        updateRemaining();
-      }
-    }catch(err){
-      if(my === figToken) showErr(err.message || "Could not load the school's stock.");
-    }
-  }
-
-  form.elements.emis_code.addEventListener("input", (e) => {
-    const v = e.target.value.trim();
-    const s = v ? findSchool(v) : null;
-    const mk = s ? cache.markaz.find(m => m.id === s.markaz_id)?.name : "";
-    nameBox.innerHTML = !v ? "" : s ? `<span style="color:var(--ok-fg);">✓ ${esc(s.school_name)}${mk ? ` (${esc(mk)})` : ""}</span>`
-                                    : `<span style="color:var(--bad-fg);">No school with this EMIS code in your list</span>`;
-    refreshFigures();
-  });
-  form.elements.consumption_date.addEventListener("change", (e) => {
-    if(e.target.value && e.target.value > todayStr()){
-      toast("Consumption can't be dated in the future - check the day and month.", "bad");
-      e.target.value = todayStr();
-    }
-    refreshType();
-  });
-  typeSel.addEventListener("change", refreshFigures);
-  form.elements.quantity.addEventListener("input", updateRemaining);
-
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if(busy) return;                                    // no double submission
-    errBox.innerHTML = "";
-    const fd = new FormData(form);
-    const school = findSchool(fd.get("emis_code"));
-    const product = cache.products.find(p => p.id === fd.get("product_id"));
-    const date = fd.get("consumption_date"), qtyRaw = fd.get("quantity");
-    if(!String(fd.get("emis_code") || "").trim()){ showErr("EMIS code is required."); return; }
-    if(!school){ showErr("This EMIS code was not found among your schools. Check the code and try again."); return; }
-    if(!date){ showErr("Enter the consumption date."); return; }
-    if(date > todayStr()){ showErr("Consumption can't be dated in the future - check the day and month."); return; }
-    if(!product || !scheduled.some(p => p.id === product.id)){ showErr(`No product is scheduled for consumption on ${date}. Pick another date.`); return; }
-    if(qtyRaw === "" || isNaN(Number(qtyRaw)) || Number(qtyRaw) < 0){ showErr("Enter the quantity consumed."); return; }
-    const qty = Number(qtyRaw);
-    if(qty === 0 && !confirm(`Save a consumption of 0 for ${product.product_name} at ${school.school_name} (${date})? Confirm only if nothing was consumed.`)) return;
-    if(figures && qty > Number(figures.opening) + Number(figures.received)){
-      showInsufficientStockModal({ productName: product.product_name, unitName: product.unit_name, available: Number(figures.opening) + Number(figures.received),
-                                   emisCode: school.emis_code, schoolName: school.school_name });
-      return;
-    }
-    busy = true; submitBtn.disabled = true; submitBtn.textContent = "Saving…";
-    try{
-      const res = await saveConsumption(school, product, date, qty);
-      if(res.ok){
-        busy = false; overlay.remove();
-        toast(`${product.product_name} consumption added for ${school.school_name}`);
-        if(date !== selectedDate){ selectedDate = date; await renderConsumption(); }
-        else await loadConsumptionList(currentVisibleIds);
-        return;
-      }
-      if(!res.handled) showErr(res.message || "Could not save.");
-    }catch(err){
-      showErr(err.message || "Could not save.");
-    }finally{
-      if(document.body.contains(overlay)){ busy = false; submitBtn.disabled = false; submitBtn.textContent = "Submit"; }
-    }
-  });
-
-  form.elements.emis_code.focus();
-  refreshType();
 }
 
 function showEditConsumptionModal(entry){
