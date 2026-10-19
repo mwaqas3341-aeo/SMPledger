@@ -418,6 +418,35 @@ function showInvoiceWarningModal(chk, school, product, invoice){
   });
 }
 
+// Caution (not a block): this school already has the SAME product on this date. Different products never come here -
+// a school can receive milk and biscuits on one day. Invoice numbers are only ever compared within the same product.
+function showSameDayCautionModal(existing, school, product, date){
+  return new Promise((resolve) => {
+    const old = document.getElementById("sameDayModal");
+    if(old) old.remove();
+    const overlay = document.createElement("div");
+    overlay.id = "sameDayModal";
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3>⚠ Caution - ${esc(product?.product_name || "This product")} already received on this date</h3>
+        <p><b>${esc(school?.school_name || "")}</b> already has ${existing.length} ${esc(product?.product_name || "")} ${existing.length === 1 ? "entry" : "entries"} dated <b>${esc(fmtDate(date))}</b>:</p>
+        <div class="table-wrap"><table><thead><tr><th>Invoice #</th><th>Qty</th></tr></thead><tbody>
+          ${existing.map(e => `<tr><td>${esc(e.invoice_number) || "—"}</td><td>${fmt(e.quantity_received)}</td></tr>`).join("")}
+        </tbody></table></div>
+        <p>Two deliveries of the same product on one day are possible, but please make sure you are not entering the same challan twice. Continue only if this is a separate delivery with its own invoice number.</p>
+        <div class="actions-row">
+          <button class="btn-secondary" id="sdBackBtn" type="button">Go back</button>
+          <button class="btn-primary" id="sdGoBtn" type="button">Yes, add as another delivery</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (v) => { overlay.remove(); resolve(v); };
+    document.getElementById("sdBackBtn").addEventListener("click", () => done(false));
+    document.getElementById("sdGoBtn").addEventListener("click", () => done(true));
+  });
+}
+
 // The invoice number typed here was already entered for another school. Show exactly where and by whom - the person
 // who typed it earlier may be the one who made the mistake - and let this user cancel or confirm.
 function showOtherSchoolModal(others, school, product, invoice){
@@ -595,6 +624,14 @@ function showAddInventoryModal(visibleSchoolIds){
         if(chk.others && chk.others.length) await showOtherSchoolModal(chk.others, school, product, invoice);
         else await showInvoiceWarningModal(chk, school, product, invoice);
         return;
+      }
+      // Same product already received by this school on this date? Ask before adding another (other products: no caution).
+      const { data: sameDay } = await sb.from("school_receipts")
+        .select("id, invoice_number, quantity_received")
+        .eq("school_id", schoolId).eq("product_id", productId).eq("receipt_date", date).eq("status", "active");
+      if(sameDay && sameDay.length){
+        const goOn = await showSameDayCautionModal(sameDay, school, product, date);
+        if(!goOn) return;
       }
       submitBtn.textContent = "Saving…";
       const { data, error } = await sb.rpc("fn_create_school_receipt", {
