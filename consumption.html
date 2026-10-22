@@ -8,6 +8,7 @@
 <script src="assets/layout.js?v=20261018a"></script>
 <script src="assets/sync-me.js?v=20261015a"></script>
 <script src="assets/email-prompt.js?v=20261018a"></script>
+<script src="assets/period-lock.js?v=20261022a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css?v=20261015a" />
@@ -327,6 +328,7 @@ async function renderConsumption(){
     <div class="card" id="summaryCard">
       <h3>Schools — ${esc(selectedDate)}</h3>
       <p class="sub" id="consDaySub">Checking which product is scheduled…</p>
+      <p class="sub" id="consLockNote" style="color:var(--bad-fg);"></p>
       <p class="sub">Enter the figure for a school, then click Submit to save the row. A row with data already saved for this date is locked - click Edit to change it. Use the filter above to look at one markaz.</p>
       <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
     </div>
@@ -398,6 +400,7 @@ async function loadConsumptionList(visibleSchoolIds){
     (g || []).forEach(r => { grid[r.school_id + "|" + r.product_id] = r; });
   }
   const scheduled = await scheduledProductsFor(selectedDate);
+  if(window.smpLocks) await smpLocks.load();
   gridSavedAt = (scheduled.length ? await fetchGridSavedAt(visibleSchoolIds) : null) || {};
   if(scheduled.length) renderEntryGrid(visibleSchoolIds, grid, scheduled);          // editable grid
   else renderSchoolsSummary(visibleSchoolIds, grid, scheduled);                      // nothing scheduled: balances only
@@ -516,6 +519,24 @@ function renderEntryGrid(visibleSchoolIds, grid, scheduled){
   body.querySelectorAll(".row-action-btn").forEach(btn => btn.addEventListener("click", () => handleGridRowAction(btn)));
   body.querySelectorAll(".delete-consumed-btn").forEach(btn => btn.addEventListener("click", () => handleGridDelete(btn)));
   refreshGridTotals();
+  applyConsumptionLocks(scheduled);
+}
+
+// Admin period lock: a locked product/date can't be entered, edited or deleted (the database enforces this as well).
+function applyConsumptionLocks(scheduled){
+  const note = document.getElementById("consLockNote");
+  const msgs = [];
+  scheduled.forEach(p => {
+    const through = window.smpLocks ? smpLocks.through(p.id, "consumption", selectedDate) : null;
+    if(!through) return;
+    msgs.push(`🔒 ${p.product_name} consumption is locked by the Admin through ${smpLocks.pretty(through)} - entries on this date can't be added, edited or deleted. Please contact the Admin for corrections.`);
+    document.querySelectorAll(`#summaryTable .consumed-input[data-product="${p.id}"]`).forEach(inp => { inp.disabled = true; inp.dataset.locked = "1"; });
+    document.querySelectorAll(`#summaryTable .delete-consumed-btn[data-product="${p.id}"]`).forEach(b => { b.style.display = "none"; });
+  });
+  if(note) note.textContent = msgs.join(" ");
+  if(scheduled.length && msgs.length === scheduled.length){
+    document.querySelectorAll("#summaryTable .row-action-btn").forEach(b => { b.disabled = true; b.textContent = "🔒 Locked"; });
+  }
 }
 
 // Totals row, worked out from the saved figures in the grid (so it stays right after every save or delete).
@@ -541,13 +562,13 @@ async function handleGridRowAction(btn){
   const tr = btn.closest("tr");
   const inputs = [...tr.querySelectorAll(".consumed-input")];
   if(btn.dataset.mode === "edit"){          // unlock only - nothing is saved until Submit
-    inputs.forEach(inp => { inp.disabled = false; });
+    inputs.forEach(inp => { if(inp.dataset.locked !== "1") inp.disabled = false; });
     btn.dataset.mode = "submit"; btn.textContent = "Submit";
-    inputs[0]?.focus();
+    inputs.find(i => !i.disabled)?.focus();
     return;
   }
   if(selectedDate > todayStr()){ toast("Consumption can't be dated in the future - check the day and month.", "bad"); return; }
-  const entries = inputs.filter(inp => inp.value !== "");
+  const entries = inputs.filter(inp => inp.value !== "" && inp.dataset.locked !== "1");
   if(!entries.length){ toast("Enter the consumed quantity first.", "bad"); return; }
   if(entries.some(inp => !(Number(inp.value) >= 0))){ toast("Consumed quantity can't be negative.", "bad"); return; }
   const school = cache.schools.find(s => s.id === btn.dataset.school);
@@ -608,7 +629,7 @@ async function handleGridDelete(btn){
     btn.style.display = "none";
     const tr = btn.closest("tr");
     if(![...tr.querySelectorAll(".consumed-input")].some(i => Number(i.dataset.saved) > 0)){   // nothing left saved: open the row again
-      tr.querySelectorAll(".consumed-input").forEach(i => { i.disabled = false; });
+      tr.querySelectorAll(".consumed-input").forEach(i => { if(i.dataset.locked !== "1") i.disabled = false; });
       const rb = tr.querySelector(".row-action-btn"); rb.dataset.mode = "submit"; rb.textContent = "Submit";
     }
     refreshGridTotals();
@@ -648,6 +669,7 @@ async function loadHistory(visibleSchoolIds){
   const shownEntries = entries.slice(0, HISTORY_ROW_LIMIT);
 
   const fmtD = d => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  if(window.smpLocks) await smpLocks.load();
   tbody.innerHTML = shownEntries.map(r => {
     const s = cache.schools.find(x => x.id === r.school_id) || {};
     const p = cache.products.find(x => x.id === r.product_id) || {};
@@ -657,8 +679,10 @@ async function loadHistory(visibleSchoolIds){
       <td>${esc(fmtD(r.consumption_date))}</td><td>${esc(markazName)}</td><td>${esc(s.emis_code)}</td><td>${esc(s.school_name)}</td>
       <td class="${cls}">${esc(p.product_name)}</td><td><b>${fmt(r.quantity)}</b></td>
       <td>${savedAtHtml(r.updated_at)}</td>
-      <td><button class="link-btn edit" type="button" data-act="edit" data-id="${r.id}">Edit</button>
-          <button class="link-btn danger" type="button" data-act="delete" data-id="${r.id}">Delete</button></td></tr>`;
+      <td>${(window.smpLocks && smpLocks.through(r.product_id, "consumption", r.consumption_date))
+        ? `<span class="pill pill-warn" title="${esc(smpLocks.message(p.product_name, "consumption", smpLocks.through(r.product_id, "consumption", r.consumption_date)))}">🔒 Locked</span>`
+        : `<button class="link-btn edit" type="button" data-act="edit" data-id="${r.id}">Edit</button>
+          <button class="link-btn danger" type="button" data-act="delete" data-id="${r.id}">Delete</button>`}</td></tr>`;
   }).join("") + (entries.length > HISTORY_ROW_LIMIT
     ? `<tr><td colspan="8" style="color:var(--ink-soft)">Showing the latest ${HISTORY_ROW_LIMIT} of ${entries.length} entries. Narrow the dates or the filter to see the rest.</td></tr>` : "");
 
