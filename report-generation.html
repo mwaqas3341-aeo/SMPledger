@@ -400,6 +400,26 @@ function renderDemandSection(){
     if(document.getElementById("demandMode").value === "single") refreshSchoolOptions();
   });
 
+  // Wing is mandatory. When the person's scope has only one wing (a wing-restricted TR, or an AEO whose
+  // markaz belong to one wing) that wing is preselected and is the only choice; otherwise they must pick.
+  function setWingChoices(wings){
+    const sel = document.getElementById("demandWing");
+    if(!sel || !sel.isConnected || !wings.length) return;
+    const opts = wings.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("");
+    sel.innerHTML = wings.length === 1 ? opts : `<option value="">Select…</option>${opts}`;
+    if(wings.length === 1) sel.value = wings[0];
+  }
+  if(isTr && currentProfile.wing_scope){
+    setWingChoices([currentProfile.wing_scope]);
+  } else if(!isAdmin){
+    (async () => {
+      const { data, error } = await scopeSchoolsQuery(sb.from("schools").select("wing, markaz!inner(tehsil)").eq("active", true));
+      if(error) return;                                    // on a read problem leave "Select…" - the person must choose
+      const found = [...new Set((data || []).map(r => r.wing))].filter(Boolean).sort();
+      setWingChoices(found);
+    })();
+  }
+
   function showSelectFirstModal(missing){
     const old = document.getElementById("selectFirstModal");
     if(old) old.remove();
@@ -424,9 +444,8 @@ function renderDemandSection(){
     const fd = new FormData(e.target);
     const missing = [];
     if(isAdmin && !fd.get("tehsil")) missing.push("Tehsil");
-    // A wing-restricted TR is already limited to one wing by their account, so there is nothing to choose.
-    const wingLocked = isTr && currentProfile.wing_scope;
-    if(!wingLocked && !fd.get("wing")) missing.push("Wing");
+    // Wing is always required; people limited to one wing already have it preselected.
+    if(!fd.get("wing")) missing.push("Wing");
     if(missing.length){ showSelectFirstModal(missing); return; }
     generateDemand(fd);
   });
