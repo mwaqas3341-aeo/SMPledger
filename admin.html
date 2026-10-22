@@ -108,6 +108,7 @@ async function loadRefData(){
 const SECTIONS = [
   { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
   { id:"report", label:"Missing Consumption Report", desc:"Auto-email missing-consumption reports - to concerned persons and to each user" },
+  { id:"locks", label:"Inventory & Consumption Period Lock", desc:"Lock a product's inventory and/or consumption entries through a date" },
   { id:"health", label:"System Health", desc:"Database keep-alive status" },
 ];
 let currentSection = "schedule";
@@ -125,6 +126,7 @@ function renderPage(){
   });
   if(currentSection === "health") renderHealthSection();
   else if(currentSection === "report") renderReportSection();
+  else if(currentSection === "locks") renderLocksSection();
   else renderScheduleSection();
 }
 
@@ -393,6 +395,184 @@ async function renderUserReportsCard(){
       document.getElementById("urStatus").innerHTML = `<div class="err" style="margin-top:10px;">${esc(err.message)} - nothing was saved.</div>`;
       btn.disabled = false; btn.textContent = "Save changes";
     }
+  });
+}
+
+/* ===================== INVENTORY & CONSUMPTION PERIOD LOCK ===================== */
+function lkPkToday(){ return new Date(Date.now() + 5 * 3600 * 1000).toISOString().slice(0, 10); }   // Pakistan date
+function lkAddDays(s, n){ const d = new Date(s + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function lkLong(s){ if(!s) return "—"; const [y, m, d] = s.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }); }
+const LK_LABEL = { inventory: "Inventory", consumption: "Consumption" };
+
+function lkEnsureCss(){
+  if(document.getElementById("lkCss")) return;
+  const s = document.createElement("style"); s.id = "lkCss";
+  s.textContent = `
+    .lk-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100000;padding:14px;}
+    .lk-box{background:#fff;color:#1b1f23;max-width:520px;width:100%;max-height:90vh;overflow:auto;border-radius:10px;padding:18px;box-shadow:0 10px 40px rgba(0,0,0,.3);}
+    .lk-box h3{margin:0 0 8px;} .lk-box ul{margin:8px 0 8px 18px;padding:0;} .lk-box li{margin:6px 0;}
+    .lk-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px;}
+    .lk-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center;}
+    .lk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end;}
+  `;
+  document.head.appendChild(s);
+}
+
+function lkConfirm({ title, lines, confirmText }){
+  lkEnsureCss();
+  return new Promise((resolve) => {
+    const o = document.createElement("div");
+    o.className = "lk-overlay";
+    o.innerHTML = `<div class="lk-box" role="dialog" aria-modal="true">
+      <h3>${esc(title)}</h3>
+      <ul>${lines.map(l => `<li>${l}</li>`).join("")}</ul>
+      <p style="margin:8px 0 0;color:#555;font-size:13px;">No inventory or consumption record is deleted or changed by this action.</p>
+      <div class="lk-actions"><button type="button" class="btn-secondary" id="lkNo">Cancel</button><button type="button" class="btn-primary" id="lkYes">${esc(confirmText)}</button></div>
+    </div>`;
+    document.body.appendChild(o);
+    const done = v => { o.remove(); resolve(v); };
+    o.querySelector("#lkNo").addEventListener("click", () => done(false));
+    o.querySelector("#lkYes").addEventListener("click", () => done(true));
+  });
+}
+
+async function lkCount(productId, type, through){
+  const q = type === "inventory"
+    ? sb.from("school_receipts").select("id", { count: "exact", head: true }).eq("product_id", productId).eq("status", "active").lte("receipt_date", through)
+    : sb.from("consumption").select("id", { count: "exact", head: true }).eq("product_id", productId).eq("status", "active").lte("consumption_date", through);
+  const { count } = await q;
+  return count || 0;
+}
+
+async function renderLocksSection(){
+  lkEnsureCss();
+  const content = document.getElementById("adminSectionContent");
+  content.innerHTML = `<div class="card"><h3>Inventory &amp; Consumption Period Lock</h3><p style="color:var(--ink-soft)">Loading…</p></div>`;
+  const [stRes, audRes, attRes] = await Promise.all([
+    sb.rpc("fn_period_lock_status"),
+    sb.from("period_lock_audit").select("*").order("created_at", { ascending: false }).limit(25),
+    sb.from("period_lock_attempts").select("*").order("created_at", { ascending: false }).limit(25),
+  ]);
+  if(stRes.error){ content.innerHTML = `<div class="card"><h3>Inventory &amp; Consumption Period Lock</h3><div class="err">${esc(stRes.error.message)}</div></div>`; return; }
+  const byKey = {};
+  (stRes.data || []).forEach(r => { byKey[r.product_id + "|" + r.entry_type] = r; });
+  const fmtTime = t => t ? new Date(t).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  const activeLocks = (stRes.data || []).filter(r => r.status === "locked");
+
+  const statusCell = (pid, t) => {
+    const r = byKey[pid + "|" + t];
+    if(r && r.status === "locked") return `<span class="pill pill-bad">🔒 Locked through ${esc(lkLong(r.locked_through))}</span>`;
+    if(r) return `<span class="pill pill-ok">🔓 Unlocked</span> <span style="color:var(--ink-soft);font-size:12px;">(was locked through ${esc(lkLong(r.locked_through))})</span>`;
+    return `<span class="pill pill-ok">🔓 Not locked</span>`;
+  };
+  const byWho = (pid, t) => { const r = byKey[pid + "|" + t]; return r ? `${esc(r.locked_by_name || "—")}<br><span style="color:var(--ink-soft);font-size:12px;">${esc(fmtTime(r.locked_at))}</span>` : "—"; };
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>Inventory &amp; Consumption Period Lock</h3>
+      <p class="sub">Lock a product's inventory and/or consumption entries through a date. Nobody (users or Admin) can then add, edit or delete entries dated on or before that date, for that product only, until you unlock it here.
+        Example: choose Milk, pick 15 October 2026, then click <b>Lock Both</b>.</p>
+      <p class="sub" style="margin-top:4px;">${activeLocks.length ? `<b>Locked now:</b> ${activeLocks.map(r => `${esc(r.product_name)} ${esc(LK_LABEL[r.entry_type].toLowerCase())} through ${esc(lkLong(r.locked_through))}`).join(" · ")}` : "No period is locked right now."}</p>
+      <div class="lk-grid" style="margin-top:12px;">
+        <div><label>Select Product</label><select id="lkProduct">${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+        <div><label>Lock Through Date</label><input type="date" id="lkDate" max="${lkPkToday()}"/></div>
+      </div>
+      <div class="lk-btns">
+        <button class="btn-primary" type="button" id="lkInv">Lock Inventory</button>
+        <button class="btn-primary" type="button" id="lkCons">Lock Consumption</button>
+        <button class="btn-primary" type="button" id="lkBoth">Lock Both</button>
+      </div>
+      <div class="lk-btns" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line, #ddd);">
+        <label style="margin:0;">Unlock</label>
+        <select id="lkUnlockType"><option value="both">Inventory and Consumption</option><option value="inventory">Inventory only</option><option value="consumption">Consumption only</option></select>
+        <button class="btn-secondary" type="button" id="lkUnlock">Unlock</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Lock status</h3>
+      <div class="table-wrap"><table><thead><tr><th>Product</th><th>Entry type</th><th>Status</th><th>Locked by / when</th></tr></thead><tbody>
+        ${cache.products.map(p => ["inventory", "consumption"].map((t, i) => `<tr>
+          <td>${i === 0 ? `<b>${esc(p.product_name)}</b>` : ""}</td><td>${esc(LK_LABEL[t])}</td><td>${statusCell(p.id, t)}</td><td>${byWho(p.id, t)}</td></tr>`).join("")).join("")}
+      </tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h3>Lock history</h3>
+      ${audRes.error ? `<div class="err">${esc(audRes.error.message)}</div>` : `
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Product</th><th>Entry type</th><th>Action</th><th>Previous date</th><th>New date</th><th>Admin</th></tr></thead><tbody>
+        ${(audRes.data || []).length ? audRes.data.map(a => `<tr><td>${esc(fmtTime(a.created_at))}</td><td>${esc(a.product_name)}</td><td>${esc(LK_LABEL[a.entry_type])}</td>
+          <td>${esc({ lock: "Lock", unlock: "Unlock", date_change: "Date change" }[a.action] || a.action)}</td><td>${a.previous_through ? esc(lkLong(a.previous_through)) : "—"}</td><td>${a.new_through ? esc(lkLong(a.new_through)) : "—"}</td><td>${esc(a.admin_name || "—")}</td></tr>`).join("")
+          : `<tr><td colspan="7" style="color:var(--ink-soft)">No lock actions yet.</td></tr>`}
+      </tbody></table></div>`}
+      <details style="margin-top:12px;"><summary style="cursor:pointer;">Refused attempts on locked periods (latest 25)</summary>
+        ${attRes.error ? `<div class="err">${esc(attRes.error.message)}</div>` : `
+        <div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Product</th><th>Entry type</th><th>Entry date</th><th>Locked through</th><th>Operation</th></tr></thead><tbody>
+          ${(attRes.data || []).length ? attRes.data.map(a => `<tr><td>${esc(fmtTime(a.created_at))}</td><td>${esc(a.user_name || "—")}</td><td>${esc(a.product_name)}</td><td>${esc(LK_LABEL[a.entry_type] || a.entry_type)}</td>
+            <td>${a.entry_date ? esc(lkLong(a.entry_date)) : "—"}</td><td>${a.locked_through ? esc(lkLong(a.locked_through)) : "—"}</td><td>${esc(a.operation || "")}</td></tr>`).join("")
+            : `<tr><td colspan="7" style="color:var(--ink-soft)">None recorded.</td></tr>`}
+        </tbody></table></div>`}
+      </details>
+    </div>`;
+
+  let busy = false;
+  async function act(action, types){
+    if(busy) return;
+    const pid = document.getElementById("lkProduct").value;
+    const product = cache.products.find(p => p.id === pid);
+    const through = document.getElementById("lkDate").value;
+    if(!pid){ toast("Select a product", "bad"); return; }
+    if(action === "lock"){
+      if(!through){ toast("Pick the date to lock through", "bad"); return; }
+      if(through > lkPkToday()){ toast("The lock-through date cannot be in the future", "bad"); return; }
+    }
+    const lines = []; let changes = 0;
+    for(const t of types){
+      const cur = byKey[pid + "|" + t];
+      const curThrough = cur && cur.status === "locked" ? cur.locked_through : null;
+      const label = `<b>${esc(product.product_name)} ${esc(LK_LABEL[t].toLowerCase())}</b>`;
+      if(action === "lock"){
+        if(curThrough === through){ lines.push(`${label}: already locked through ${esc(lkLong(through))} - no change.`); continue; }
+        changes++;
+        if(!curThrough){
+          const n = await lkCount(pid, t, through);
+          lines.push(`${label}: every entry dated on or before <b>${esc(lkLong(through))}</b> will be locked (${n} existing ${n === 1 ? "entry becomes" : "entries become"} read-only). Nobody can add, edit or delete entries in that period.`);
+        } else if(through > curThrough){
+          lines.push(`${label}: lock date moves from ${esc(lkLong(curThrough))} to <b>${esc(lkLong(through))}</b>. <b>${esc(lkLong(lkAddDays(curThrough, 1)))} to ${esc(lkLong(through))} will become LOCKED.</b>`);
+        } else {
+          lines.push(`${label}: lock date moves back from ${esc(lkLong(curThrough))} to <b>${esc(lkLong(through))}</b>. <b>${esc(lkLong(lkAddDays(through, 1)))} to ${esc(lkLong(curThrough))} will be UNLOCKED</b> - users can add, edit and delete entries on those dates again.`);
+        }
+      } else {
+        if(!curThrough){ lines.push(`${label}: not locked - nothing to unlock.`); continue; }
+        changes++;
+        lines.push(`${label}: everything through <b>${esc(lkLong(curThrough))}</b> will be <b>UNLOCKED</b>. Users can add, edit and delete entries in that period again.`);
+      }
+    }
+    if(!changes){ toast("No change - already in that state"); return; }
+    const ok = await lkConfirm({
+      title: action === "lock" ? "Confirm lock" : "Confirm unlock", lines,
+      confirmText: action === "lock" ? "Yes, lock" : "Yes, unlock",
+    });
+    if(!ok) return;
+    busy = true;
+    ["lkInv", "lkCons", "lkBoth", "lkUnlock"].forEach(id => { const b = document.getElementById(id); if(b) b.disabled = true; });
+    try{
+      const { error } = await sb.rpc("fn_admin_set_period_lock", { p_product_id: pid, p_entry_types: types, p_action: action, p_through: action === "lock" ? through : null });
+      if(error) throw error;
+      toast(action === "lock" ? "Period locked" : "Period unlocked");
+      await renderLocksSection();
+    }catch(err){
+      toast(err.message, "bad");
+      busy = false;
+      ["lkInv", "lkCons", "lkBoth", "lkUnlock"].forEach(id => { const b = document.getElementById(id); if(b) b.disabled = false; });
+    }
+  }
+  document.getElementById("lkInv").addEventListener("click", () => act("lock", ["inventory"]));
+  document.getElementById("lkCons").addEventListener("click", () => act("lock", ["consumption"]));
+  document.getElementById("lkBoth").addEventListener("click", () => act("lock", ["inventory", "consumption"]));
+  document.getElementById("lkUnlock").addEventListener("click", () => {
+    const v = document.getElementById("lkUnlockType").value;
+    act("unlock", v === "both" ? ["inventory", "consumption"] : [v]);
   });
 }
 
