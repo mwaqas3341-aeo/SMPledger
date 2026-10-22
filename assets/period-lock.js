@@ -52,6 +52,17 @@
       var p = String(d).split("-").map(Number), x = new Date(Date.UTC(p[0], p[1] - 1, p[2] + 1));
       return x.toISOString().slice(0, 10);
     },
+    // The locked-through date of a product's lock (any date), or null when that product/entry type isn't locked.
+    lockedThrough: function(productId, type){
+      for(var i = 0; i < locks.length; i++){
+        if(locks[i].product_id === productId && locks[i].entry_type === type) return locks[i].locked_through;
+      }
+      return null;
+    },
+    dayAfter: function(d){
+      var p = String(d).split("-").map(Number), x = new Date(Date.UTC(p[0], p[1] - 1, p[2] + 1));
+      return x.toISOString().slice(0, 10);
+    },
     message: function(productName, type, through){
       return "This product's (" + (productName || "product") + ") " + type + " period is locked by the Admin through " + pretty(through) + ". Please contact the Admin for corrections.";
     },
