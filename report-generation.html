@@ -324,7 +324,7 @@ function renderDemandSection(){
       <p class="sub">${scopeNote} Enrolment is fetched fresh from the Integrated Dashboard's enrolment source right when you generate this - nothing is stored.</p>
       <form id="demandForm" class="form-row">
         ${tehsilField}
-        <div><label>Wing</label><select name="wing" id="demandWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div><label>Wing</label><select name="wing" id="demandWing"><option value="">Select…</option><option value="all">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Mode</label><select name="mode" id="demandMode"><option value="all">All schools in scope</option><option value="single">Single school</option></select></div>
         <div id="demandSchoolField" class="hidden"><label>School</label><select name="school_id"><option value="">Select…</option></select></div>
         <div><label>Demand for</label><select name="weeks" required>
@@ -352,7 +352,7 @@ function renderDemandSection(){
   async function refreshSchoolOptions(){
     const schoolSel = document.querySelector('#demandSchoolField select[name="school_id"]');
     const tehsil = isAdmin ? document.getElementById("demandTehsil")?.value : (isTr ? currentProfile.tehsil : null);
-    const wing = document.getElementById("demandWing")?.value;
+    const wing = (document.getElementById("demandWing")?.value || "").replace(/^all$/, "");
     let q = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
     if(currentProfile.role === "aeo" || currentProfile.role === "school_user") q = scopeSchoolsQuery(q);
     else if(tehsil){
@@ -380,9 +380,36 @@ function renderDemandSection(){
     if(document.getElementById("demandMode").value === "single") refreshSchoolOptions();
   });
 
+  function showSelectFirstModal(missing){
+    const old = document.getElementById("selectFirstModal");
+    if(old) old.remove();
+    const overlay = document.createElement("div");
+    overlay.id = "selectFirstModal";
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3 style="color:var(--ink);">Select ${missing.map(esc).join(" and ")} first</h3>
+        <p>Please choose the ${missing.map(m => "<b>" + esc(m) + "</b>").join(" and ")} from the filter${missing.length > 1 ? "s" : ""} before generating the demand report. Pick <b>All</b> in Wing if you want every wing.</p>
+        <div class="actions-row"><button class="btn-primary" id="selectFirstOk" type="button">OK</button></div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    document.getElementById("selectFirstOk").addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+    document.getElementById("selectFirstOk").focus();
+  }
+
   document.getElementById("demandForm").addEventListener("submit", (e) => {
     e.preventDefault();
-    generateDemand(new FormData(e.target));
+    const fd = new FormData(e.target);
+    const missing = [];
+    if(isAdmin && !fd.get("tehsil")) missing.push("Tehsil");
+    // A wing-restricted TR is already limited to one wing by their account, so there is nothing to choose.
+    const wingLocked = isTr && currentProfile.wing_scope;
+    if(!wingLocked && !fd.get("wing")) missing.push("Wing");
+    if(missing.length){ showSelectFirstModal(missing); return; }
+    if(fd.get("wing") === "all") fd.set("wing", "");
+    generateDemand(fd);
   });
 }
 
