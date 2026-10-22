@@ -179,7 +179,7 @@ async function renderPage(){
         <div><label>To</label><input type="date" name="to" value="${todayStr()}"/></div>
         <div><label>District</label><select id="jfDistrict"><option value="">All</option>${districts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("")}</select></div>
         <div><label>Tehsil</label><select id="jfTehsil"><option value="">All</option></select></div>
-        <div><label>Wing</label><select id="jfWing"><option value="">All</option>${[...new Set(cache.schools.map(s => s.wing))].filter(Boolean).sort().map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div><label>Wing</label><select id="jfWing"><option value="">All</option>${[...new Set(cache.schools.map(s => s.wing))].filter(w => w && w !== "SE").sort().map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
         <div><label>Product</label><select name="product"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>

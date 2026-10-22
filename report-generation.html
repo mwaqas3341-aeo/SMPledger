@@ -54,7 +54,7 @@ let currentUser = null, currentProfile = null;
 let cache = { markaz:[], products:[] };
 let lastReport = null; // kept around for export
 let lastDemand = null; // kept around for demand export
-const WING_OPTIONS = ["M-EE", "W-EE", "SE"]; // stable values from A-I-DB's schools.wing
+const WING_OPTIONS = ["M-EE", "W-EE"]; // stable values from A-I-DB's schools.wing
 
 /* ===================== HELPERS ===================== */
 function toast(msg, kind){
@@ -324,7 +324,7 @@ function renderDemandSection(){
       <p class="sub">${scopeNote} Enrolment is fetched fresh from the Integrated Dashboard's enrolment source right when you generate this - nothing is stored.</p>
       <form id="demandForm" class="form-row">
         ${tehsilField}
-        <div><label>Wing</label><select name="wing" id="demandWing"><option value="">Select…</option>${WING_OPTIONS.filter(w => w !== "SE").map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div><label>Wing</label><select name="wing" id="demandWing"><option value="">Select…</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div><label>Mode</label><select name="mode" id="demandMode"><option value="all">All schools in scope</option><option value="single">Single school</option></select></div>
         <div id="demandSchoolField" class="hidden"><label>School</label><select name="school_id"><option value="">Select…</option></select></div>
         <div><label>Demand for</label><select name="weeks" required>

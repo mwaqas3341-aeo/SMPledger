@@ -57,7 +57,7 @@ let currentUser = null, currentProfile = null;
 let cache = { markaz:[], schools:[], products:[] };
 let lastMissing = null; // kept around for CSV export
 let lastMissingForm = null; // the filters of the last check, re-run for a fresh download
-const WING_OPTIONS = ["M-EE", "W-EE", "SE"];
+const WING_OPTIONS = ["M-EE", "W-EE"];
 
 function toast(msg, kind){
   const el = document.createElement("div");
