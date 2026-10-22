@@ -346,14 +346,35 @@ async function renderConsumption(){
     </div>
   `;
 
-  document.getElementById("dateInput").addEventListener("change", (e) => {
+  // A date on which every scheduled product is locked by the Admin can't be picked. Dates where another product is
+  // scheduled (or still open) stay available.
+  const lockedDate = async (dt) => {
+    if(!window.smpLocks || !dt) return null;
+    await smpLocks.load();
+    const sched = await scheduledProductsFor(dt);
+    if(sched.length && sched.every(p => smpLocks.through(p.id, "consumption", dt))){
+      return { names: sched.map(p => p.product_name).join(" and "), through: smpLocks.through(sched[0].id, "consumption", dt) };
+    }
+    return null;
+  };
+  const rejectLocked = (lk) => toast(`🔒 ${lk.names} consumption is locked through ${smpLocks.pretty(lk.through)}. Please pick a later date.`, "bad");
+  document.getElementById("dateInput").addEventListener("change", async (e) => {
     if(e.target.value && e.target.value > todayStr()){
       toast("Consumption can't be dated in the future - check the day and month.", "bad");
       e.target.value = todayStr();
     }
+    const lk = await lockedDate(e.target.value);
+    if(lk){ rejectLocked(lk); e.target.value = selectedDate; }
   });
-  document.getElementById("applyDateBtn").addEventListener("click", () => {
-    selectedDate = document.getElementById("dateInput").value || todayStr();
+  if(window.smpLocks) smpLocks.load().then(() => {     // every product locked: the calendar starts after the earliest lock
+    const ts = cache.products.map(p => smpLocks.lockedThrough(p.id, "consumption"));
+    if(ts.length && ts.every(Boolean)) document.getElementById("dateInput").min = smpLocks.dayAfter(ts.slice().sort()[0]);
+  });
+  document.getElementById("applyDateBtn").addEventListener("click", async () => {
+    const dt = document.getElementById("dateInput").value || todayStr();
+    const lk = await lockedDate(dt);
+    if(lk){ rejectLocked(lk); document.getElementById("dateInput").value = selectedDate; return; }
+    selectedDate = dt;
     renderConsumption();
   });
   document.getElementById("todayBtn").addEventListener("click", () => {

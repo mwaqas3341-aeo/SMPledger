@@ -611,10 +611,19 @@ function showAddInventoryModal(visibleSchoolIds){
   const lockNote = document.getElementById("addInvLockNote");
   const updateLockNote = () => {
     if(!window.smpLocks) return;
-    const pid = form.elements.product_id.value, dt = form.elements.receipt_date.value;
-    const through = pid && dt ? smpLocks.through(pid, "inventory", dt) : null;
-    lockNote.innerHTML = through
-      ? `<div class="modal-note" style="color:var(--bad-fg);">🔒 ${esc(smpLocks.message(cache.products.find(p => p.id === pid)?.product_name, "inventory", through))}</div>` : "";
+    const pid = form.elements.product_id.value, dateEl = form.elements.receipt_date;
+    const pname = cache.products.find(p => p.id === pid)?.product_name;
+    // Dates inside this product's locked period can't be picked: its calendar starts the day after the lock.
+    // Other products keep their full calendar.
+    const lt = pid ? smpLocks.lockedThrough(pid, "inventory") : null;
+    dateEl.min = lt ? smpLocks.dayAfter(lt) : "";
+    const through = pid && dateEl.value ? smpLocks.through(pid, "inventory", dateEl.value) : null;
+    if(through){
+      dateEl.value = "";                                  // a locked date can't stay selected
+      lockNote.innerHTML = `<div class="modal-note" style="color:var(--bad-fg);">🔒 ${esc(smpLocks.message(pname, "inventory", through))} Please pick a date after ${esc(smpLocks.pretty(through))}.</div>`;
+    } else {
+      lockNote.innerHTML = lt ? `<div class="modal-note" style="color:var(--ink-soft);">🔒 ${esc(pname)} inventory is locked through ${esc(smpLocks.pretty(lt))}; those dates can't be chosen.</div>` : "";
+    }
   };
   if(window.smpLocks) smpLocks.load().then(updateLockNote);
   form.elements.product_id.addEventListener("change", updateLockNote);
@@ -714,7 +723,15 @@ function showEditReceiptModal(existing, school, product, onSaved){
   const close = () => overlay.remove();
   document.getElementById("editCancelBtn").addEventListener("click", close);
   overlay.addEventListener("click", (e) => { if(e.target === overlay) close(); });
+  // An entry can't be moved into its product's locked period: the calendar starts the day after the lock.
+  const editLockedThrough = window.smpLocks ? smpLocks.lockedThrough(existing.product_id, "inventory") : null;
+  if(editLockedThrough) document.getElementById("editReceiptDateField").min = smpLocks.dayAfter(editLockedThrough);
   document.getElementById("editReceiptDateField").addEventListener("change", (e) => {
+    if(editLockedThrough && e.target.value && e.target.value <= editLockedThrough){
+      toast(`🔒 ${product?.product_name || "This product"} inventory is locked through ${smpLocks.pretty(editLockedThrough)}. Please pick a later date.`, "bad");
+      e.target.value = existing.receipt_date || todayStr();
+      return;
+    }
     if(e.target.value && e.target.value > todayStr()){
       toast("Date can't be in the future - check the day and month.", "bad");
       e.target.value = todayStr();
