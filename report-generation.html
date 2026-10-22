@@ -302,20 +302,37 @@ function renderProformaSection(){
 
 const ENROLMENT_URL = "https://raw.githubusercontent.com/mwaqas3341-aeo/SIS-online-Enrolment-Updater/main/data/layyah.json";
 
+// Tehsils a person can choose in Demand - never wider than the access they already have:
+// admins - every tehsil; TR - their own tehsil; AEO / school user - the tehsil(s) of the markaz they hold.
+function tehsilsInScope(){
+  const role = currentProfile.role;
+  if(role === "tr") return currentProfile.tehsil ? [currentProfile.tehsil] : [];
+  let ms = cache.markaz;
+  if(role === "aeo" || role === "school_user"){
+    const ids = myMarkazIds();
+    if(!ids.length) return [];
+    ms = ms.filter(m => ids.includes(m.id));
+  }
+  return [...new Set(ms.map(m => m.tehsil))].filter(Boolean).sort();
+}
+
 function renderDemandSection(){
   const content = document.getElementById("repSectionContent");
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
   const isTr = currentProfile.role === "tr";
 
+  const ownTehsils = tehsilsInScope();
+  const tehsilOpts = ownTehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
   let scopeNote, tehsilField = "";
   if(isAdmin){
-    const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].filter(Boolean).sort();
     scopeNote = "Pick a tehsil, or narrow to a single school within it.";
-    tehsilField = `<div><label>Tehsil</label><select name="tehsil" id="demandTehsil" required><option value="">Select…</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>`;
+    tehsilField = `<div><label>Tehsil</label><select name="tehsil" id="demandTehsil" required><option value="">Select…</option>${tehsilOpts}</select></div>`;
   } else if(isTr){
     scopeNote = `Defaults to your whole tehsil${currentProfile.tehsil ? " (" + esc(currentProfile.tehsil) + ")" : ""} - narrow to a single school if needed.`;
+    tehsilField = `<div><label>Tehsil</label><select name="tehsil" id="demandTehsil"${ownTehsils.length ? " required" : ""}>${tehsilOpts}</select></div>`;
   } else {
-    scopeNote = "Defaults to your own schools - narrow to a single school if needed.";
+    scopeNote = "Defaults to your own schools - optionally pick a tehsil, or narrow to a single school if needed.";
+    tehsilField = `<div><label>Tehsil</label><select name="tehsil" id="demandTehsil"><option value="">All my schools</option>${tehsilOpts}</select></div>`;
   }
 
   content.innerHTML = `
@@ -351,10 +368,13 @@ function renderDemandSection(){
   // a tehsil picked first; aeo/tr already have their scope).
   async function refreshSchoolOptions(){
     const schoolSel = document.querySelector('#demandSchoolField select[name="school_id"]');
-    const tehsil = isAdmin ? document.getElementById("demandTehsil")?.value : (isTr ? currentProfile.tehsil : null);
+    const tehsil = isTr ? currentProfile.tehsil : (document.getElementById("demandTehsil")?.value || null);
     const wing = document.getElementById("demandWing")?.value;
     let q = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
-    if(currentProfile.role === "aeo" || currentProfile.role === "school_user") q = scopeSchoolsQuery(q);
+    if(currentProfile.role === "aeo" || currentProfile.role === "school_user"){
+      q = scopeSchoolsQuery(q);
+      if(tehsil) q = q.eq("markaz.tehsil", tehsil);   // only narrows within their own scope
+    }
     else if(tehsil){
       q = q.eq("markaz.tehsil", tehsil);
       // A wing-restricted TR never sees the other wing, whatever the filter says.
@@ -373,7 +393,7 @@ function renderDemandSection(){
     document.getElementById("demandSchoolField").classList.toggle("hidden", e.target.value !== "single");
     if(e.target.value === "single") refreshSchoolOptions();
   });
-  if(isAdmin) document.getElementById("demandTehsil").addEventListener("change", () => {
+  document.getElementById("demandTehsil").addEventListener("change", () => {
     if(document.getElementById("demandMode").value === "single") refreshSchoolOptions();
   });
   document.getElementById("demandWing").addEventListener("change", () => {
@@ -415,7 +435,7 @@ function renderDemandSection(){
 async function generateDemand(fd){
   const isAdmin = ["admin","super_admin"].includes(currentProfile.role);
   const isTr = currentProfile.role === "tr";
-  const tehsil = isAdmin ? fd.get("tehsil") : (isTr ? currentProfile.tehsil : null);
+  const tehsil = isAdmin ? fd.get("tehsil") : (isTr ? currentProfile.tehsil : (fd.get("tehsil") || null));
   const wing = fd.get("wing");
   const mode = fd.get("mode");
   const singleSchoolId = fd.get("school_id");
@@ -443,8 +463,9 @@ async function generateDemand(fd){
   let schoolsQuery = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,markaz!inner(name,tehsil)").eq("active", true);
   if(mode === "single"){
     schoolsQuery = schoolsQuery.eq("id", singleSchoolId);
-  } else if(currentProfile.role === "aeo"){
+  } else if(currentProfile.role === "aeo" || currentProfile.role === "school_user"){
     schoolsQuery = scopeSchoolsQuery(schoolsQuery);
+    if(tehsil) schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);   // only narrows within their own scope
   } else {
     schoolsQuery = schoolsQuery.eq("markaz.tehsil", tehsil);
     // A wing-restricted TR never sees the other wing, whatever the filter says.
