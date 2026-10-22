@@ -8,6 +8,7 @@
 <script src="assets/layout.js?v=20261018a"></script>
 <script src="assets/sync-me.js?v=20261017a"></script>
 <script src="assets/email-prompt.js?v=20261018a"></script>
+<script src="assets/period-lock.js?v=20261022a"></script>
 <script src="assets/config.js?v=20261017a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
@@ -552,6 +553,7 @@ function showAddInventoryModal(visibleSchoolIds){
         <div><label>Invoice no / Challan no *</label><input type="text" name="invoice_number" required autocomplete="off"/></div>
         <div><label>Date of inventory received (as per challan) *</label><input type="date" name="receipt_date" max="${todayStr()}" required/></div>
         <div><label>Total pieces / packs received *</label><input type="number" name="quantity_received" min="0" step="0.01" required/></div>
+        <div id="addInvLockNote"></div>
         <div id="addInvError"></div>
         <div class="actions-row">
           <button class="btn-secondary" id="addInvCancel" type="button">Cancel</button>
@@ -605,6 +607,19 @@ function showAddInventoryModal(visibleSchoolIds){
     });
   };
 
+  // Admin period lock: warn as soon as the chosen product + date fall inside a locked period (the database enforces it too).
+  const lockNote = document.getElementById("addInvLockNote");
+  const updateLockNote = () => {
+    if(!window.smpLocks) return;
+    const pid = form.elements.product_id.value, dt = form.elements.receipt_date.value;
+    const through = pid && dt ? smpLocks.through(pid, "inventory", dt) : null;
+    lockNote.innerHTML = through
+      ? `<div class="modal-note" style="color:var(--bad-fg);">🔒 ${esc(smpLocks.message(cache.products.find(p => p.id === pid)?.product_name, "inventory", through))}</div>` : "";
+  };
+  if(window.smpLocks) smpLocks.load().then(updateLockNote);
+  form.elements.product_id.addEventListener("change", updateLockNote);
+  form.elements.receipt_date.addEventListener("change", updateLockNote);
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if(busy) return;                                    // no double submission
@@ -622,6 +637,12 @@ function showAddInventoryModal(visibleSchoolIds){
     if(!date){ showErr("Enter the date of inventory received as per the challan."); return; }
     if(date > todayStr()){ showErr("A delivery can't be dated in the future - check the day and month."); return; }
     if(qty === "" || isNaN(Number(qty)) || Number(qty) < 0){ showErr("Enter the total pieces / packs received."); return; }
+    const lockedThrough = window.smpLocks ? smpLocks.through(productId, "inventory", date) : null;
+    if(lockedThrough){
+      showErr(smpLocks.message(product?.product_name, "inventory", lockedThrough));
+      smpLocks.logAttempt("school_receipts", "INSERT", productId, "inventory", date);
+      return;                                           // nothing is lost: the form keeps what was typed
+    }
     // Zero is a real answer (a delivery genuinely didn't arrive) but easy to enter by mistake - confirm intent.
     if(Number(qty) === 0 && !confirm(`Save a quantity of 0 for ${product?.product_name} at ${school?.school_name} (${date})? Confirm only if this school genuinely received none.`)) return;
 
@@ -746,6 +767,7 @@ async function loadReceiptsTable(schoolIds){
   const tbody = document.querySelector("#receiptsTable tbody");
   if(error){ tbody.innerHTML = `<tr><td colspan="11" class="err">${esc(error.message)}</td></tr>`; return; }
   receiptRowsCache = data || [];
+  if(window.smpLocks) await smpLocks.load();
   renderReceiptRows(schoolIds);
 }
 
@@ -785,9 +807,10 @@ function renderReceiptRows(schoolIds){
       <td>${esc(r.collected_by) || "—"}</td>
       <td>${esc(r.remarks) || "—"}</td>
       <td>${savedAtHtml(r.updated_at)}</td>
-      <td>
-        <button class="link-btn edit" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button>
-        <button class="link-btn danger" onclick='deleteExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Delete</button>
+      <td>${(window.smpLocks && smpLocks.through(r.product_id, "inventory", r.receipt_date))
+        ? `<span class="pill pill-warn" title="${esc(smpLocks.message(r.products?.product_name, "inventory", smpLocks.through(r.product_id, "inventory", r.receipt_date)))}">🔒 Locked</span>`
+        : `<button class="link-btn edit" onclick='editExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Edit</button>
+        <button class="link-btn danger" onclick='deleteExistingReceipt(${JSON.stringify(r.id)}, ${JSON.stringify(schoolIds)})'>Delete</button>`}
       </td>
     </tr>
   `).join("");
