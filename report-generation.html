@@ -11,7 +11,7 @@
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
+<link rel="stylesheet" href="assets/styles.css?v=20261022a" />
 <style>
   #reportTable{ font-size:11.5px; }
   #reportTable th, #reportTable td{ padding:5px 6px; white-space:nowrap; }
@@ -219,7 +219,7 @@ function renderProformaSection(){
             <input type="checkbox" id="includeComparisonCheck" style="width:auto;"/>
             Also include company vs AEO comparison
           </label>
-          <button class="btn-secondary" id="exportExcelBtn" type="button">Export Excel</button>
+          <button class="btn-export" id="exportExcelBtn" type="button">Export Excel</button>
         </div>
       </div>
       <div id="reportHeader"></div>
@@ -357,7 +357,7 @@ function renderDemandSection(){
     <div class="card" id="demandCard" style="display:none;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
         <h3 style="margin:0;">Demand report</h3>
-        <button class="btn-secondary" id="demandExportBtn" type="button" disabled>Export Excel</button>
+        <button class="btn-export" id="demandExportBtn" type="button" disabled>Export Excel</button>
       </div>
       <div id="demandHeader"></div>
       <div class="table-wrap"><table id="demandTable"><thead></thead><tbody></tbody></table></div>

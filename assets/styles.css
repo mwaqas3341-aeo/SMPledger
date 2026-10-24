@@ -69,6 +69,10 @@ button:active{ filter:brightness(.95); }
 .btn-primary{ background:var(--navy); color:#fff; }
 .btn-secondary{ background:#eef1f6; color:var(--navy); }
 .btn-danger{ background:var(--bad-fg); color:#fff; }
+/* Export / download buttons: orange when they can be used, greyed out when they cannot. */
+.btn-export{ background:#f26b00; color:#fff; font-weight:700; border:1px solid #d95f00; box-shadow:0 1px 3px rgba(217,95,0,.35); }
+.btn-export:hover:not(:disabled){ background:#d95f00; }
+.btn-export:disabled{ background:#d9dde5; color:#6b7280; border-color:#c5cbd6; box-shadow:none; opacity:1; }
 .btn-block{ width:100%; margin-top:20px; }
 
 .err{ background:var(--bad-bg); color:var(--bad-fg); padding:10px 12px; border-radius:8px; font-size:13px; margin-top:14px; }

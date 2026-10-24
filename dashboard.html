@@ -10,7 +10,7 @@
 <script src="assets/email-prompt.js?v=20261018a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
+<link rel="stylesheet" href="assets/styles.css?v=20261022a" />
 </head>
 <body>
 
@@ -366,8 +366,8 @@ async function renderOverview(content){
           <p class="sub" id="summaryScope" style="margin:2px 0 0;"></p>
         </div>
         <div class="actions-row" style="margin:0;">
-          <button class="btn-secondary" type="button" id="dlCsvBtn">Download Received (CSV)</button>
-          <button class="btn-secondary" type="button" id="dlXlsxBtn">Download Received (Excel)</button>
+          <button class="btn-export" type="button" id="dlCsvBtn">Download Received (CSV)</button>
+          <button class="btn-export" type="button" id="dlXlsxBtn">Download Received (Excel)</button>
         </div>
       </div>
       <div id="secSummary"></div>
@@ -705,7 +705,7 @@ function applyLowStock(){
     <div><b>${fmt(r.low.length)}</b> of ${fmt(r.total)} schools${where ? ` (${esc(where)})` : " in scope"} have less than <b>${fmt(days)}</b> day${days === 1 ? "" : "s"} of <b>${esc(pname)}</b>.
       ${r.noEnrolment ? `<span style="color:var(--ink-soft);"> ${fmt(r.noEnrolment)} school${r.noEnrolment === 1 ? " has" : "s have"} no enrolment figure, so days can't be worked out for them and they are not listed.</span>` : ""}</div>
     ${r.low.length ? `
-      <div class="actions-row" style="margin:10px 0;"><button class="btn-secondary" type="button" id="lsExport">Export to Excel</button></div>
+      <div class="actions-row" style="margin:10px 0;"><button class="btn-export" type="button" id="lsExport">Export to Excel</button></div>
       <div class="table-wrap"><table>
         <thead><tr><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th><th>Enrolment</th><th>${esc(pname)} Balance</th><th>${esc(pname)} Days</th></tr></thead>
         <tbody>${shown.map(x => `<tr>

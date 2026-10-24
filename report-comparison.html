@@ -11,7 +11,7 @@
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20261015a" />
+<link rel="stylesheet" href="assets/styles.css?v=20261022a" />
 </head>
 <body>
 
@@ -188,9 +188,9 @@ async function renderPage(){
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply filter</button></div>
       </form>
       <div class="actions-row" style="margin-top:12px;">
-        <button class="btn-secondary" type="button" id="dlCmpAllBtn">Download Excel - all rows</button>
-        <button class="btn-secondary" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
-        <button class="btn-secondary" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
+        <button class="btn-export" type="button" id="dlCmpAllBtn">Download Excel - all rows</button>
+        <button class="btn-export" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
+        <button class="btn-export" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
         ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button>' : ""}
       </div>
     </div>
@@ -280,7 +280,7 @@ function renderUploadWizard(mount){
         <div><label>Wing to import *</label><select id="upWing"><option value="">Select…</option><option value="M-EE">M-EE</option><option value="W-EE">W-EE</option></select></div>
         <div><label>Product (default if no Product column mapped below)</label><select id="upProduct"><option value="">Select…</option>${productOpts}</select></div>
         <div><label>File</label><input type="file" id="upFile" accept=".xlsx,.xls,.csv" disabled/></div>
-        <div style="align-self:end;"><button class="btn-secondary" type="button" id="templateBtn">Download template</button></div>
+        <div style="align-self:end;"><button class="btn-export" type="button" id="templateBtn">Download template</button></div>
       </div>
       <p class="sub" id="upScopeHint" style="color:var(--edit);">Pick the Tehsil and Wing you're importing first. Only rows whose school belongs to that Tehsil + Wing will be imported - every other EMIS code in the file (a different tehsil, wing, or one not in SMP at all) is skipped and listed as "out of scope", even if the file also contains other tehsils' data.</p>
       <div id="wizardStep2"></div>

@@ -12,7 +12,7 @@
 <script src="assets/config.js?v=20261017a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="assets/styles.css?v=20261017a" />
+<link rel="stylesheet" href="assets/styles.css?v=20261022a" />
 </head>
 <body>
 
@@ -879,7 +879,7 @@ async function renderCompanyDataBody(visibleSchoolIds){
       <p class="sub">Uploaded by admins from vendor invoices. Rows whose invoice, product and quantity match your receipt are certified automatically - there is no manual certification. If a row is not matched, correct it in My Receipts: add the missing receipt, or edit or delete a wrong or doubled one, and it is re-checked automatically.</p>
       <div class="form-row" style="margin-bottom:12px;">
         <div><label>Product</label><select id="companyProduct"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
-        <div style="align-self:end;"><button class="btn-primary" type="button" id="companyApplyBtn">Apply filter</button> <button class="btn-secondary" type="button" id="companyDlBtn">Download Excel</button></div>
+        <div style="align-self:end;"><button class="btn-primary" type="button" id="companyApplyBtn">Apply filter</button> <button class="btn-export" type="button" id="companyDlBtn">Download Excel</button></div>
       </div>
       <div class="table-wrap"><table id="companyTable"><thead><tr>
         <th>Company date</th><th>AEO receipt date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty</th><th>Invoice #</th><th>Status</th><th>Matched with company invoice</th><th>Next step</th>
