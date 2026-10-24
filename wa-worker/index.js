@@ -1,12 +1,14 @@
 // SMP Ledger WhatsApp worker (Baileys). Sends only what the database hands out via fn_wa_claim_next().
 // The daily cap (max 20), time window, emergency stop and dry-run are all enforced in the database.
 import 'dotenv/config';
+import fs from 'node:fs';
 import * as baileys from '@whiskeysockets/baileys';
 const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
 const makeWASocket = typeof baileys.default === 'function' ? baileys.default : (baileys.makeWASocket || baileys.default?.default);
 import { createClient } from '@supabase/supabase-js';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) throw new Error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
@@ -34,20 +36,18 @@ async function start() {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // First-time link without a QR: set WA_PAIRING_NUMBER (digits with country code, e.g. 923047392281)
-  const pairNo = (process.env.WA_PAIRING_NUMBER || '').replace(/\D/g, '');
-  if (pairNo && !sock.authState.creds.registered) {
-    setTimeout(async () => {
-      try {
-        const code = await sock.requestPairingCode(pairNo);
-        log.info(`PAIRING CODE for +${pairNo}: ${code}  (WhatsApp > Linked devices > Link with phone number)`);
-      } catch (e) { log.error(e, 'pairing code request failed'); }
-    }, 3000);
-  }
-
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    if (qr) qrcode.generate(qr, { small: true });
-    if (connection === 'open') { connected = true; log.info('WhatsApp connected'); }
+    if (qr) {
+      // Link by scanning: WhatsApp > Linked devices > Link a device. A new QR is issued about every 20 seconds.
+      log.info('Scan this QR with WhatsApp (also saved as qr.png - open it from the file manager if the console garbles it)');
+      qrcode.generate(qr, { small: true });
+      QRCode.toFile('./qr.png', qr, { width: 480, margin: 2 }).catch((e) => log.warn(e, 'could not write qr.png'));
+    }
+    if (connection === 'open') {
+      connected = true;
+      log.info('WhatsApp connected');
+      fs.rm('./qr.png', { force: true }, () => {});   // the QR is no longer needed (and must not be left lying around)
+    }
     if (connection === 'close') {
       connected = false;
       const code = lastDisconnect?.error?.output?.statusCode;
@@ -55,6 +55,8 @@ async function start() {
         await emergencyStop(`Session ended (code ${code}). Possible restriction; do not relink until checked.`);
         process.exit(1);
       }
+      // Right after a successful QR scan WhatsApp asks for one restart - do that straight away.
+      if (code === DisconnectReason.restartRequired) { log.info('Restart required after linking, reconnecting'); start(); return; }
       log.warn({ code }, 'Disconnected, reconnecting in 15s');
       await sleep(15000);
       start();
