@@ -31,6 +31,17 @@ async function start() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // First-time link without a QR: set WA_PAIRING_NUMBER (digits with country code, e.g. 923047392281)
+  const pairNo = (process.env.WA_PAIRING_NUMBER || '').replace(/\D/g, '');
+  if (pairNo && !sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(pairNo);
+        log.info(`PAIRING CODE for +${pairNo}: ${code}  (WhatsApp > Linked devices > Link with phone number)`);
+      } catch (e) { log.error(e, 'pairing code request failed'); }
+    }, 3000);
+  }
+
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) qrcode.generate(qr, { small: true });
     if (connection === 'open') { connected = true; log.info('WhatsApp connected'); }
