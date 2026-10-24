@@ -536,6 +536,9 @@ async function loadHealth(){
         <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">Find schools running low on a product</div>
         <div class="form-row" style="align-items:end;">
           <div><label>Product</label><select id="lsProduct">${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+          <div><label>Wing</label><select id="lsWing">${lsGeoOptionsHtml({}).wing}</select></div>
+          <div><label>Tehsil</label><select id="lsTehsil">${lsGeoOptionsHtml({}).tehsil}</select></div>
+          <div><label>Markaz</label><select id="lsMarkaz">${lsGeoOptionsHtml({}).markaz}</select></div>
           <div><label>Less than (days of stock)</label><input type="number" id="lsDays" min="0" step="0.5" placeholder="e.g. 6"/></div>
           <div><button class="btn-primary" type="button" id="lsApply">Apply filter</button></div>
         </div>
@@ -650,15 +653,37 @@ let healthState = null;      // balances / enrolment of the current scope, kept 
 let lowStockResult = null;   // exactly what is on screen, so the export matches it
 let lowStockExporting = false;
 
-function computeLowStock(productId, days){
+// Wing / Tehsil / Markaz choices for the finder, taken from the schools in the dashboard's scope and narrowing each other.
+function lsGeoChoices(sel){
+  const mk = id => cache.markaz.find(m => m.id === id);
+  const inWing = healthState.scoped.filter(s => !sel.wing || s.wing === sel.wing);
+  const wings = [...new Set(healthState.scoped.map(s => s.wing).filter(Boolean))].sort();
+  const tehsils = [...new Set(inWing.map(s => mk(s.markaz_id)?.tehsil).filter(Boolean))].sort();
+  const inTehsil = inWing.filter(s => !sel.tehsil || mk(s.markaz_id)?.tehsil === sel.tehsil);
+  const markaz = [...new Map(inTehsil.map(s => [s.markaz_id, mk(s.markaz_id)]).filter(x => x[1])).values()].sort((a, b) => a.name.localeCompare(b.name));
+  return { wings, tehsils, markaz };
+}
+function lsGeoOptionsHtml(sel){
+  const c = lsGeoChoices(sel);
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+  return {
+    wing: `<option value="">All wings</option>` + c.wings.map(w => opt(w, w, sel.wing)).join(""),
+    tehsil: `<option value="">All tehsils</option>` + c.tehsils.map(x => opt(x, x, sel.tehsil)).join(""),
+    markaz: `<option value="">All markaz</option>` + c.markaz.map(m => opt(m.id, m.name, sel.markaz)).join(""),
+  };
+}
+
+function computeLowStock(productId, days, geo){
   const product = cache.products.find(p => p.id === productId);
-  const rows = healthState.scoped.map(s => {
+  const mkOf = s => cache.markaz.find(m => m.id === s.markaz_id);
+  const inScope = healthState.scoped.filter(s => (!geo.wing || s.wing === geo.wing) && (!geo.tehsil || mkOf(s)?.tehsil === geo.tehsil) && (!geo.markaz || s.markaz_id === geo.markaz));
+  const rows = inScope.map(s => {
     const enrolment = healthState.enrolmentByEmis[s.emis_code];
     const balance = healthState.balanceBy[s.id]?.[productId] ?? 0;
     return { school: s, enrolment, balance, days: enrolment ? balance / enrolment : null };
   });
   const low = rows.filter(r => r.days !== null && r.days < days).sort((a, b) => a.days - b.days);
-  return { product, days, low, noEnrolment: rows.filter(r => r.days === null).length, total: rows.length };
+  return { product, days, geo, low, noEnrolment: rows.filter(r => r.days === null).length, total: rows.length };
 }
 
 function applyLowStock(){
@@ -670,20 +695,22 @@ function applyLowStock(){
   const days = Number(raw);
   if(!productId){ toast("Choose a product", "bad"); return; }
   if(raw === "" || !(days > 0)){ toast("Enter the number of days (more than 0)", "bad"); return; }
-  const r = computeLowStock(productId, days);
+  const geo = { wing: document.getElementById("lsWing").value, tehsil: document.getElementById("lsTehsil").value, markaz: document.getElementById("lsMarkaz").value };
+  const r = computeLowStock(productId, days, geo);
   lowStockResult = r;
+  const where = [geo.wing && `Wing ${geo.wing}`, geo.tehsil && `Tehsil ${geo.tehsil}`, geo.markaz && `Markaz ${cache.markaz.find(m => m.id === geo.markaz)?.name || ""}`].filter(Boolean).join(" · ");
   const pname = r.product ? r.product.product_name : "this product";
   const shown = r.low.slice(0, 300);
   box.innerHTML = `
-    <div><b>${fmt(r.low.length)}</b> of ${fmt(r.total)} schools in scope have less than <b>${fmt(days)}</b> day${days === 1 ? "" : "s"} of <b>${esc(pname)}</b>.
+    <div><b>${fmt(r.low.length)}</b> of ${fmt(r.total)} schools${where ? ` (${esc(where)})` : " in scope"} have less than <b>${fmt(days)}</b> day${days === 1 ? "" : "s"} of <b>${esc(pname)}</b>.
       ${r.noEnrolment ? `<span style="color:var(--ink-soft);"> ${fmt(r.noEnrolment)} school${r.noEnrolment === 1 ? " has" : "s have"} no enrolment figure, so days can't be worked out for them and they are not listed.</span>` : ""}</div>
     ${r.low.length ? `
       <div class="actions-row" style="margin:10px 0;"><button class="btn-secondary" type="button" id="lsExport">Export to Excel</button></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Markaz</th><th>EMIS</th><th>School</th><th>Enrolment</th><th>${esc(pname)} Balance</th><th>${esc(pname)} Days</th></tr></thead>
+        <thead><tr><th>Markaz</th><th>EMIS</th><th>School</th><th>Wing</th><th>Enrolment</th><th>${esc(pname)} Balance</th><th>${esc(pname)} Days</th></tr></thead>
         <tbody>${shown.map(x => `<tr>
           <td>${esc(cache.markaz.find(m => m.id === x.school.markaz_id)?.name || "—")}</td>
-          <td>${esc(x.school.emis_code)}</td><td>${esc(x.school.school_name)}</td><td>${fmt(x.enrolment)}</td>
+          <td>${esc(x.school.emis_code)}</td><td>${esc(x.school.school_name)}</td><td>${esc(x.school.wing || "—")}</td><td>${fmt(x.enrolment)}</td>
           <td>${fmt(x.balance)}</td><td style="color:var(--bad-fg);font-weight:600;">${fmt(x.days)}</td></tr>`).join("")}</tbody>
       </table></div>
       ${r.low.length > shown.length ? `<div class="sub" style="margin-top:6px;">Showing the first ${shown.length} of ${fmt(r.low.length)}. The Excel export has all of them.</div>` : ""}`
@@ -699,10 +726,10 @@ async function exportLowStock(){
   try{
     await loadXlsxLib();
     const pname = r.product ? r.product.product_name : "Product";
-    const header = ["Tehsil", "Markaz", "EMIS Code", "School Name", "Enrolment", `${pname} Balance`, `${pname} Days of Stock`];
+    const header = ["Wing", "Tehsil", "Markaz", "EMIS Code", "School Name", "Enrolment", `${pname} Balance`, `${pname} Days of Stock`];
     const body = r.low.map(x => {
       const mk = cache.markaz.find(m => m.id === x.school.markaz_id);
-      return [mk?.tehsil || "", mk?.name || "", x.school.emis_code, x.school.school_name, x.enrolment, x.balance, Math.round(x.days * 100) / 100];
+      return [x.school.wing || "", mk?.tehsil || "", mk?.name || "", x.school.emis_code, x.school.school_name, x.enrolment, x.balance, Math.round(x.days * 100) / 100];
     });
     const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
     const wb = XLSX.utils.book_new();
@@ -723,6 +750,16 @@ document.addEventListener("click", (e) => {
   const t = e.target.closest && e.target.closest("#lsApply, #lsExport");
   if(!t) return;
   if(t.id === "lsApply") applyLowStock(); else exportLowStock();
+});
+// Wing -> Tehsil -> Markaz narrow each other's choices as you pick (nothing is loaded or listed until Apply filter).
+document.addEventListener("change", (e) => {
+  const id = e.target && e.target.id;
+  if(id !== "lsWing" && id !== "lsTehsil") return;
+  const g = (i) => document.getElementById(i);
+  const sel = { wing: g("lsWing").value, tehsil: id === "lsWing" ? "" : g("lsTehsil").value, markaz: "" };
+  const o = lsGeoOptionsHtml(sel);
+  if(id === "lsWing") g("lsTehsil").innerHTML = o.tehsil;
+  g("lsMarkaz").innerHTML = o.markaz;
 });
 document.addEventListener("keydown", (e) => {
   if(e.key === "Enter" && e.target && e.target.id === "lsDays"){ e.preventDefault(); applyLowStock(); }
