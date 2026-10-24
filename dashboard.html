@@ -512,6 +512,8 @@ async function loadHealth(){
     return { school: s, enrolment, milkBal, biscuitBal, milkDays, biscuitDays,
       milkLow: milkDays !== null && milkDays < 6, biscuitLow: biscuitDays !== null && biscuitDays < 2 };
   });
+  healthState = { scoped, balanceBy, enrolmentByEmis, enrolmentError };   // used by the low-stock finder below
+  lowStockResult = null;                                                   // a re-drawn section starts un-applied
   const milkLowRows = health.filter(r => r.milkLow).sort((a,b) => a.milkDays - b.milkDays);
   const biscuitLowRows = health.filter(r => r.biscuitLow).sort((a,b) => a.biscuitDays - b.biscuitDays);
   const zeroStockRows = health.filter(r => r.milkBal <= 0 || r.biscuitBal <= 0);
@@ -530,8 +532,15 @@ async function loadHealth(){
         <div class="stat"><div class="n">${zeroStockRows.length}</div><div class="l">Zero or negative stock</div></div>
         <div class="stat"><div class="n">${outstandingLoans === null ? "—" : outstandingLoans}</div><div class="l">Rationalization of Stock (not yet returned)</div></div>
       </div>
-      ${renderHealthTable("⚠ Milk under 6 days", milkLowRows, "milk")}
-      ${renderHealthTable("⚠ Biscuits under 2 days", biscuitLowRows, "biscuit")}
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
+        <div style="font-weight:600; font-size:13px; color:var(--navy); margin-bottom:8px;">Find schools running low on a product</div>
+        <div class="form-row" style="align-items:end;">
+          <div><label>Product</label><select id="lsProduct">${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
+          <div><label>Less than (days of stock)</label><input type="number" id="lsDays" min="0" step="0.5" placeholder="e.g. 6"/></div>
+          <div><button class="btn-primary" type="button" id="lsApply">Apply filter</button></div>
+        </div>
+        <div id="lsResult" class="sub" style="margin-top:10px;">Choose a product and the number of days, then click Apply filter. No schools are listed until you do.</div>
+      </div>
     </div>`;
 }
 
@@ -635,6 +644,89 @@ async function downloadReceived(kind){
     btns.forEach((b, i) => { b.disabled = false; b.textContent = labels[i]; });
   }
 }
+
+/* ----- Low-stock finder: pick a product + number of days, click Apply filter, then (optionally) export to Excel ----- */
+let healthState = null;      // balances / enrolment of the current scope, kept by loadHealth so Apply works instantly
+let lowStockResult = null;   // exactly what is on screen, so the export matches it
+let lowStockExporting = false;
+
+function computeLowStock(productId, days){
+  const product = cache.products.find(p => p.id === productId);
+  const rows = healthState.scoped.map(s => {
+    const enrolment = healthState.enrolmentByEmis[s.emis_code];
+    const balance = healthState.balanceBy[s.id]?.[productId] ?? 0;
+    return { school: s, enrolment, balance, days: enrolment ? balance / enrolment : null };
+  });
+  const low = rows.filter(r => r.days !== null && r.days < days).sort((a, b) => a.days - b.days);
+  return { product, days, low, noEnrolment: rows.filter(r => r.days === null).length, total: rows.length };
+}
+
+function applyLowStock(){
+  const box = document.getElementById("lsResult");
+  if(!box) return;
+  if(!healthState){ toast("Inventory data is still loading - please try again in a moment.", "bad"); return; }
+  const productId = document.getElementById("lsProduct").value;
+  const raw = document.getElementById("lsDays").value;
+  const days = Number(raw);
+  if(!productId){ toast("Choose a product", "bad"); return; }
+  if(raw === "" || !(days > 0)){ toast("Enter the number of days (more than 0)", "bad"); return; }
+  const r = computeLowStock(productId, days);
+  lowStockResult = r;
+  const pname = r.product ? r.product.product_name : "this product";
+  const shown = r.low.slice(0, 300);
+  box.innerHTML = `
+    <div><b>${fmt(r.low.length)}</b> of ${fmt(r.total)} schools in scope have less than <b>${fmt(days)}</b> day${days === 1 ? "" : "s"} of <b>${esc(pname)}</b>.
+      ${r.noEnrolment ? `<span style="color:var(--ink-soft);"> ${fmt(r.noEnrolment)} school${r.noEnrolment === 1 ? " has" : "s have"} no enrolment figure, so days can't be worked out for them and they are not listed.</span>` : ""}</div>
+    ${r.low.length ? `
+      <div class="actions-row" style="margin:10px 0;"><button class="btn-secondary" type="button" id="lsExport">Export to Excel</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Markaz</th><th>EMIS</th><th>School</th><th>Enrolment</th><th>${esc(pname)} Balance</th><th>${esc(pname)} Days</th></tr></thead>
+        <tbody>${shown.map(x => `<tr>
+          <td>${esc(cache.markaz.find(m => m.id === x.school.markaz_id)?.name || "—")}</td>
+          <td>${esc(x.school.emis_code)}</td><td>${esc(x.school.school_name)}</td><td>${fmt(x.enrolment)}</td>
+          <td>${fmt(x.balance)}</td><td style="color:var(--bad-fg);font-weight:600;">${fmt(x.days)}</td></tr>`).join("")}</tbody>
+      </table></div>
+      ${r.low.length > shown.length ? `<div class="sub" style="margin-top:6px;">Showing the first ${shown.length} of ${fmt(r.low.length)}. The Excel export has all of them.</div>` : ""}`
+    : ""}`;
+}
+
+async function exportLowStock(){
+  const r = lowStockResult;
+  if(!r || !r.low.length || lowStockExporting) return;
+  lowStockExporting = true;
+  const btn = document.getElementById("lsExport"), label = btn ? btn.textContent : "";
+  if(btn){ btn.disabled = true; btn.textContent = "Preparing…"; }
+  try{
+    await loadXlsxLib();
+    const pname = r.product ? r.product.product_name : "Product";
+    const header = ["Tehsil", "Markaz", "EMIS Code", "School Name", "Enrolment", `${pname} Balance`, `${pname} Days of Stock`];
+    const body = r.low.map(x => {
+      const mk = cache.markaz.find(m => m.id === x.school.markaz_id);
+      return [mk?.tehsil || "", mk?.name || "", x.school.emis_code, x.school.school_name, x.enrolment, x.balance, Math.round(x.days * 100) / 100];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, `${pname} low stock`.slice(0, 31));
+    const safe = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    XLSX.writeFile(wb, `low-stock_${safe(pname)}_under-${safe(r.days)}-days_${todayStr()}.xlsx`);
+    toast(`Exported ${r.low.length} school${r.low.length === 1 ? "" : "s"}.`);
+  }catch(err){
+    toast(`Export failed: ${(err && err.message) || "unknown error"}`, "bad");
+  }finally{
+    lowStockExporting = false;
+    if(btn){ btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+// One listener for the finder's buttons (the section is re-drawn whenever the dashboard filters are applied).
+document.addEventListener("click", (e) => {
+  const t = e.target.closest && e.target.closest("#lsApply, #lsExport");
+  if(!t) return;
+  if(t.id === "lsApply") applyLowStock(); else exportLowStock();
+});
+document.addEventListener("keydown", (e) => {
+  if(e.key === "Enter" && e.target && e.target.id === "lsDays"){ e.preventDefault(); applyLowStock(); }
+});
 
 function renderHealthTable(title, rows, highlight){
   if(rows.length === 0) return "";
