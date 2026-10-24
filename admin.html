@@ -109,6 +109,7 @@ const SECTIONS = [
   { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
   { id:"report", label:"Missing Consumption Report", desc:"Auto-email missing-consumption reports - to concerned persons and to each user" },
   { id:"locks", label:"Inventory & Consumption Period Lock", desc:"Lock a product's inventory and/or consumption entries through a date" },
+  { id:"whatsapp", label:"WhatsApp Automation", desc:"Tehsil-wise missing-consumption messages to added recipients (max 20/day)" },
   { id:"health", label:"System Health", desc:"Database keep-alive status" },
 ];
 let currentSection = "schedule";
@@ -127,6 +128,7 @@ function renderPage(){
   if(currentSection === "health") renderHealthSection();
   else if(currentSection === "report") renderReportSection();
   else if(currentSection === "locks") renderLocksSection();
+  else if(currentSection === "whatsapp") renderWhatsappSection();
   else renderScheduleSection();
 }
 
@@ -598,6 +600,183 @@ async function renderHealthSection(){
     </div>`;
 }
 function fmtDateTime(ts){ return new Date(ts).toLocaleString(undefined, { year:"numeric", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" }); }
+
+/* ===================== WHATSAPP AUTOMATION ===================== */
+async function renderWhatsappSection(){
+  const content = document.getElementById("adminSectionContent");
+  content.innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
+  const dayStart = lkPkToday() + "T00:00:00+05:00";
+  const [setRes, recRes, qRes, usedRes, tehRes] = await Promise.all([
+    sb.from("wa_settings").select("*").eq("id", true).single(),
+    sb.from("wa_recipients").select("*").order("tehsil").order("recipient_name"),
+    sb.from("wa_queue").select("id,status,attempt_count,period_start,period_end,last_error,sent_at,created_at,provider_message_id,priority,wa_recipients(recipient_name,tehsil)").order("created_at", { ascending:false }).limit(100),
+    sb.from("wa_logs").select("id", { count:"exact", head:true }).eq("event","claim").eq("dry_run", false).gte("created_at", dayStart),
+    sb.from("markaz").select("tehsil").eq("active", true)
+  ]);
+  const firstErr = setRes.error || recRes.error || qRes.error || usedRes.error || tehRes.error;
+  if(firstErr){ content.innerHTML = `<div class="card"><div class="err">${esc(firstErr.message)}</div></div>`; return; }
+
+  const s = setRes.data, recs = recRes.data || [], queue = qRes.data || [], used = usedRes.count || 0;
+  const tehsils = [...new Set((tehRes.data || []).map(r => r.tehsil).filter(Boolean))].sort();
+  const stCls = { sent:"pill-ok", delivered:"pill-ok", queued:"pill-warn", processing:"pill-warn", dry_run:"pill-role", skipped:"pill-role", failed:"pill-bad", cancelled:"pill-bad" };
+
+  content.innerHTML = `
+    <div class="card">
+      <h3>WhatsApp Automation</h3>
+      <p class="sub">Sends each added recipient a missing-consumption summary for their tehsil (Markaz-wise), using the same data as Operations &rarr; Missing Consumption. Hard limit: ${s.daily_cap} messages per day in total. Pakistan time (Asia/Karachi).</p>
+      <div class="grid-4" style="margin-top:14px;">
+        <div class="stat"><div class="n" style="color:${s.emergency_stop ? 'var(--bad-fg)' : (s.enabled ? 'var(--ok-fg)' : 'inherit')}">${s.emergency_stop ? "STOPPED" : (s.enabled ? (s.dry_run ? "Dry-run" : "Live") : "Off")}</div><div class="l">Status</div></div>
+        <div class="stat"><div class="n">${used} / ${s.daily_cap}</div><div class="l">Messages used today</div></div>
+        <div class="stat"><div class="n">${recs.filter(r => r.active && r.consent_status === "granted").length}</div><div class="l">Active recipients</div></div>
+      </div>
+      <div class="form-row" style="margin-top:6px;">
+        <div><label>Automation</label><select id="waEnabled"><option value="true" ${s.enabled ? "selected" : ""}>Enabled</option><option value="false" ${!s.enabled ? "selected" : ""}>Disabled</option></select></div>
+        <div><label>Mode</label><select id="waDry"><option value="true" ${s.dry_run ? "selected" : ""}>Dry-run (nothing is sent)</option><option value="false" ${!s.dry_run ? "selected" : ""}>Live (real messages)</option></select></div>
+        <div><label>Daily limit (max 20)</label><input type="number" id="waCap" min="0" max="20" value="${s.daily_cap}"/></div>
+      </div>
+      <div class="form-row">
+        <div><label>Queue reports after (PKT)</label><input type="time" id="waSendTime" value="${esc(String(s.send_time).slice(0,5))}"/></div>
+        <div><label>Sending window start</label><input type="time" id="waWinStart" value="${esc(String(s.window_start).slice(0,5))}"/></div>
+        <div><label>Sending window end</label><input type="time" id="waWinEnd" value="${esc(String(s.window_end).slice(0,5))}"/></div>
+        <div><label>Lookback (days)</label><input type="number" id="waLookback" min="1" max="30" value="${s.lookback_days}"/></div>
+      </div>
+      <div class="actions-row" style="margin-top:14px;">
+        <button class="btn-primary" type="button" id="waSaveBtn">Save Settings</button>
+        <button class="${s.emergency_stop ? 'btn-secondary' : 'btn-danger'}" type="button" id="waStopBtn">${s.emergency_stop ? "Clear Emergency Stop" : "Emergency Stop"}</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Add Recipient</h3>
+      <p class="sub">Only people added here receive messages. Add consent before activating; a "STOP" reply opts a recipient out automatically.</p>
+      <div class="form-row" style="margin-top:12px;">
+        <div><label>Name</label><input type="text" id="waName" placeholder="Recipient name"/></div>
+        <div><label>WhatsApp number</label><input type="text" id="waPhone" placeholder="03001234567 or +923001234567"/></div>
+        <div><label>Tehsil</label><select id="waTehsil"><option value="">Select…</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
+        <div><label>Wing (optional)</label><select id="waWing"><option value="">All wings</option><option value="M-EE">M-EE</option><option value="W-EE">W-EE</option></select></div>
+      </div>
+      <div class="form-row">
+        <div><label>Consent source</label><input type="text" id="waConsentSrc" placeholder="e.g. agreed verbally / written"/></div>
+        <div><label>Consent given?</label><select id="waConsent"><option value="pending">Not yet</option><option value="granted">Yes - consent recorded</option></select></div>
+      </div>
+      <div class="actions-row" style="margin-top:12px;"><button class="btn-primary" type="button" id="waAddBtn">Add Recipient</button></div>
+    </div>
+
+    <div class="card">
+      <h3>Recipients (${recs.length})</h3>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Wing</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
+        ${recs.length ? recs.map(r => `<tr>
+          <td>${esc(r.recipient_name)}</td><td>${esc(r.phone_e164)}</td><td>${esc(r.tehsil)}</td><td>${esc(r.wing || "All")}</td>
+          <td><span class="pill ${r.consent_status === 'granted' ? 'pill-ok' : (r.consent_status === 'opted_out' ? 'pill-bad' : 'pill-warn')}">${esc(r.consent_status)}</span></td>
+          <td><span class="pill ${r.active ? 'pill-ok' : 'pill-role'}">${r.active ? "Active" : "Inactive"}</span></td>
+          <td style="white-space:nowrap;">
+            <button class="btn-secondary" data-act="preview" data-id="${esc(r.id)}">Preview</button>
+            ${r.consent_status !== "granted" ? `<button class="btn-secondary" data-act="consent" data-id="${esc(r.id)}">Record consent</button>` : ""}
+            <button class="btn-secondary" data-act="toggle" data-id="${esc(r.id)}" data-active="${r.active}">${r.active ? "Deactivate" : "Activate"}</button>
+            <button class="btn-danger" data-act="delete" data-id="${esc(r.id)}">Delete</button>
+          </td></tr>`).join("") : `<tr><td colspan="7" style="color:var(--ink-soft)">No recipients added yet.</td></tr>`}
+      </tbody></table></div>
+      <pre id="waPreviewBox" style="display:none; white-space:pre-wrap; background:var(--paper); border:1px solid var(--border); border-radius:8px; padding:12px; margin-top:12px; font-size:13px;"></pre>
+    </div>
+
+    <div class="card">
+      <h3>Queue &amp; Delivery Log (latest 100)</h3>
+      <div style="margin-bottom:10px;"><select id="waStatusFilter"><option value="">All statuses</option>${["queued","processing","sent","delivered","failed","skipped","cancelled","dry_run"].map(x => `<option value="${x}">${x}</option>`).join("")}</select></div>
+      <div class="table-wrap"><table><thead><tr><th>Created</th><th>Recipient</th><th>Tehsil</th><th>Period</th><th>Status</th><th>Attempts</th><th>Sent</th><th>Note</th></tr></thead><tbody id="waQueueBody"></tbody></table></div>
+    </div>`;
+
+  function drawQueue(){
+    const f = document.getElementById("waStatusFilter").value;
+    const rows = queue.filter(q => !f || q.status === f);
+    document.getElementById("waQueueBody").innerHTML = rows.length ? rows.map(q => `<tr>
+      <td>${fmtDateTime(q.created_at)}</td><td>${esc(q.wa_recipients?.recipient_name || "—")}</td><td>${esc(q.wa_recipients?.tehsil || "—")}</td>
+      <td>${fmtDate(q.period_start)}${q.period_start !== q.period_end ? " – " + fmtDate(q.period_end) : ""}</td>
+      <td><span class="pill ${stCls[q.status] || 'pill-role'}">${esc(q.status)}</span></td><td>${q.attempt_count}</td>
+      <td>${q.sent_at ? fmtDateTime(q.sent_at) : "—"}</td><td>${esc(q.last_error || "")}</td></tr>`).join("")
+      : `<tr><td colspan="8" style="color:var(--ink-soft)">Nothing to show.</td></tr>`;
+  }
+  drawQueue();
+  document.getElementById("waStatusFilter").onchange = drawQueue;
+
+  function normPhone(v){
+    let p = String(v || "").replace(/[\s\-()]/g, "");
+    if(/^03\d{9}$/.test(p)) p = "+92" + p.slice(1);
+    else if(/^923\d{9}$/.test(p)) p = "+" + p;
+    return /^\+[1-9]\d{7,14}$/.test(p) ? p : null;
+  }
+
+  document.getElementById("waSaveBtn").onclick = async () => {
+    const cap = parseInt(document.getElementById("waCap").value, 10);
+    const look = parseInt(document.getElementById("waLookback").value, 10);
+    if(!(cap >= 0 && cap <= 20)){ toast("Daily limit must be between 0 and 20", "bad"); return; }
+    if(!(look >= 1 && look <= 30)){ toast("Lookback must be 1-30 days", "bad"); return; }
+    const goingLive = document.getElementById("waDry").value === "false" && document.getElementById("waEnabled").value === "true";
+    if(goingLive && !confirm("Live mode will send real WhatsApp messages to active, consented recipients. Continue?")) return;
+    const { error } = await sb.from("wa_settings").update({
+      enabled: document.getElementById("waEnabled").value === "true",
+      dry_run: document.getElementById("waDry").value === "true",
+      daily_cap: cap, lookback_days: look,
+      send_time: document.getElementById("waSendTime").value,
+      window_start: document.getElementById("waWinStart").value,
+      window_end: document.getElementById("waWinEnd").value,
+      updated_by: currentUser.id, updated_at: new Date().toISOString()
+    }).eq("id", true);
+    if(error){ toast(error.message, "bad"); return; }
+    toast("Settings saved"); renderWhatsappSection();
+  };
+
+  document.getElementById("waStopBtn").onclick = async () => {
+    const { error } = await sb.from("wa_settings").update({ emergency_stop: !s.emergency_stop, updated_by: currentUser.id, updated_at: new Date().toISOString() }).eq("id", true);
+    if(error){ toast(error.message, "bad"); return; }
+    toast(s.emergency_stop ? "Emergency stop cleared" : "Emergency stop ON - nothing will be sent"); renderWhatsappSection();
+  };
+
+  document.getElementById("waAddBtn").onclick = async () => {
+    const name = document.getElementById("waName").value.trim();
+    const phone = normPhone(document.getElementById("waPhone").value);
+    const tehsil = document.getElementById("waTehsil").value;
+    if(!name){ toast("Enter a name", "bad"); return; }
+    if(!phone){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
+    if(!tehsil){ toast("Select a tehsil", "bad"); return; }
+    const consent = document.getElementById("waConsent").value;
+    const { error } = await sb.from("wa_recipients").insert({
+      recipient_name: name, phone_e164: phone, tehsil,
+      wing: document.getElementById("waWing").value || null,
+      consent_status: consent, consent_source: document.getElementById("waConsentSrc").value.trim() || null,
+      active: false, created_by: currentUser.id
+    });
+    if(error){ toast(error.code === "23505" ? "That number is already added" : error.message, "bad"); return; }
+    toast("Recipient added (inactive until you activate it)"); renderWhatsappSection();
+  };
+
+  content.querySelectorAll("button[data-act]").forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.id, act = b.dataset.act;
+      const rec = recs.find(r => r.id === id);
+      if(act === "preview"){
+        const { data, error } = await sb.rpc("fn_wa_preview", { p_recipient_id: id });
+        const box = document.getElementById("waPreviewBox");
+        box.style.display = "block";
+        box.textContent = error ? "Preview failed: " + error.message : (data[0].missing_schools === 0 ? "No missing entries for the current period - no message would be sent." : data[0].message_text);
+        return;
+      }
+      if(act === "delete"){
+        if(!confirm(`Delete ${rec.recipient_name}? Their queue history is removed too.`)) return;
+        const { error } = await sb.from("wa_recipients").delete().eq("id", id);
+        if(error){ toast(error.message, "bad"); return; }
+      } else if(act === "toggle"){
+        const turnOn = b.dataset.active !== "true";
+        if(turnOn && rec.consent_status !== "granted"){ toast("Record consent before activating", "bad"); return; }
+        const { error } = await sb.from("wa_recipients").update({ active: turnOn }).eq("id", id);
+        if(error){ toast(error.message, "bad"); return; }
+      } else if(act === "consent"){
+        const { error } = await sb.from("wa_recipients").update({ consent_status: "granted" }).eq("id", id);
+        if(error){ toast(error.message, "bad"); return; }
+      }
+      renderWhatsappSection();
+    };
+  });
+}
 
 /* ===================== CONSUMPTION SCHEDULE ===================== */
 function renderScheduleSection(){
