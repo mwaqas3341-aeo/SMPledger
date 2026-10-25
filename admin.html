@@ -612,13 +612,21 @@ async function renderWhatsappSection(){
     sb.from("wa_queue").select("id,status,attempt_count,period_start,period_end,last_error,sent_at,created_at,provider_message_id,priority,wa_recipients(recipient_name,tehsil)").order("created_at", { ascending:false }).limit(100),
     sb.from("wa_logs").select("id", { count:"exact", head:true }).eq("event","claim").eq("dry_run", false).gte("created_at", dayStart),
     sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
-    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope").eq("active", true).in("role", ["aeo","tr"]).order("full_name")
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr"]).order("full_name")
   ]);
   const firstErr = setRes.error || recRes.error || qRes.error || usedRes.error || tehRes.error || profRes.error;
   if(firstErr){ content.innerHTML = `<div class="card"><div class="err">${esc(firstErr.message)}</div></div>`; return; }
 
   const s = setRes.data, recs = recRes.data || [], queue = qRes.data || [], used = usedRes.count || 0;
   const markazList = tehRes.data || [], waUsers = profRes.data || [];
+  // which wings each markaz actually has schools in (so the markaz list can follow the Wing choice)
+  const markazWings = {};
+  for(let from = 0; ; from += 1000){
+    const { data: sw, error: swErr } = await sb.from("schools").select("markaz_id,wing").eq("active", true).range(from, from + 999);
+    if(swErr || !sw) break;
+    sw.forEach(x => { (markazWings[x.markaz_id] = markazWings[x.markaz_id] || new Set()).add(x.wing); });
+    if(sw.length < 1000) break;
+  }
   const markazById = Object.fromEntries(markazList.map(m => [m.id, m]));
   const districts = [...new Set(markazList.map(m => m.district).filter(Boolean))].sort();
   const scopeLabel = r => r.scope_type === "own"
@@ -655,42 +663,41 @@ async function renderWhatsappSection(){
     </div>
 
     <div class="card">
-      <h3>Add Recipient</h3>
+      <h3 id="waFormTitle">Add Recipient</h3>
       <p class="sub">Only people added here receive messages. Add consent before activating; a "STOP" reply opts a recipient out automatically.</p>
       <div class="form-row" style="margin-top:12px;">
         <div><label>Name</label><input type="text" id="waName" placeholder="Recipient name"/></div>
-        <div><label>WhatsApp number</label><input type="text" id="waPhone" placeholder="03001234567 or +923001234567"/></div>
+        <div><label>WhatsApp number</label><input type="text" id="waPhone" placeholder="03001234567 (can be added later)"/></div>
         <div><label>Reports to receive</label><select id="waScope">
-          <option value="tehsil">Whole tehsil</option>
-          <option value="markaz">Selected markaz only (one or more)</option>
-          <option value="own">Own jurisdiction only (linked user)</option></select></div>
+          <option value="markaz">Selected markaz (one or more - one combined message)</option>
+          <option value="tehsil">Whole tehsil (markaz-wise detail)</option></select></div>
       </div>
       <div class="form-row">
-        <div id="waUserBox" style="display:none;"><label>Linked user (AEO / TR)</label><select id="waUser"><option value="">Select user…</option>${waUsers.map(u => `<option value="${esc(u.id)}">${esc(u.full_name)} (${esc(u.role.toUpperCase())}${u.markaz_id && markazById[u.markaz_id] ? " - " + esc(markazById[u.markaz_id].name) : ""})</option>`).join("")}</select></div>
         <div id="waDistBox"><label>District</label><select id="waDistrict"><option value="">Select…</option>${districts.map(d => `<option value="${esc(d)}"${districts.length === 1 ? " selected" : ""}>${esc(d)}</option>`).join("")}</select></div>
         <div id="waWingBox"><label>Wing (optional)</label><select id="waWing"><option value="">All wings</option><option value="M-EE">M-EE</option><option value="W-EE">W-EE</option></select></div>
         <div id="waTehBox"><label>Tehsil</label><select id="waTehsil"><option value="">Select…</option></select></div>
       </div>
-      <div id="waMarkazBox" style="display:none; margin-top:6px;">
-        <label>Markaz (tick one or more)</label>
+      <div id="waMarkazBox" style="margin-top:6px;">
+        <label>Markaz (tick one or more - include any extra markaz this person covers)</label>
         <div id="waMarkazList" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:6px 14px; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--paper); max-height:220px; overflow:auto;"><span style="color:var(--ink-soft)">Select a tehsil first.</span></div>
       </div>
       <div class="form-row">
         <div><label>Consent source</label><input type="text" id="waConsentSrc" placeholder="e.g. agreed verbally / written"/></div>
         <div><label>Consent given?</label><select id="waConsent"><option value="pending">Not yet</option><option value="granted">Yes - consent recorded</option></select></div>
       </div>
-      <div class="actions-row" style="margin-top:12px;"><button class="btn-primary" type="button" id="waAddBtn">Add Recipient</button></div>
+      <div class="actions-row" style="margin-top:12px;"><button class="btn-primary" type="button" id="waAddBtn">Add Recipient</button> <button class="btn-secondary" type="button" id="waCancelEdit" style="display:none;">Cancel edit</button></div>
     </div>
 
     <div class="card">
       <h3>Recipients (${recs.length})</h3>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Receives</th><th>Wing</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
         ${recs.length ? recs.map(r => `<tr>
-          <td>${esc(r.recipient_name)}</td><td>${esc(r.phone_e164)}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td>
+          <td>${esc(r.recipient_name)}</td><td>${r.phone_e164 ? esc(r.phone_e164) : `<span style="color:var(--bad-fg)">add number</span>`}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td>
           <td><span class="pill ${r.consent_status === 'granted' ? 'pill-ok' : (r.consent_status === 'opted_out' ? 'pill-bad' : 'pill-warn')}">${esc(r.consent_status)}</span></td>
           <td><span class="pill ${r.active ? 'pill-ok' : 'pill-role'}">${r.active ? "Active" : "Inactive"}</span></td>
           <td style="white-space:nowrap;">
             <button class="btn-secondary" data-act="preview" data-id="${esc(r.id)}">Preview</button>
+            <button class="btn-secondary" data-act="edit" data-id="${esc(r.id)}">Edit</button>
             ${r.consent_status !== "granted" ? `<button class="btn-secondary" data-act="consent" data-id="${esc(r.id)}">Record consent</button>` : ""}
             <button class="btn-secondary" data-act="toggle" data-id="${esc(r.id)}" data-active="${r.active}">${r.active ? "Deactivate" : "Activate"}</button>
             <button class="btn-danger" data-act="delete" data-id="${esc(r.id)}">Delete</button>
@@ -752,71 +759,86 @@ async function renderWhatsappSection(){
   };
 
   const $ = id => document.getElementById(id);
-  function drawTehsils(){
+  let editingId = null;
+  function drawTehsils(keepTehsil){
     const d = $("waDistrict").value;
     const list = [...new Set(markazList.filter(m => !d || m.district === d).map(m => m.tehsil).filter(Boolean))].sort();
-    $("waTehsil").innerHTML = `<option value="">Select…</option>` + list.map(t => `<option value="${esc(t)}"${list.length === 1 ? " selected" : ""}>${esc(t)}</option>`).join("");
+    $("waTehsil").innerHTML = `<option value="">Select…</option>` + list.map(t => `<option value="${esc(t)}"${(keepTehsil ? keepTehsil === t : list.length === 1) ? " selected" : ""}>${esc(t)}</option>`).join("");
     drawMarkaz();
   }
-  function drawMarkaz(){
-    const t = $("waTehsil").value, d = $("waDistrict").value;
-    const list = markazList.filter(m => t && m.tehsil === t && (!d || m.district === d));
+  function drawMarkaz(ticked){
+    const t = $("waTehsil").value, d = $("waDistrict").value, w = $("waWing").value;
+    const keep = new Set(ticked || [...$("waMarkazList").querySelectorAll(".waMk:checked")].map(c => c.value));
+    const list = markazList.filter(m => t && m.tehsil === t && (!d || m.district === d) && (!w || (markazWings[m.id] && markazWings[m.id].has(w))));
     $("waMarkazList").innerHTML = list.length
       ? `<label style="grid-column:1/-1; margin:0; font-weight:600;"><input type="checkbox" id="waMarkazAll"/> Select all (${list.length})</label>` +
-        list.map(m => `<label style="margin:0;"><input type="checkbox" class="waMk" value="${esc(m.id)}"/> ${esc(m.name)}</label>`).join("")
-      : `<span style="color:var(--ink-soft)">Select a tehsil first.</span>`;
+        list.map(m => `<label style="margin:0;"><input type="checkbox" class="waMk" value="${esc(m.id)}"${keep.has(m.id) ? " checked" : ""}/> ${esc(m.name)}</label>`).join("")
+      : `<span style="color:var(--ink-soft)">${t ? "No markaz with schools in this wing." : "Select a tehsil first."}</span>`;
     const all = $("waMarkazAll");
     if(all) all.onchange = () => $("waMarkazList").querySelectorAll(".waMk").forEach(c => c.checked = all.checked);
   }
-  function drawScope(){
-    const sc = $("waScope").value;
-    $("waUserBox").style.display = sc === "own" ? "" : "none";
-    $("waDistBox").style.display = sc === "own" ? "none" : "";
-    $("waTehBox").style.display = sc === "own" ? "none" : "";
-    $("waMarkazBox").style.display = sc === "markaz" ? "" : "none";
-  }
+  function drawScope(){ $("waMarkazBox").style.display = $("waScope").value === "markaz" ? "" : "none"; }
   $("waScope").onchange = drawScope;
-  $("waDistrict").onchange = drawTehsils;
-  $("waTehsil").onchange = drawMarkaz;
-  $("waUser").onchange = () => {
-    const u = waUsers.find(x => x.id === $("waUser").value);
-    if(!u) return;
-    if(!$("waName").value.trim()) $("waName").value = u.full_name || "";
-    if(!$("waPhone").value.trim() && u.cell_no) $("waPhone").value = u.cell_no;
-  };
+  $("waDistrict").onchange = () => drawTehsils();
+  $("waTehsil").onchange = () => drawMarkaz();
+  $("waWing").onchange = () => drawMarkaz();
   drawScope(); drawTehsils();
+
+  function resetForm(){
+    editingId = null;
+    ["waName","waPhone","waConsentSrc"].forEach(i => $(i).value = "");
+    $("waConsent").value = "pending"; $("waScope").value = "markaz"; $("waWing").value = "";
+    $("waFormTitle").textContent = "Add Recipient"; $("waAddBtn").textContent = "Add Recipient"; $("waCancelEdit").style.display = "none";
+    drawScope(); drawTehsils();
+  }
+  $("waCancelEdit").onclick = resetForm;
+
+  function startEdit(rec){
+    editingId = rec.id;
+    $("waName").value = rec.recipient_name || ""; $("waPhone").value = rec.phone_e164 || "";
+    $("waConsentSrc").value = rec.consent_source || ""; $("waConsent").value = rec.consent_status === "granted" ? "granted" : "pending";
+    $("waScope").value = rec.scope_type === "tehsil" ? "tehsil" : "markaz";
+    $("waWing").value = rec.wing || "";
+    let ids = rec.markaz_ids || [];
+    if(rec.scope_type === "own"){           // older "own jurisdiction" row: show the user's home + extra markaz as a normal markaz list
+      const u = waUsers.find(x => x.id === rec.user_id);
+      ids = u ? [u.markaz_id, ...(u.extra_markaz_ids || [])].filter(Boolean) : [];
+    }
+    $("waDistrict").value = rec.district || (districts.length === 1 ? districts[0] : "");
+    drawTehsils(rec.tehsil);
+    drawMarkaz(ids);
+    drawScope();
+    $("waFormTitle").textContent = "Edit Recipient - " + rec.recipient_name;
+    $("waAddBtn").textContent = "Save changes"; $("waCancelEdit").style.display = "";
+    $("waFormTitle").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   $("waAddBtn").onclick = async () => {
     const name = $("waName").value.trim();
-    const phone = normPhone($("waPhone").value);
+    const rawPhone = $("waPhone").value.trim();
+    const phone = rawPhone ? normPhone(rawPhone) : null;
     const scope = $("waScope").value;
     if(!name){ toast("Enter a name", "bad"); return; }
-    if(!phone){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
+    if(rawPhone && !phone){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
     const row = { recipient_name: name, phone_e164: phone, scope_type: scope, wing: $("waWing").value || null,
-      markaz_ids: [], user_id: null, district: null, tehsil: null };
-    if(scope === "own"){
-      const u = waUsers.find(x => x.id === $("waUser").value);
-      if(!u){ toast("Select the linked user", "bad"); return; }
-      row.user_id = u.id;
-      row.tehsil = (u.markaz_id && markazById[u.markaz_id]?.tehsil) || u.tehsil || null;
-      row.district = (u.markaz_id && markazById[u.markaz_id]?.district) || null;
-      if(!row.tehsil){ toast("This user has no markaz / tehsil on their profile", "bad"); return; }
-    } else {
-      row.district = $("waDistrict").value || null;
-      row.tehsil = $("waTehsil").value;
-      if(!row.district){ toast("Select a district", "bad"); return; }
-      if(!row.tehsil){ toast("Select a tehsil", "bad"); return; }
-      if(scope === "markaz"){
-        row.markaz_ids = [...$("waMarkazList").querySelectorAll(".waMk:checked")].map(c => c.value);
-        if(!row.markaz_ids.length){ toast("Tick at least one markaz", "bad"); return; }
-      }
+      markaz_ids: [], user_id: null, district: $("waDistrict").value || null, tehsil: $("waTehsil").value };
+    if(!row.district){ toast("Select a district", "bad"); return; }
+    if(!row.tehsil){ toast("Select a tehsil", "bad"); return; }
+    if(scope === "markaz"){
+      row.markaz_ids = [...$("waMarkazList").querySelectorAll(".waMk:checked")].map(c => c.value);
+      if(!row.markaz_ids.length){ toast("Tick at least one markaz", "bad"); return; }
     }
-    const { error } = await sb.from("wa_recipients").insert({
-      ...row, consent_status: $("waConsent").value, consent_source: $("waConsentSrc").value.trim() || null,
-      active: false, created_by: currentUser.id
-    });
+    const consent = { consent_status: $("waConsent").value, consent_source: $("waConsentSrc").value.trim() || null };
+    let error;
+    if(editingId){
+      const cur = recs.find(r => r.id === editingId);
+      if(cur && cur.active && !phone){ toast("An active recipient needs a number - deactivate first or add the number", "bad"); return; }
+      ({ error } = await sb.from("wa_recipients").update({ ...row, ...consent, updated_at: new Date().toISOString() }).eq("id", editingId));
+    } else {
+      ({ error } = await sb.from("wa_recipients").insert({ ...row, ...consent, active: false, created_by: currentUser.id }));
+    }
     if(error){ toast(error.code === "23505" ? "That number is already added" : error.message, "bad"); return; }
-    toast("Recipient added (inactive until you activate it)"); renderWhatsappSection();
+    toast(editingId ? "Recipient updated" : "Recipient added (inactive until you activate it)"); renderWhatsappSection();
   };
 
   content.querySelectorAll("button[data-act]").forEach(b => {
@@ -830,12 +852,14 @@ async function renderWhatsappSection(){
         box.textContent = error ? "Preview failed: " + error.message : (data[0].missing_schools === 0 ? "No missing entries for the current period - no message would be sent." : data[0].message_text);
         return;
       }
+      if(act === "edit"){ startEdit(rec); return; }
       if(act === "delete"){
         if(!confirm(`Delete ${rec.recipient_name}? Their queue history is removed too.`)) return;
         const { error } = await sb.from("wa_recipients").delete().eq("id", id);
         if(error){ toast(error.message, "bad"); return; }
       } else if(act === "toggle"){
         const turnOn = b.dataset.active !== "true";
+        if(turnOn && !rec.phone_e164){ toast("Add the WhatsApp number (Edit) before activating", "bad"); return; }
         if(turnOn && rec.consent_status !== "granted"){ toast("Record consent before activating", "bad"); return; }
         const { error } = await sb.from("wa_recipients").update({ active: turnOn }).eq("id", id);
         if(error){ toast(error.message, "bad"); return; }
