@@ -29,6 +29,18 @@ async function emergencyStop(reason) {
   await db.from('wa_logs').insert({ event: 'emergency_stop', error_message: String(reason).slice(0, 500) });
 }
 
+// Tell the database which groups this number belongs to, so the Admin page can offer them as recipients.
+async function syncGroups() {
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    const rows = Object.values(groups).map((g) => ({ jid: g.id, subject: g.subject || null, updated_at: new Date().toISOString() }));
+    if (rows.length) await db.from('wa_groups').upsert(rows, { onConflict: 'jid' });
+    log.info({ count: rows.length }, 'groups synced');
+  } catch (e) {
+    log.warn(e, 'could not sync groups');
+  }
+}
+
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
   const { version } = await fetchLatestBaileysVersion();
@@ -47,6 +59,7 @@ async function start() {
       connected = true;
       log.info('WhatsApp connected');
       fs.rm('./qr.png', { force: true }, () => {});   // the QR is no longer needed (and must not be left lying around)
+      setTimeout(syncGroups, 5000);
     }
     if (connection === 'close') {
       connected = false;
@@ -74,6 +87,7 @@ async function start() {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const m of messages) {
       if (m.key.fromMe) continue;
+      if ((m.key.remoteJid || '').endsWith('@g.us')) continue;   // never act on group chatter (STOP etc.)
       const text = (m.message?.conversation || m.message?.extendedTextMessage?.text || '').trim().toUpperCase();
       if (text === 'STOP') {
         const phone = '+' + (m.key.remoteJid || '').split('@')[0];
@@ -104,14 +118,20 @@ async function tick() {
     }
 
     await sleep(rand(job.q_min_gap, job.q_max_gap)); // human-like spacing between sends
-    const digits = job.q_phone.replace('+', '');
+    const isGroup = job.q_phone.endsWith('@g.us');
     try {
-      const [res] = await sock.onWhatsApp(digits);
-      if (!res?.exists) {
-        await db.rpc('fn_wa_report_result', { p_queue_id: job.q_id, p_ok: false, p_error: 'Number not on WhatsApp', p_permanent: true });
-        return; // invalid number is not a session failure
+      let jid;
+      if (isGroup) {
+        jid = job.q_phone;              // groups are addressed directly
+      } else {
+        const [res] = await sock.onWhatsApp(job.q_phone.replace('+', ''));
+        if (!res?.exists) {
+          await db.rpc('fn_wa_report_result', { p_queue_id: job.q_id, p_ok: false, p_error: 'Number not on WhatsApp', p_permanent: true });
+          return; // invalid number is not a session failure
+        }
+        jid = res.jid;
       }
-      const sent = await sock.sendMessage(res.jid, { text: job.q_text });
+      const sent = await sock.sendMessage(jid, { text: job.q_text });
       await db.rpc('fn_wa_report_result', { p_queue_id: job.q_id, p_ok: true, p_provider_id: sent?.key?.id });
       consecutiveFailures = 0;
       log.info({ id: job.q_id }, 'sent');

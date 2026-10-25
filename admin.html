@@ -606,14 +606,16 @@ async function renderWhatsappSection(){
   const content = document.getElementById("adminSectionContent");
   content.innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
   const dayStart = lkPkToday() + "T00:00:00+05:00";
-  const [setRes, recRes, qRes, usedRes, tehRes, profRes] = await Promise.all([
+  const [setRes, recRes, qRes, usedRes, tehRes, profRes, grpRes] = await Promise.all([
     sb.from("wa_settings").select("*").eq("id", true).single(),
     sb.from("wa_recipients").select("*").order("tehsil").order("recipient_name"),
     sb.from("wa_queue").select("id,status,attempt_count,period_start,period_end,last_error,sent_at,created_at,provider_message_id,priority,wa_recipients(recipient_name,tehsil)").order("created_at", { ascending:false }).limit(100),
     sb.from("wa_logs").select("id", { count:"exact", head:true }).eq("event","claim").eq("dry_run", false).gte("created_at", dayStart),
     sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
-    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr"]).order("full_name")
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr"]).order("full_name"),
+    sb.from("wa_groups").select("jid,subject").order("subject")
   ]);
+  const waGroups = grpRes.data || [];
   const firstErr = setRes.error || recRes.error || qRes.error || usedRes.error || tehRes.error || profRes.error;
   if(firstErr){ content.innerHTML = `<div class="card"><div class="err">${esc(firstErr.message)}</div></div>`; return; }
 
@@ -667,7 +669,9 @@ async function renderWhatsappSection(){
       <p class="sub">Only people added here receive messages. Add consent before activating; a "STOP" reply opts a recipient out automatically.</p>
       <div class="form-row" style="margin-top:12px;">
         <div><label>Name</label><input type="text" id="waName" placeholder="Recipient name"/></div>
-        <div><label>WhatsApp number</label><input type="text" id="waPhone" placeholder="03001234567 (can be added later)"/></div>
+        <div><label>Send to</label><select id="waTarget"><option value="person">A person</option><option value="group">A WhatsApp group (whole-tehsil summary)</option></select></div>
+        <div id="waPhoneBox"><label>WhatsApp number</label><input type="text" id="waPhone" placeholder="03001234567 (can be added later)"/></div>
+        <div id="waGroupBox" style="display:none;"><label>WhatsApp group</label><select id="waGroup"><option value="">Select group…</option>${waGroups.map(g => `<option value="${esc(g.jid)}">${esc(g.subject || g.jid)}</option>`).join("")}</select>${waGroups.length ? "" : `<div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">No groups yet. Add the WhatsApp number to the group, then restart the worker - it lists its groups when it connects.</div>`}</div>
         <div><label>Reports to receive</label><select id="waScope">
           <option value="markaz">Selected markaz (one or more - one combined message)</option>
           <option value="tehsil">Whole tehsil (markaz-wise detail)</option></select></div>
@@ -692,7 +696,7 @@ async function renderWhatsappSection(){
       <h3>Recipients (${recs.length})</h3>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Receives</th><th>Wing</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
         ${recs.length ? recs.map(r => `<tr>
-          <td>${esc(r.recipient_name)}</td><td>${r.phone_e164 ? esc(r.phone_e164) : `<span style="color:var(--bad-fg)">add number</span>`}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td>
+          <td>${esc(r.recipient_name)}</td><td>${r.group_jid ? "Group: " + esc((waGroups.find(g => g.jid === r.group_jid) || {}).subject || "WhatsApp group") : (r.phone_e164 ? esc(r.phone_e164) : `<span style="color:var(--bad-fg)">add number</span>`)}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td>
           <td><span class="pill ${r.consent_status === 'granted' ? 'pill-ok' : (r.consent_status === 'opted_out' ? 'pill-bad' : 'pill-warn')}">${esc(r.consent_status)}</span></td>
           <td><span class="pill ${r.active ? 'pill-ok' : 'pill-role'}">${r.active ? "Active" : "Inactive"}</span></td>
           <td style="white-space:nowrap;">
@@ -778,6 +782,19 @@ async function renderWhatsappSection(){
     if(all) all.onchange = () => $("waMarkazList").querySelectorAll(".waMk").forEach(c => c.checked = all.checked);
   }
   function drawScope(){ $("waMarkazBox").style.display = $("waScope").value === "markaz" ? "" : "none"; }
+  function drawTarget(){
+    const grp = $("waTarget").value === "group";
+    $("waPhoneBox").style.display = grp ? "none" : "";
+    $("waGroupBox").style.display = grp ? "" : "none";
+    if(grp) $("waScope").value = "tehsil";          // groups only ever get the whole-tehsil summary
+    $("waScope").disabled = grp;
+    drawScope();
+  }
+  $("waTarget").onchange = () => {
+    drawTarget();
+    if($("waTarget").value === "group" && !$("waName").value.trim()){ const g = waGroups.find(x => x.jid === $("waGroup").value); if(g) $("waName").value = g.subject || ""; }
+  };
+  $("waGroup").onchange = () => { const g = waGroups.find(x => x.jid === $("waGroup").value); if(g && !$("waName").value.trim()) $("waName").value = g.subject || ""; };
   $("waScope").onchange = drawScope;
   $("waDistrict").onchange = () => drawTehsils();
   $("waTehsil").onchange = () => drawMarkaz();
@@ -788,6 +805,7 @@ async function renderWhatsappSection(){
     editingId = null;
     ["waName","waPhone","waConsentSrc"].forEach(i => $(i).value = "");
     $("waConsent").value = "pending"; $("waScope").value = "markaz"; $("waWing").value = "";
+    $("waTarget").value = "person"; $("waGroup").value = ""; drawTarget();
     $("waFormTitle").textContent = "Add Recipient"; $("waAddBtn").textContent = "Add Recipient"; $("waCancelEdit").style.display = "none";
     drawScope(); drawTehsils();
   }
@@ -799,6 +817,7 @@ async function renderWhatsappSection(){
     $("waConsentSrc").value = rec.consent_source || ""; $("waConsent").value = rec.consent_status === "granted" ? "granted" : "pending";
     $("waScope").value = rec.scope_type === "tehsil" ? "tehsil" : "markaz";
     $("waWing").value = rec.wing || "";
+    $("waTarget").value = rec.group_jid ? "group" : "person"; $("waGroup").value = rec.group_jid || ""; drawTarget();
     let ids = rec.markaz_ids || [];
     if(rec.scope_type === "own"){           // older "own jurisdiction" row: show the user's home + extra markaz as a normal markaz list
       const u = waUsers.find(x => x.id === rec.user_id);
@@ -807,7 +826,7 @@ async function renderWhatsappSection(){
     $("waDistrict").value = rec.district || (districts.length === 1 ? districts[0] : "");
     drawTehsils(rec.tehsil);
     drawMarkaz(ids);
-    drawScope();
+    drawTarget();
     $("waFormTitle").textContent = "Edit Recipient - " + rec.recipient_name;
     $("waAddBtn").textContent = "Save changes"; $("waCancelEdit").style.display = "";
     $("waFormTitle").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -815,12 +834,15 @@ async function renderWhatsappSection(){
 
   $("waAddBtn").onclick = async () => {
     const name = $("waName").value.trim();
-    const rawPhone = $("waPhone").value.trim();
+    const isGroup = $("waTarget").value === "group";
+    const groupJid = isGroup ? $("waGroup").value : "";
+    const rawPhone = isGroup ? "" : $("waPhone").value.trim();
     const phone = rawPhone ? normPhone(rawPhone) : null;
-    const scope = $("waScope").value;
+    const scope = isGroup ? "tehsil" : $("waScope").value;
     if(!name){ toast("Enter a name", "bad"); return; }
+    if(isGroup && !groupJid){ toast("Select the WhatsApp group", "bad"); return; }
     if(rawPhone && !phone){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
-    const row = { recipient_name: name, phone_e164: phone, scope_type: scope, wing: $("waWing").value || null,
+    const row = { recipient_name: name, phone_e164: phone, group_jid: groupJid || null, scope_type: scope, wing: $("waWing").value || null,
       markaz_ids: [], user_id: null, district: $("waDistrict").value || null, tehsil: $("waTehsil").value };
     if(!row.district){ toast("Select a district", "bad"); return; }
     if(!row.tehsil){ toast("Select a tehsil", "bad"); return; }
@@ -832,7 +854,7 @@ async function renderWhatsappSection(){
     let error;
     if(editingId){
       const cur = recs.find(r => r.id === editingId);
-      if(cur && cur.active && !phone){ toast("An active recipient needs a number - deactivate first or add the number", "bad"); return; }
+      if(cur && cur.active && !phone && !groupJid){ toast("An active recipient needs a number - deactivate first or add the number", "bad"); return; }
       ({ error } = await sb.from("wa_recipients").update({ ...row, ...consent, updated_at: new Date().toISOString() }).eq("id", editingId));
     } else {
       ({ error } = await sb.from("wa_recipients").insert({ ...row, ...consent, active: false, created_by: currentUser.id }));
@@ -859,7 +881,7 @@ async function renderWhatsappSection(){
         if(error){ toast(error.message, "bad"); return; }
       } else if(act === "toggle"){
         const turnOn = b.dataset.active !== "true";
-        if(turnOn && !rec.phone_e164){ toast("Add the WhatsApp number (Edit) before activating", "bad"); return; }
+        if(turnOn && !rec.phone_e164 && !rec.group_jid){ toast("Add the WhatsApp number (Edit) before activating", "bad"); return; }
         if(turnOn && rec.consent_status !== "granted"){ toast("Record consent before activating", "bad"); return; }
         const { error } = await sb.from("wa_recipients").update({ active: turnOn }).eq("id", id);
         if(error){ toast(error.message, "bad"); return; }
