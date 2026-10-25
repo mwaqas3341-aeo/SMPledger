@@ -1,5 +1,5 @@
 // SMP Ledger WhatsApp worker (Baileys). Sends only what the database hands out via fn_wa_claim_next().
-// The daily cap (max 20), time window, emergency stop and dry-run are all enforced in the database.
+// The daily cap (max 50), time window, emergency stop and dry-run are all enforced in the database.
 import 'dotenv/config';
 import fs from 'node:fs';
 import * as baileys from '@whiskeysockets/baileys';

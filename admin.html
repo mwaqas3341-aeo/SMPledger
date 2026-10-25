@@ -109,7 +109,7 @@ const SECTIONS = [
   { id:"schedule", label:"Consumption Schedule", desc:"Which weekdays each product is distributed, plus one-off overrides" },
   { id:"report", label:"Missing Consumption Report", desc:"Auto-email missing-consumption reports - to concerned persons and to each user" },
   { id:"locks", label:"Inventory & Consumption Period Lock", desc:"Lock a product's inventory and/or consumption entries through a date" },
-  { id:"whatsapp", label:"WhatsApp Automation", desc:"Tehsil-wise missing-consumption messages to added recipients (max 20/day)" },
+  { id:"whatsapp", label:"WhatsApp Automation", desc:"Tehsil-wise missing-consumption messages to added recipients (max 50/day)" },
   { id:"health", label:"System Health", desc:"Database keep-alive status" },
 ];
 let currentSection = "schedule";
@@ -648,7 +648,7 @@ async function renderWhatsappSection(){
       <div class="form-row" style="margin-top:6px;">
         <div><label>Automation</label><select id="waEnabled"><option value="true" ${s.enabled ? "selected" : ""}>Enabled</option><option value="false" ${!s.enabled ? "selected" : ""}>Disabled</option></select></div>
         <div><label>Mode</label><select id="waDry"><option value="true" ${s.dry_run ? "selected" : ""}>Dry-run (nothing is sent)</option><option value="false" ${!s.dry_run ? "selected" : ""}>Live (real messages)</option></select></div>
-        <div><label>Daily limit (max 20)</label><input type="number" id="waCap" min="0" max="20" value="${s.daily_cap}"/></div>
+        <div><label>Daily limit (max 50)</label><input type="number" id="waCap" min="0" max="50" value="${s.daily_cap}"/></div>
       </div>
       <div class="form-row">
         <div><label>Queue reports after (PKT)</label><input type="time" id="waSendTime" value="${esc(String(s.send_time).slice(0,5))}"/></div>
@@ -735,7 +735,7 @@ async function renderWhatsappSection(){
   document.getElementById("waSaveBtn").onclick = async () => {
     const cap = parseInt(document.getElementById("waCap").value, 10);
     const look = parseInt(document.getElementById("waLookback").value, 10);
-    if(!(cap >= 0 && cap <= 20)){ toast("Daily limit must be between 0 and 20", "bad"); return; }
+    if(!(cap >= 0 && cap <= 50)){ toast("Daily limit must be between 0 and 50", "bad"); return; }
     if(!(look >= 1 && look <= 30)){ toast("Lookback must be 1-30 days", "bad"); return; }
     const goingLive = document.getElementById("waDry").value === "false" && document.getElementById("waEnabled").value === "true";
     if(goingLive && !confirm("Live mode will send real WhatsApp messages to active, consented recipients. Continue?")) return;
