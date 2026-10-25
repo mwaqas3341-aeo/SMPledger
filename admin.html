@@ -653,7 +653,7 @@ async function renderWhatsappSection(){
         <div><label>Daily limit (max 50)</label><input type="number" id="waCap" min="0" max="50" value="${s.daily_cap}"/></div>
       </div>
       <div class="form-row">
-        <div><label>Queue reports after (PKT)</label><input type="time" id="waSendTime" value="${esc(String(s.send_time).slice(0,5))}"/></div>
+        <div><label>Queue reports after (PKT) - default</label><input type="time" id="waSendTime" value="${esc(String(s.send_time).slice(0,5))}"/></div>
         <div><label>Sending window start</label><input type="time" id="waWinStart" value="${esc(String(s.window_start).slice(0,5))}"/></div>
         <div><label>Sending window end</label><input type="time" id="waWinEnd" value="${esc(String(s.window_end).slice(0,5))}"/></div>
         <div><label>Lookback (days)</label><input type="number" id="waLookback" min="1" max="30" value="${s.lookback_days}"/></div>
@@ -687,6 +687,7 @@ async function renderWhatsappSection(){
       </div>
       <div class="form-row">
         <div><label>Consent source</label><input type="text" id="waConsentSrc" placeholder="e.g. agreed verbally / written"/></div>
+        <div><label>Queue time for this recipient (optional)</label><input type="time" id="waRecTime"/><div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">Blank = the general time above. Sending still waits for the sending window.</div></div>
         <div><label>Consent given?</label><select id="waConsent"><option value="pending">Not yet</option><option value="granted">Yes - consent recorded</option></select></div>
       </div>
       <div class="actions-row" style="margin-top:12px;"><button class="btn-primary" type="button" id="waAddBtn">Add Recipient</button> <button class="btn-secondary" type="button" id="waCancelEdit" style="display:none;">Cancel edit</button></div>
@@ -694,9 +695,9 @@ async function renderWhatsappSection(){
 
     <div class="card">
       <h3>Recipients (${recs.length})</h3>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Receives</th><th>Wing</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Receives</th><th>Wing</th><th>Queue time</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
         ${recs.length ? recs.map(r => `<tr>
-          <td>${esc(r.recipient_name)}</td><td>${r.group_jid ? "Group: " + esc((waGroups.find(g => g.jid === r.group_jid) || {}).subject || "WhatsApp group") : (r.phone_e164 ? esc(r.phone_e164) : `<span style="color:var(--bad-fg)">add number</span>`)}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td>
+          <td>${esc(r.recipient_name)}</td><td>${r.group_jid ? "Group: " + esc((waGroups.find(g => g.jid === r.group_jid) || {}).subject || "WhatsApp group") : (r.phone_e164 ? esc(r.phone_e164) : `<span style="color:var(--bad-fg)">add number</span>`)}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td><td>${r.send_time ? esc(String(r.send_time).slice(0,5)) : "Default"}</td>
           <td><span class="pill ${r.consent_status === 'granted' ? 'pill-ok' : (r.consent_status === 'opted_out' ? 'pill-bad' : 'pill-warn')}">${esc(r.consent_status)}</span></td>
           <td><span class="pill ${r.active ? 'pill-ok' : 'pill-role'}">${r.active ? "Active" : "Inactive"}</span></td>
           <td style="white-space:nowrap;">
@@ -705,7 +706,7 @@ async function renderWhatsappSection(){
             ${r.consent_status !== "granted" ? `<button class="btn-secondary" data-act="consent" data-id="${esc(r.id)}">Record consent</button>` : ""}
             <button class="btn-secondary" data-act="toggle" data-id="${esc(r.id)}" data-active="${r.active}">${r.active ? "Deactivate" : "Activate"}</button>
             <button class="btn-danger" data-act="delete" data-id="${esc(r.id)}">Delete</button>
-          </td></tr>`).join("") : `<tr><td colspan="8" style="color:var(--ink-soft)">No recipients added yet.</td></tr>`}
+          </td></tr>`).join("") : `<tr><td colspan="9" style="color:var(--ink-soft)">No recipients added yet.</td></tr>`}
       </tbody></table></div>
       <pre id="waPreviewBox" style="display:none; white-space:pre-wrap; background:var(--paper); border:1px solid var(--border); border-radius:8px; padding:12px; margin-top:12px; font-size:13px;"></pre>
     </div>
@@ -803,7 +804,7 @@ async function renderWhatsappSection(){
 
   function resetForm(){
     editingId = null;
-    ["waName","waPhone","waConsentSrc"].forEach(i => $(i).value = "");
+    ["waName","waPhone","waConsentSrc","waRecTime"].forEach(i => $(i).value = "");
     $("waConsent").value = "pending"; $("waScope").value = "markaz"; $("waWing").value = "";
     $("waTarget").value = "person"; $("waGroup").value = ""; drawTarget();
     $("waFormTitle").textContent = "Add Recipient"; $("waAddBtn").textContent = "Add Recipient"; $("waCancelEdit").style.display = "none";
@@ -814,6 +815,7 @@ async function renderWhatsappSection(){
   function startEdit(rec){
     editingId = rec.id;
     $("waName").value = rec.recipient_name || ""; $("waPhone").value = rec.phone_e164 || "";
+    $("waRecTime").value = rec.send_time ? String(rec.send_time).slice(0,5) : "";
     $("waConsentSrc").value = rec.consent_source || ""; $("waConsent").value = rec.consent_status === "granted" ? "granted" : "pending";
     $("waScope").value = rec.scope_type === "tehsil" ? "tehsil" : "markaz";
     $("waWing").value = rec.wing || "";
@@ -842,7 +844,7 @@ async function renderWhatsappSection(){
     if(!name){ toast("Enter a name", "bad"); return; }
     if(isGroup && !groupJid){ toast("Select the WhatsApp group", "bad"); return; }
     if(rawPhone && !phone){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
-    const row = { recipient_name: name, phone_e164: phone, group_jid: groupJid || null, scope_type: scope, wing: $("waWing").value || null,
+    const row = { recipient_name: name, phone_e164: phone, group_jid: groupJid || null, send_time: $("waRecTime").value || null, scope_type: scope, wing: $("waWing").value || null,
       markaz_ids: [], user_id: null, district: $("waDistrict").value || null, tehsil: $("waTehsil").value };
     if(!row.district){ toast("Select a district", "bad"); return; }
     if(!row.tehsil){ toast("Select a tehsil", "bad"); return; }
