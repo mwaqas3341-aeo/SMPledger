@@ -606,24 +606,32 @@ async function renderWhatsappSection(){
   const content = document.getElementById("adminSectionContent");
   content.innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
   const dayStart = lkPkToday() + "T00:00:00+05:00";
-  const [setRes, recRes, qRes, usedRes, tehRes] = await Promise.all([
+  const [setRes, recRes, qRes, usedRes, tehRes, profRes] = await Promise.all([
     sb.from("wa_settings").select("*").eq("id", true).single(),
     sb.from("wa_recipients").select("*").order("tehsil").order("recipient_name"),
     sb.from("wa_queue").select("id,status,attempt_count,period_start,period_end,last_error,sent_at,created_at,provider_message_id,priority,wa_recipients(recipient_name,tehsil)").order("created_at", { ascending:false }).limit(100),
     sb.from("wa_logs").select("id", { count:"exact", head:true }).eq("event","claim").eq("dry_run", false).gte("created_at", dayStart),
-    sb.from("markaz").select("tehsil").eq("active", true)
+    sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope").eq("active", true).in("role", ["aeo","tr"]).order("full_name")
   ]);
-  const firstErr = setRes.error || recRes.error || qRes.error || usedRes.error || tehRes.error;
+  const firstErr = setRes.error || recRes.error || qRes.error || usedRes.error || tehRes.error || profRes.error;
   if(firstErr){ content.innerHTML = `<div class="card"><div class="err">${esc(firstErr.message)}</div></div>`; return; }
 
   const s = setRes.data, recs = recRes.data || [], queue = qRes.data || [], used = usedRes.count || 0;
-  const tehsils = [...new Set((tehRes.data || []).map(r => r.tehsil).filter(Boolean))].sort();
+  const markazList = tehRes.data || [], waUsers = profRes.data || [];
+  const markazById = Object.fromEntries(markazList.map(m => [m.id, m]));
+  const districts = [...new Set(markazList.map(m => m.district).filter(Boolean))].sort();
+  const scopeLabel = r => r.scope_type === "own"
+      ? "Own jurisdiction" + (waUsers.find(u => u.id === r.user_id) ? " (" + waUsers.find(u => u.id === r.user_id).full_name + ")" : "")
+    : r.scope_type === "markaz"
+      ? "Markaz: " + ((r.markaz_ids || []).map(id => markazById[id]?.name).filter(Boolean).join(", ") || "-")
+    : "Whole tehsil";
   const stCls = { sent:"pill-ok", delivered:"pill-ok", queued:"pill-warn", processing:"pill-warn", dry_run:"pill-role", skipped:"pill-role", failed:"pill-bad", cancelled:"pill-bad" };
 
   content.innerHTML = `
     <div class="card">
       <h3>WhatsApp Automation</h3>
-      <p class="sub">Sends each added recipient a missing-consumption summary for their tehsil (Markaz-wise), using the same data as Operations &rarr; Missing Consumption. Hard limit: ${s.daily_cap} messages per day in total. Pakistan time (Asia/Karachi).</p>
+      <p class="sub">Sends each added recipient a missing-consumption summary - for a whole tehsil, for selected markaz only, or for the linked user's own jurisdiction - using the same data as Operations &rarr; Missing Consumption. Hard limit: ${s.daily_cap} messages per day in total. Pakistan time (Asia/Karachi).</p>
       <div class="grid-4" style="margin-top:14px;">
         <div class="stat"><div class="n" style="color:${s.emergency_stop ? 'var(--bad-fg)' : (s.enabled ? 'var(--ok-fg)' : 'inherit')}">${s.emergency_stop ? "STOPPED" : (s.enabled ? (s.dry_run ? "Dry-run" : "Live") : "Off")}</div><div class="l">Status</div></div>
         <div class="stat"><div class="n">${used} / ${s.daily_cap}</div><div class="l">Messages used today</div></div>
@@ -652,8 +660,20 @@ async function renderWhatsappSection(){
       <div class="form-row" style="margin-top:12px;">
         <div><label>Name</label><input type="text" id="waName" placeholder="Recipient name"/></div>
         <div><label>WhatsApp number</label><input type="text" id="waPhone" placeholder="03001234567 or +923001234567"/></div>
-        <div><label>Tehsil</label><select id="waTehsil"><option value="">Select…</option>${tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div>
-        <div><label>Wing (optional)</label><select id="waWing"><option value="">All wings</option><option value="M-EE">M-EE</option><option value="W-EE">W-EE</option></select></div>
+        <div><label>Reports to receive</label><select id="waScope">
+          <option value="tehsil">Whole tehsil</option>
+          <option value="markaz">Selected markaz only (one or more)</option>
+          <option value="own">Own jurisdiction only (linked user)</option></select></div>
+      </div>
+      <div class="form-row">
+        <div id="waUserBox" style="display:none;"><label>Linked user (AEO / TR)</label><select id="waUser"><option value="">Select user…</option>${waUsers.map(u => `<option value="${esc(u.id)}">${esc(u.full_name)} (${esc(u.role.toUpperCase())}${u.markaz_id && markazById[u.markaz_id] ? " - " + esc(markazById[u.markaz_id].name) : ""})</option>`).join("")}</select></div>
+        <div id="waDistBox"><label>District</label><select id="waDistrict"><option value="">Select…</option>${districts.map(d => `<option value="${esc(d)}"${districts.length === 1 ? " selected" : ""}>${esc(d)}</option>`).join("")}</select></div>
+        <div id="waWingBox"><label>Wing (optional)</label><select id="waWing"><option value="">All wings</option><option value="M-EE">M-EE</option><option value="W-EE">W-EE</option></select></div>
+        <div id="waTehBox"><label>Tehsil</label><select id="waTehsil"><option value="">Select…</option></select></div>
+      </div>
+      <div id="waMarkazBox" style="display:none; margin-top:6px;">
+        <label>Markaz (tick one or more)</label>
+        <div id="waMarkazList" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:6px 14px; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--paper); max-height:220px; overflow:auto;"><span style="color:var(--ink-soft)">Select a tehsil first.</span></div>
       </div>
       <div class="form-row">
         <div><label>Consent source</label><input type="text" id="waConsentSrc" placeholder="e.g. agreed verbally / written"/></div>
@@ -664,9 +684,9 @@ async function renderWhatsappSection(){
 
     <div class="card">
       <h3>Recipients (${recs.length})</h3>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Wing</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Number</th><th>Tehsil</th><th>Receives</th><th>Wing</th><th>Consent</th><th>Active</th><th></th></tr></thead><tbody>
         ${recs.length ? recs.map(r => `<tr>
-          <td>${esc(r.recipient_name)}</td><td>${esc(r.phone_e164)}</td><td>${esc(r.tehsil)}</td><td>${esc(r.wing || "All")}</td>
+          <td>${esc(r.recipient_name)}</td><td>${esc(r.phone_e164)}</td><td>${esc(r.tehsil)}</td><td>${esc(scopeLabel(r))}</td><td>${esc(r.wing || (r.scope_type === "own" ? "User's scope" : "All"))}</td>
           <td><span class="pill ${r.consent_status === 'granted' ? 'pill-ok' : (r.consent_status === 'opted_out' ? 'pill-bad' : 'pill-warn')}">${esc(r.consent_status)}</span></td>
           <td><span class="pill ${r.active ? 'pill-ok' : 'pill-role'}">${r.active ? "Active" : "Inactive"}</span></td>
           <td style="white-space:nowrap;">
@@ -674,7 +694,7 @@ async function renderWhatsappSection(){
             ${r.consent_status !== "granted" ? `<button class="btn-secondary" data-act="consent" data-id="${esc(r.id)}">Record consent</button>` : ""}
             <button class="btn-secondary" data-act="toggle" data-id="${esc(r.id)}" data-active="${r.active}">${r.active ? "Deactivate" : "Activate"}</button>
             <button class="btn-danger" data-act="delete" data-id="${esc(r.id)}">Delete</button>
-          </td></tr>`).join("") : `<tr><td colspan="7" style="color:var(--ink-soft)">No recipients added yet.</td></tr>`}
+          </td></tr>`).join("") : `<tr><td colspan="8" style="color:var(--ink-soft)">No recipients added yet.</td></tr>`}
       </tbody></table></div>
       <pre id="waPreviewBox" style="display:none; white-space:pre-wrap; background:var(--paper); border:1px solid var(--border); border-radius:8px; padding:12px; margin-top:12px; font-size:13px;"></pre>
     </div>
@@ -731,18 +751,68 @@ async function renderWhatsappSection(){
     toast(s.emergency_stop ? "Emergency stop cleared" : "Emergency stop ON - nothing will be sent"); renderWhatsappSection();
   };
 
-  document.getElementById("waAddBtn").onclick = async () => {
-    const name = document.getElementById("waName").value.trim();
-    const phone = normPhone(document.getElementById("waPhone").value);
-    const tehsil = document.getElementById("waTehsil").value;
+  const $ = id => document.getElementById(id);
+  function drawTehsils(){
+    const d = $("waDistrict").value;
+    const list = [...new Set(markazList.filter(m => !d || m.district === d).map(m => m.tehsil).filter(Boolean))].sort();
+    $("waTehsil").innerHTML = `<option value="">Select…</option>` + list.map(t => `<option value="${esc(t)}"${list.length === 1 ? " selected" : ""}>${esc(t)}</option>`).join("");
+    drawMarkaz();
+  }
+  function drawMarkaz(){
+    const t = $("waTehsil").value, d = $("waDistrict").value;
+    const list = markazList.filter(m => t && m.tehsil === t && (!d || m.district === d));
+    $("waMarkazList").innerHTML = list.length
+      ? `<label style="grid-column:1/-1; margin:0; font-weight:600;"><input type="checkbox" id="waMarkazAll"/> Select all (${list.length})</label>` +
+        list.map(m => `<label style="margin:0;"><input type="checkbox" class="waMk" value="${esc(m.id)}"/> ${esc(m.name)}</label>`).join("")
+      : `<span style="color:var(--ink-soft)">Select a tehsil first.</span>`;
+    const all = $("waMarkazAll");
+    if(all) all.onchange = () => $("waMarkazList").querySelectorAll(".waMk").forEach(c => c.checked = all.checked);
+  }
+  function drawScope(){
+    const sc = $("waScope").value;
+    $("waUserBox").style.display = sc === "own" ? "" : "none";
+    $("waDistBox").style.display = sc === "own" ? "none" : "";
+    $("waTehBox").style.display = sc === "own" ? "none" : "";
+    $("waMarkazBox").style.display = sc === "markaz" ? "" : "none";
+  }
+  $("waScope").onchange = drawScope;
+  $("waDistrict").onchange = drawTehsils;
+  $("waTehsil").onchange = drawMarkaz;
+  $("waUser").onchange = () => {
+    const u = waUsers.find(x => x.id === $("waUser").value);
+    if(!u) return;
+    if(!$("waName").value.trim()) $("waName").value = u.full_name || "";
+    if(!$("waPhone").value.trim() && u.cell_no) $("waPhone").value = u.cell_no;
+  };
+  drawScope(); drawTehsils();
+
+  $("waAddBtn").onclick = async () => {
+    const name = $("waName").value.trim();
+    const phone = normPhone($("waPhone").value);
+    const scope = $("waScope").value;
     if(!name){ toast("Enter a name", "bad"); return; }
     if(!phone){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
-    if(!tehsil){ toast("Select a tehsil", "bad"); return; }
-    const consent = document.getElementById("waConsent").value;
+    const row = { recipient_name: name, phone_e164: phone, scope_type: scope, wing: $("waWing").value || null,
+      markaz_ids: [], user_id: null, district: null, tehsil: null };
+    if(scope === "own"){
+      const u = waUsers.find(x => x.id === $("waUser").value);
+      if(!u){ toast("Select the linked user", "bad"); return; }
+      row.user_id = u.id;
+      row.tehsil = (u.markaz_id && markazById[u.markaz_id]?.tehsil) || u.tehsil || null;
+      row.district = (u.markaz_id && markazById[u.markaz_id]?.district) || null;
+      if(!row.tehsil){ toast("This user has no markaz / tehsil on their profile", "bad"); return; }
+    } else {
+      row.district = $("waDistrict").value || null;
+      row.tehsil = $("waTehsil").value;
+      if(!row.district){ toast("Select a district", "bad"); return; }
+      if(!row.tehsil){ toast("Select a tehsil", "bad"); return; }
+      if(scope === "markaz"){
+        row.markaz_ids = [...$("waMarkazList").querySelectorAll(".waMk:checked")].map(c => c.value);
+        if(!row.markaz_ids.length){ toast("Tick at least one markaz", "bad"); return; }
+      }
+    }
     const { error } = await sb.from("wa_recipients").insert({
-      recipient_name: name, phone_e164: phone, tehsil,
-      wing: document.getElementById("waWing").value || null,
-      consent_status: consent, consent_source: document.getElementById("waConsentSrc").value.trim() || null,
+      ...row, consent_status: $("waConsent").value, consent_source: $("waConsentSrc").value.trim() || null,
       active: false, created_by: currentUser.id
     });
     if(error){ toast(error.code === "23505" ? "That number is already added" : error.message, "bad"); return; }
