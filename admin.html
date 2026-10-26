@@ -596,7 +596,7 @@ async function renderHealthSection(){
   const programHtml = `
     <div class="card">
       <h3>School Meal Program</h3>
-      <p class="sub">While the program is closed, all inventory entries, consumption entries (add, edit, delete) and outgoing WhatsApp messages are stopped. This is enforced in the database, not just on screen.</p>
+      <p class="sub">While the program is closed, users cannot add, edit or delete inventory or consumption entries, and outgoing WhatsApp messages are stopped. Reports, inventory views and invoice matching (Admin) keep working. This is enforced in the database, not just on screen.</p>
       <div class="grid-4" style="margin-top:14px;">
         <div class="stat"><div class="n" style="color:${ps.is_open ? 'var(--ok-fg)' : 'var(--bad-fg)'}">${ps.is_open ? "Running" : "Closed"}</div><div class="l">Status</div></div>
         <div class="stat"><div class="n">${fmtDate(ps.start_date)}</div><div class="l">${ps.is_open ? "Consumption started from" : "Last start date"}</div></div>
