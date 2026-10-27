@@ -79,6 +79,35 @@ create table if not exists public.wa_collect_entries (
 create unique index if not exists wa_collect_entries_one_pending
   on public.wa_collect_entries (school_id, product_id, consumption_date) where status = 'pending';
 
+-- ---------- upgrade of tables created by an earlier run of this migration (safe to repeat) ----------
+alter table public.wa_collect_groups
+  add column if not exists district text,
+  add column if not exists tehsil text,
+  add column if not exists scope_type text not null default 'tehsil',
+  add column if not exists markaz_ids uuid[] not null default '{}',
+  add column if not exists send_time time,
+  add column if not exists missing_time time;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'wa_collect_groups_scope_type_check') then
+    alter table public.wa_collect_groups add constraint wa_collect_groups_scope_type_check check (scope_type in ('tehsil','markaz'));
+  end if;
+end $$;
+alter table public.wa_collect_messages add column if not exists kind text not null default 'prompt';
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'wa_collect_messages_kind_check') then
+    alter table public.wa_collect_messages add constraint wa_collect_messages_kind_check check (kind in ('prompt','missing'));
+  end if;
+  -- the one-per-day rule must now include the kind (prompt / missing list)
+  if exists (select 1 from pg_constraint where conrelid = 'public.wa_collect_messages'::regclass and contype = 'u'
+             and pg_get_constraintdef(oid) = 'UNIQUE (group_jid, collect_date, product_id)') then
+    execute (select 'alter table public.wa_collect_messages drop constraint ' || quote_ident(conname)
+             from pg_constraint where conrelid = 'public.wa_collect_messages'::regclass and contype = 'u'
+               and pg_get_constraintdef(oid) = 'UNIQUE (group_jid, collect_date, product_id)');
+    alter table public.wa_collect_messages add constraint wa_collect_messages_one_per_kind unique (group_jid, collect_date, product_id, kind);
+  end if;
+end $$;
+alter table public.wa_collect_settings drop column if exists auto_approve;
+
 -- ---------- helpers ----------
 create or replace function public.fn_wa_collect_digits(p text) returns text language sql immutable as $$
   select translate(coalesce(p,''), '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789');
