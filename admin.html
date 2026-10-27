@@ -705,7 +705,7 @@ async function renderWaCollectView(){
   document.getElementById("waCollectBox").innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
   const [tehRes, profRes, grpRes, mw] = await Promise.all([
     sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
-    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr"]).order("full_name"),
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr","admin"]).order("full_name"),
     sb.from("wa_groups").select("jid,subject").order("subject"),
     waLoadMarkazWings()
   ]);
@@ -727,7 +727,7 @@ async function renderWaSendView(){
     sb.from("wa_queue").select("id,status,attempt_count,period_start,period_end,last_error,sent_at,created_at,provider_message_id,priority,wa_recipients(recipient_name,tehsil)").order("created_at", { ascending:false }).limit(100),
     sb.from("wa_logs").select("id", { count:"exact", head:true }).eq("event","claim").eq("dry_run", false).gte("created_at", dayStart),
     sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
-    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr"]).order("full_name"),
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr","admin"]).order("full_name"),
     sb.from("wa_groups").select("jid,subject").order("subject")
   ]);
   const waGroups = grpRes.data || [];
@@ -1012,7 +1012,7 @@ async function renderWaSendView(){
 }
 
 /* ===================== WHATSAPP DATA COLLECTION (separate card; branch feature) ===================== */
-let wcEdit = null, wcDraft = null;
+let wcEdit = null, wcDraft = null, wcMemEdit = null;
 async function renderWaCollectCard(waGroups, waUsers, markazById){
   const host = document.getElementById("adminSectionContent");
   let box = document.getElementById("waCollectBox");
@@ -1098,7 +1098,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   </div></details>
 
   <details class="wa-det" open><summary>Authorised AEOs (who may post data)</summary><div class="wa-body">
-    <p class="sub">An AEO can submit only for schools in their own markaz (including any extra markaz). The WhatsApp number must match the number used in the group. Once added, an AEO cannot be removed - only paused or resumed.</p>
+    <p class="sub">An AEO can submit only for schools in their own markaz (including any extra markaz). The WhatsApp number must match the number used in the group. An Admin who is also the AEO of a markaz can be added too. Use Edit to change the WhatsApp number, Pause/Resume to switch posting off or on, or Remove to delete the AEO from this list (entries already received are kept).</p>
     <div class="wa-casc">
       <label>District<select id="wcaD"></select></label>
       <label>Wing<select id="wcaW"></select></label>
@@ -1112,7 +1112,9 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     <div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>AEO</th><th>District</th><th>Wing</th><th>Tehsil</th><th>Markaz</th><th>Cell</th><th>Active</th><th></th></tr></thead><tbody>
       ${members.map(m => { const u = userById[m.user_id], hm = markazById[u?.markaz_id];
         return `<tr><td>${esc(u?.full_name || "-")}</td><td>${esc(hm?.district || "-")}</td><td>${esc(hm && waMarkazWings[hm.id] ? [...waMarkazWings[hm.id]].filter(Boolean).sort().join(" / ") : "-")}</td><td>${esc(hm?.tehsil || u?.tehsil || "-")}</td><td>${esc(mkNames(u))}</td><td>${esc(m.phone_e164)}</td><td>${m.active ? "Yes" : "No"}</td>
-        <td><button class="btn-secondary" data-mact="toggle" data-id="${m.id}" data-active="${m.active}">${m.active ? "Pause" : "Resume"}</button></td></tr>`; }).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No AEOs authorised yet.</td></tr>`}
+        <td>${wcMemEdit === m.id
+          ? `<input type="tel" id="wcMemPh" value="${esc(m.phone_e164)}" style="width:130px;"> <button class="btn-primary" data-mact="save" data-id="${m.id}">Save</button> <button class="btn-secondary" data-mact="cancel" data-id="${m.id}">Cancel</button>`
+          : `<button class="btn-secondary" data-mact="edit" data-id="${m.id}">Edit</button> <button class="btn-secondary" data-mact="toggle" data-id="${m.id}" data-active="${m.active}">${m.active ? "Pause" : "Resume"}</button> <button class="btn-secondary" data-mact="del" data-id="${m.id}">Remove</button>`}</td></tr>`; }).join("") || `<tr><td colspan="8" style="color:var(--ink-soft)">No AEOs authorised yet.</td></tr>`}
     </tbody></table></div>
   </div></details>
 
@@ -1177,7 +1179,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     el.innerHTML = `<option value="">${esc(ph)}</option>` + list.map(([v, l]) => `<option value="${esc(v)}"${v === val ? " selected" : ""}>${esc(l)}</option>`).join("");
     el.disabled = !enabled;
   };
-  const aeosFor = mid => waUsers.filter(u => u.role === "aeo" && !taken.has(u.id) && (u.markaz_id === mid || (u.extra_markaz_ids || []).includes(mid)));
+  const aeosFor = mid => waUsers.filter(u => (u.role === "aeo" || u.role === "admin") && !taken.has(u.id) && (u.markaz_id === mid || (u.extra_markaz_ids || []).includes(mid)));
   function drawCasc(){
     const inD = markazList.filter(m => m.district === cs.d);
     const inW = inD.filter(m => wingsOf(m).includes(cs.w));
@@ -1210,8 +1212,24 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     if(/^0\d{10}$/.test(ph)) ph = "+92" + ph.slice(1); else if(/^92\d{10}$/.test(ph)) ph = "+" + ph;
     if(!/^\+92\d{10}$/.test(ph)){ toast("A valid cell number (e.g. 03001234567) is required", "bad"); return; }
     run(sb.from("wa_collect_members").insert({ user_id:u.id, phone_e164:ph }), "AEO added"); };
-  box.querySelectorAll("[data-mact]").forEach(b => b.onclick = () =>
-    run(sb.from("wa_collect_members").update({ active:b.dataset.active !== "true" }).eq("id", b.dataset.id)));
+  box.querySelectorAll("[data-mact]").forEach(b => b.onclick = async () => {
+    const id = b.dataset.id, a = b.dataset.mact, m = members.find(x => x.id === id);
+    if(a === "edit"){ wcMemEdit = id; again(); }
+    else if(a === "cancel"){ wcMemEdit = null; again(); }
+    else if(a === "save"){
+      let ph = (q("wcMemPh").value || "").replace(/[\s-]/g, "");
+      if(/^0\d{10}$/.test(ph)) ph = "+92" + ph.slice(1); else if(/^92\d{10}$/.test(ph)) ph = "+" + ph;
+      if(!/^\+92\d{10}$/.test(ph)){ toast("A valid cell number (e.g. 03001234567) is required", "bad"); return; }
+      if(members.some(x => x.id !== id && x.phone_e164 === ph)){ toast("This number is already used by another authorised AEO", "bad"); return; }
+      if(await run(sb.from("wa_collect_members").update({ phone_e164: ph }).eq("id", id), "Number updated")) wcMemEdit = null;
+      again();
+    }
+    else if(a === "del"){
+      if(!confirm(`Remove ${userById[m?.user_id]?.full_name || "this AEO"} from the authorised list? They will no longer be able to post data. Entries already received are kept.`)) return;
+      run(sb.from("wa_collect_members").delete().eq("id", id), "AEO removed");
+    }
+    else run(sb.from("wa_collect_members").update({ active: b.dataset.active !== "true" }).eq("id", id));
+  });
   const packsOf = id => box.querySelector(`[data-packs="${id}"]`)?.value;
   box.querySelectorAll("[data-eact]").forEach(b => b.onclick = async () => {
     const id = b.dataset.id, a = b.dataset.eact;
