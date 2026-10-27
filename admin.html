@@ -1036,7 +1036,8 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
   const pill = { pending:"pill-warn", approved:"pill-ok", rejected:"pill-bad", invalid:"pill-bad", sent:"pill-ok", queued:"pill-warn", processing:"pill-warn", failed:"pill-bad", cancelled:"pill-bad" };
   const pending = ents.filter(e => e.status === "pending");
   const markazList = Object.values(markazById);
-  const eg = (wcEdit && groups.find(g => g.group_jid === wcEdit)) || wcDraft || {};
+  const eg = wcDraft || (wcEdit && groups.find(g => g.group_jid === wcEdit)) || {};
+  const selJid = (wcDraft && wcDraft.sel_jid !== undefined) ? wcDraft.sel_jid : (wcEdit || "");
   const districts = [...new Set(markazList.map(m => m.district).filter(Boolean))].sort();
   const tehsils = [...new Set(markazList.filter(m => !eg.district || m.district === eg.district).map(m => m.tehsil).filter(Boolean))].sort();
   const markazInTeh = markazList.filter(m => eg.tehsil && m.tehsil === eg.tehsil && (!eg.district || m.district === eg.district)).sort((a, b) => a.name.localeCompare(b.name));
@@ -1057,7 +1058,7 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
   <details class="wa-det" open><summary>Collection groups &amp; jurisdiction</summary><div class="wa-body">
     <p class="sub">Choose a group this number belongs to, attach its jurisdiction, and set when the daily message and the missing-EMIS list are posted. Only schools of the chosen jurisdiction are accepted from that group.</p>
     <div class="form-grid" style="margin-top:8px;">
-      <label>WhatsApp group<select id="wcGroupSel" ${wcEdit ? "disabled" : ""}><option value="">Select a group…</option>${waGroups.filter(g => wcEdit === g.jid || !groups.some(x => x.group_jid === g.jid)).map(g => `<option value="${esc(g.jid)}" ${wcEdit === g.jid ? "selected" : ""}>${esc(g.subject || g.jid)}</option>`).join("")}</select></label>
+      <label>WhatsApp group<select id="wcGroupSel"><option value="">Select a group…</option>${waGroups.map(g => `<option value="${esc(g.jid)}" ${selJid === g.jid ? "selected" : ""}>${esc(g.subject || g.jid)}${groups.some(x => x.group_jid === g.jid) ? " (already added)" : ""}</option>`).join("")}</select></label>
       <label>District<select id="wcDist"><option value="">Select district…</option>${districts.map(d => `<option ${eg.district === d ? "selected" : ""}>${esc(d)}</option>`).join("")}</select></label>
       <label>Tehsil<select id="wcTeh"><option value="">Select tehsil…</option>${tehsils.map(t => `<option ${eg.tehsil === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
       <label>Receive data from<select id="wcScope"><option value="tehsil" ${eg.scope_type !== "markaz" ? "selected" : ""}>Whole tehsil</option><option value="markaz" ${eg.scope_type === "markaz" ? "selected" : ""}>Selected markaz only</option></select></label>
@@ -1066,7 +1067,7 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
     <div class="form-grid" style="margin-top:8px;">
       <label>Daily message time<input type="time" id="wcPostTime" value="${esc(eg.send_time ? String(eg.send_time).slice(0,5) : "")}"></label>
       <label>Missing-EMIS list time (optional)<input type="time" id="wcMissTime" value="${esc(eg.missing_time ? String(eg.missing_time).slice(0,5) : "")}"></label>
-      <div style="align-self:end;"><button class="btn-primary" type="button" id="wcGroupSave">${wcEdit ? "Save changes" : "Add group"}</button> ${wcEdit ? `<button class="btn-secondary" type="button" id="wcGroupCancel">Cancel</button>` : ""}</div>
+      <div style="align-self:end;"><button class="btn-primary" type="button" id="wcGroupSave">${wcEdit ? (selJid && selJid !== wcEdit ? "Move to selected group" : "Save changes") : "Add group"}</button> ${wcEdit ? `<button class="btn-secondary" type="button" id="wcGroupCancel">Cancel</button>` : ""}</div>
     </div>
     <p class="sub" style="margin-top:6px;">Leave the daily message time empty to use the default above. The missing list is posted only after that day's message was sent, lists the schools of this jurisdiction with nothing recorded or pending, and is rebuilt just before sending (skipped if nobody is missing).</p>
     <div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>Group</th><th>Jurisdiction</th><th>Daily message</th><th>Missing list</th><th>Active</th><th></th></tr></thead><tbody>
@@ -1145,6 +1146,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   const q = id => document.getElementById(id);
   q("wcSave").onclick = () => run(sb.from("wa_collect_settings").upsert({ id:true, enabled:q("wcEnabled").checked, send_time:q("wcTime").value || "12:00", ack_enabled:q("wcAck").checked, updated_at:new Date().toISOString() }), "Saved");
   const readForm = () => ({
+    sel_jid: q("wcGroupSel").value,
     district: q("wcDist").value || null, tehsil: q("wcTeh").value || null, scope_type: q("wcScope").value,
     markaz_ids: [...box.querySelectorAll(".wcMk:checked")].map(x => x.value),
     send_time: q("wcPostTime").value || null, missing_time: q("wcMissTime").value || null });
@@ -1152,16 +1154,28 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   q("wcDist").onchange = () => { const d = readForm(); d.tehsil = null; d.markaz_ids = []; wcDraft = d; again(); };
   q("wcTeh").onchange = () => { const d = readForm(); d.markaz_ids = []; wcDraft = d; again(); };
   q("wcScope").onchange = redraw;
+  // the group can always be re-selected: an already-added group opens for editing, a new one just changes the target
+  q("wcGroupSel").onchange = () => {
+    const jid = q("wcGroupSel").value;
+    if(jid && groups.some(g => g.group_jid === jid)){ wcEdit = jid; wcDraft = null; again(); }
+    else redraw();
+  };
   q("wcGroupSave").onclick = async () => {
-    const row = readForm(), jid = wcEdit || q("wcGroupSel").value;
+    const row = readForm(), jid = row.sel_jid;
+    delete row.sel_jid;
     if(!jid){ toast("Select a group", "bad"); return; }
     if(!row.tehsil){ toast("Select the tehsil", "bad"); return; }
     if(row.scope_type === "markaz" && !row.markaz_ids.length){ toast("Select at least one markaz", "bad"); return; }
     if(row.scope_type === "tehsil") row.markaz_ids = [];
     if(row.missing_time && row.send_time && row.missing_time <= row.send_time){ toast("The missing list must be later than the daily message", "bad"); return; }
     row.group_jid = jid; row.label = waGroups.find(g => g.jid === jid)?.subject || null;
-    const ok = await run(sb.from("wa_collect_groups").upsert(row, { onConflict:"group_jid" }), wcEdit ? "Group updated" : "Group added");
-    if(ok){ wcEdit = null; wcDraft = null; }
+    const moved = wcEdit && wcEdit !== jid;
+    if(moved && !confirm("Move this setup to the newly selected group? The previous group will be removed from data collection.")) return;
+    const up = await sb.from("wa_collect_groups").upsert(row, { onConflict:"group_jid" });
+    if(up.error){ toast(up.error.message, "bad"); return; }
+    if(moved){ const del = await sb.from("wa_collect_groups").delete().eq("group_jid", wcEdit); if(del.error){ toast(del.error.message, "bad"); return; } }
+    toast(moved ? "Moved to the selected group" : (wcEdit ? "Group updated" : "Group added"));
+    wcEdit = null; wcDraft = null; again();
   };
   if(q("wcGroupCancel")) q("wcGroupCancel").onclick = () => { wcEdit = null; wcDraft = null; again(); };
   box.querySelectorAll("[data-gact]").forEach(b => b.onclick = () => {
