@@ -107,6 +107,22 @@ do $$ begin
   end if;
 end $$;
 alter table public.wa_collect_settings drop column if exists auto_approve;
+
+-- Head teachers / focal persons / others who may also share their own school's report (optional, several per school)
+create table if not exists public.wa_collect_school_contacts (
+  id uuid primary key default gen_random_uuid(),
+  school_id uuid not null references public.schools(id) on delete cascade,
+  contact_name text not null,
+  contact_role text not null default 'Head Teacher' check (contact_role in ('Head Teacher','Focal Person','Other')),
+  phone_e164 text not null,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  unique (school_id, phone_e164)
+);
+alter table public.wa_collect_school_contacts enable row level security;
+drop policy if exists wa_collect_admin_all_contacts on public.wa_collect_school_contacts;
+create policy wa_collect_admin_all_contacts on public.wa_collect_school_contacts for all using (public.fn_is_admin()) with check (public.fn_is_admin());
+alter table public.wa_collect_entries add column if not exists contact_id uuid references public.wa_collect_school_contacts(id) on delete set null;
 -- removing an authorised AEO must not be blocked by entries they already sent
 alter table public.wa_collect_entries drop constraint if exists wa_collect_entries_member_id_fkey,
   add constraint wa_collect_entries_member_id_fkey foreign key (member_id) references public.wa_collect_members(id) on delete set null;
@@ -281,7 +297,7 @@ end $$;
 create or replace function public.fn_wa_collect_ingest(p_group_jid text, p_sender text, p_msg_id text, p_text text, p_quoted text default null)
 returns text language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  cs public.wa_collect_settings; v_member public.wa_collect_members; v_mk uuid[]; v_t text; v_q text;
+  cs public.wa_collect_settings; v_member public.wa_collect_members; v_member_id uuid; v_mk uuid[]; v_cschools uuid[]; v_contact boolean := false; v_cid uuid; v_t text; v_q text;
   v_phone text; v_date date; v_prod uuid; v_prod_name text; v_today date := (now() at time zone 'Asia/Karachi')::date;
   pr record; sc record; v_inserted int; v_err text; v_lines text := ''; v_ok int := 0; v_bad int := 0;
   v_months text[] := array['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
@@ -301,8 +317,16 @@ begin
 
   v_phone := right(regexp_replace(coalesce(p_sender, ''), '\D', '', 'g'), 10);
   select m.* into v_member from public.wa_collect_members m where m.active and right(regexp_replace(m.phone_e164, '\D', '', 'g'), 10) = v_phone;
-  if not found then return null; end if;                              -- not an authorised person: ignore silently
-  v_mk := public.fn_wa_collect_markaz_set(v_member.user_id);
+  if found then
+    v_member_id := v_member.id;
+    v_mk := public.fn_wa_collect_markaz_set(v_member.user_id);
+  else
+    -- not an AEO: maybe a head teacher / focal person registered for one or more schools
+    select array_agg(distinct c.school_id) into v_cschools from public.wa_collect_school_contacts c
+     where c.active and right(regexp_replace(c.phone_e164, '\D', '', 'g'), 10) = v_phone;
+    if v_cschools is null then return null; end if;                  -- unknown sender: ignore silently
+    v_contact := true; v_mk := '{}';
+  end if;
 
   v_t := lower(public.fn_wa_collect_digits(p_text));
   v_q := lower(public.fn_wa_collect_digits(coalesce(p_quoted, '')));
@@ -340,10 +364,11 @@ begin
     union all
     select a[1], a[2]::numeric from regexp_matches(v_t, p2, 'gn') as r(a) where not (v_t ~ p1)
   loop
-    v_err := null; sc := null;
+    v_err := null; sc := null; v_cid := null;
     select s.id, s.markaz_id, s.school_name into sc from public.schools s where s.emis_code = pr.emis and s.active;
     if sc.id is null then v_err := 'EMIS code not found';
-    elsif not (sc.markaz_id = any(v_mk)) then v_err := 'school is not in your markaz';
+    elsif v_contact and not (sc.id = any(v_cschools)) then v_err := 'your number is not registered for this school';
+    elsif not v_contact and not (sc.markaz_id = any(v_mk)) then v_err := 'school is not in your markaz';
     elsif not coalesce(public.fn_wa_collect_in_scope(p_group_jid, sc.markaz_id), false) then v_err := 'school is not in this group''s jurisdiction';
     elsif v_date is null or v_prod is null then v_err := 'date/product not identified - reply to the daily message';
     elsif v_date > v_today then v_err := 'date is in the future';
@@ -354,16 +379,20 @@ begin
       then v_err := 'already recorded in the system';
     end if;
 
+    if v_contact and sc.id is not null then
+      select c.id into v_cid from public.wa_collect_school_contacts c
+       where c.active and c.school_id = sc.id and right(regexp_replace(c.phone_e164, '\D', '', 'g'), 10) = v_phone limit 1;
+    end if;
     if v_err is null then
-      insert into public.wa_collect_entries (group_jid, member_id, school_id, emis_code, product_id, consumption_date, packs, status, raw_text, wa_msg_id)
-      values (p_group_jid, v_member.id, sc.id, pr.emis, v_prod, v_date, pr.packs, 'pending', left(p_text, 2000), p_msg_id)
+      insert into public.wa_collect_entries (group_jid, member_id, contact_id, school_id, emis_code, product_id, consumption_date, packs, status, raw_text, wa_msg_id)
+      values (p_group_jid, v_member_id, v_cid, sc.id, pr.emis, v_prod, v_date, pr.packs, 'pending', left(p_text, 2000), p_msg_id)
       on conflict (school_id, product_id, consumption_date) where status = 'pending'
-      do update set packs = excluded.packs, raw_text = excluded.raw_text, wa_msg_id = excluded.wa_msg_id, member_id = excluded.member_id, updated_at = now();
+      do update set packs = excluded.packs, raw_text = excluded.raw_text, wa_msg_id = excluded.wa_msg_id, member_id = excluded.member_id, contact_id = excluded.contact_id, updated_at = now();
       v_ok := v_ok + 1;
       v_lines := v_lines || E'\n✔ ' || pr.emis || ' - ' || pr.packs::bigint || ' packs (' || sc.school_name || ')';
     else
-      insert into public.wa_collect_entries (group_jid, member_id, school_id, emis_code, product_id, consumption_date, packs, status, error_text, raw_text, wa_msg_id)
-      values (p_group_jid, v_member.id, sc.id, pr.emis, v_prod, v_date, pr.packs, 'invalid', v_err, left(p_text, 2000), p_msg_id);
+      insert into public.wa_collect_entries (group_jid, member_id, contact_id, school_id, emis_code, product_id, consumption_date, packs, status, error_text, raw_text, wa_msg_id)
+      values (p_group_jid, v_member_id, v_cid, sc.id, pr.emis, v_prod, v_date, pr.packs, 'invalid', v_err, left(p_text, 2000), p_msg_id);
       v_bad := v_bad + 1;
       v_lines := v_lines || E'\n✖ ' || pr.emis || ' - ' || v_err;
     end if;
@@ -407,7 +436,8 @@ begin
   if not public.fn_is_admin() then raise exception 'Admin only'; end if;
   select * into e from public.wa_collect_entries where id = p_entry for update;
   if not found or e.status <> 'pending' then return 'Not pending'; end if;
-  select coalesce(p.full_name, '') into v_who from public.wa_collect_members m join public.profiles p on p.id = m.user_id where m.id = e.member_id;
+  select coalesce((select p.full_name from public.wa_collect_members m join public.profiles p on p.id = m.user_id where m.id = e.member_id),
+                  (select c.contact_name || ' - ' || c.contact_role from public.wa_collect_school_contacts c where c.id = e.contact_id), '') into v_who;
   begin
     perform public.fn_upsert_consumption(e.school_id, e.product_id, e.consumption_date, e.packs, null, 'Via WhatsApp collection' || coalesce(' (' || nullif(v_who, '') || ')', ''), false);
   exception when others then

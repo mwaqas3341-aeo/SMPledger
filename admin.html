@@ -1012,26 +1012,29 @@ async function renderWaSendView(){
 }
 
 /* ===================== WHATSAPP DATA COLLECTION (separate card; branch feature) ===================== */
-let wcEdit = null, wcDraft = null, wcMemEdit = null;
+let wcEdit = null, wcDraft = null, wcMemEdit = null, wcCMk = "";
 async function renderWaCollectCard(waGroups, waUsers, markazById){
   const host = document.getElementById("adminSectionContent");
   let box = document.getElementById("waCollectBox");
   if(!box){ box = document.createElement("div"); box.id = "waCollectBox"; host.appendChild(box); }
   box.innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading data collection…</p></div>`;
-  const [setRes, grpRes, memRes, entRes, msgRes] = await Promise.all([
+  const [setRes, grpRes, memRes, entRes, msgRes, conRes] = await Promise.all([
     sb.from("wa_collect_settings").select("*").eq("id", true).maybeSingle(),
     sb.from("wa_collect_groups").select("*").order("created_at"),
     sb.from("wa_collect_members").select("*").order("created_at"),
-    sb.from("wa_collect_entries").select("id,status,error_text,packs,consumption_date,emis_code,created_at,member_id,schools(school_name,emis_code),products(product_name)").order("created_at", { ascending:false }).limit(200),
-    sb.from("wa_collect_messages").select("id,collect_date,status,sent_at,last_error,group_jid,products(product_name)").order("created_at", { ascending:false }).limit(15)
+    sb.from("wa_collect_entries").select("*,schools(school_name,emis_code),products(product_name)").order("created_at", { ascending:false }).limit(200),
+    sb.from("wa_collect_messages").select("id,collect_date,status,sent_at,last_error,group_jid,products(product_name)").order("created_at", { ascending:false }).limit(15),
+    sb.from("wa_collect_school_contacts").select("id,contact_name,contact_role")
   ]);
   const err = setRes.error || grpRes.error || memRes.error || entRes.error || msgRes.error;
   if(err){ box.innerHTML = `<div class="card" style="margin-top:16px;"><h3>WhatsApp Data Collection</h3><div class="err">${esc(err.message)}<br>(The data-collection database migration has not been applied yet.)</div></div>`; return; }
   const s = setRes.data || { enabled:false, send_time:"12:00", ack_enabled:false };
   const groups = grpRes.data || [], members = memRes.data || [], ents = entRes.data || [], msgs = msgRes.data || [];
+  const contactById = Object.fromEntries(((conRes && conRes.data) || []).map(c => [c.id, c]));
   const grpName = jid => (waGroups.find(g => g.jid === jid)?.subject) || (groups.find(g => g.group_jid === jid)?.label) || jid;
   const userById = Object.fromEntries(waUsers.map(u => [u.id, u]));
   const memName = id => { const m = members.find(x => x.id === id); return m ? (userById[m.user_id]?.full_name || m.phone_e164) : "-"; };
+  const entFrom = e => e.member_id ? memName(e.member_id) : (contactById[e.contact_id] ? `${contactById[e.contact_id].contact_name} (${contactById[e.contact_id].contact_role})` : "-");
   const mkNames = u => [u?.markaz_id, ...((u?.extra_markaz_ids) || [])].filter(Boolean).map(id => markazById[id]?.name).filter(Boolean).join(", ") || "-";
   const pill = { pending:"pill-warn", approved:"pill-ok", rejected:"pill-bad", invalid:"pill-bad", sent:"pill-ok", queued:"pill-warn", processing:"pill-warn", failed:"pill-bad", cancelled:"pill-bad" };
   const pending = ents.filter(e => e.status === "pending");
@@ -1041,6 +1044,10 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
   const districts = [...new Set(markazList.map(m => m.district).filter(Boolean))].sort();
   const tehsils = [...new Set(markazList.filter(m => !eg.district || m.district === eg.district).map(m => m.tehsil).filter(Boolean))].sort();
   const markazInTeh = markazList.filter(m => eg.tehsil && m.tehsil === eg.tehsil && (!eg.district || m.district === eg.district)).sort((a, b) => a.name.localeCompare(b.name));
+
+  const scopeMarkaz = eg.scope_type === "markaz" ? markazInTeh.filter(m => (eg.markaz_ids || []).includes(m.id)) : markazInTeh;
+  const scopeIds = new Set(scopeMarkaz.map(m => m.id));
+  const groupAeos = waUsers.filter(u => [u.markaz_id, ...(u.extra_markaz_ids || [])].some(id => scopeIds.has(id)));
 
   box.innerHTML = `
   <div class="card">
@@ -1064,6 +1071,15 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
       <label>Receive data from<select id="wcScope"><option value="tehsil" ${eg.scope_type !== "markaz" ? "selected" : ""}>Whole tehsil</option><option value="markaz" ${eg.scope_type === "markaz" ? "selected" : ""}>Selected markaz only</option></select></label>
     </div>
     <div id="wcMkBox" style="margin-top:8px;${eg.scope_type === "markaz" ? "" : "display:none;"}">${markazInTeh.map(m => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="wcMk" value="${m.id}" ${(eg.markaz_ids || []).includes(m.id) ? "checked" : ""}> ${esc(m.name)}</label>`).join("") || `<span class="sub">Choose a tehsil first.</span>`}</div>
+    <div class="form-grid" style="margin-top:10px;">
+      <label>AEO for this group (markaz in charge)<select id="wcGrpAeo"><option value="">${scopeMarkaz.length ? "Select AEO…" : "Select the tehsil / markaz first"}</option>${groupAeos.map(u => `<option value="${esc(u.id)}" data-phone="${esc(u.cell_no || "")}" ${eg.aeo_id === u.id ? "selected" : ""}>${esc(u.full_name)}${u.role === "admin" ? " (Admin)" : ""} — ${esc([u.markaz_id, ...(u.extra_markaz_ids || [])].map(id => markazById[id]?.name).filter(Boolean).join(", "))}${members.some(m => m.user_id === u.id) ? " ✓ authorised" : ""}</option>`).join("")}</select></label>
+      <label>AEO WhatsApp number<input id="wcGrpAeoPh" placeholder="03001234567" value="${esc(eg.aeo_ph || "")}"></label>
+    </div>
+    <p class="sub" style="margin-top:4px;">The selected AEO is authorised to post data for the schools of this jurisdiction (added to the authorised list when you save).</p>
+    <details style="margin-top:8px;" ${wcCMk ? "open" : ""}><summary><b>School head / focal person WhatsApp numbers (optional)</b></summary>
+      <p class="sub">Add one or more numbers per school so a head teacher, focal person or anyone else can share that school's report. They can post only for the school(s) they are registered for.</p>
+      <div id="wcContacts"></div>
+    </details>
     <div class="form-grid" style="margin-top:8px;">
       <label>Daily message time<input type="time" id="wcPostTime" value="${esc(eg.send_time ? String(eg.send_time).slice(0,5) : "")}"></label>
       <label>Missing-EMIS list time (optional)<input type="time" id="wcMissTime" value="${esc(eg.missing_time ? String(eg.missing_time).slice(0,5) : "")}"></label>
@@ -1127,7 +1143,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
         <td>${esc(e.consumption_date || "-")}</td><td>${esc(e.products?.product_name || "-")}</td>
         <td>${esc(e.schools?.school_name || "-")}<br><small>${esc(e.schools?.emis_code || e.emis_code || "")}</small></td>
         <td>${e.status === "pending" ? `<input type="number" min="0" step="1" value="${esc(e.packs)}" data-packs="${e.id}" style="width:80px;">` : esc(e.packs ?? "-")}</td>
-        <td>${esc(memName(e.member_id))}</td>
+        <td>${esc(entFrom(e))}</td>
         <td><span class="pill ${pill[e.status] || ""}">${esc(e.status)}</span>${e.error_text ? `<br><small>${esc(e.error_text)}</small>` : ""}</td>
         <td>${e.status === "pending" ? `<button class="btn-secondary" data-eact="save" data-id="${e.id}">Save</button> <button class="btn-primary" data-eact="approve" data-id="${e.id}">Approve</button> <button class="btn-secondary" data-eact="reject" data-id="${e.id}">Remove</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">Nothing received yet.</td></tr>`}
     </tbody></table></div>
@@ -1145,7 +1161,61 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   const run = async (p, ok) => { const r = await p; if(r.error){ toast(r.error.message, "bad"); return false; } if(ok) toast(ok); again(); return true; };
   const q = id => document.getElementById(id);
   q("wcSave").onclick = () => run(sb.from("wa_collect_settings").upsert({ id:true, enabled:q("wcEnabled").checked, send_time:q("wcTime").value || "12:00", ack_enabled:q("wcAck").checked, updated_at:new Date().toISOString() }), "Saved");
+  const normPh = v => { let ph = String(v || "").replace(/[\s-]/g, ""); if(/^0\d{10}$/.test(ph)) ph = "+92" + ph.slice(1); else if(/^92\d{10}$/.test(ph)) ph = "+" + ph; return /^\+92\d{10}$/.test(ph) ? ph : null; };
+  q("wcGrpAeo").onchange = e => { const o = e.target.selectedOptions[0]; if(o && o.dataset.phone) q("wcGrpAeoPh").value = o.dataset.phone; };
+
+  // optional school contacts (head teacher / focal person / other), several per school
+  const cBox = q("wcContacts");
+  const loadContacts = async () => {
+    cBox.innerHTML = `<div style="margin-top:6px;"><label>Markaz <select id="wcCMk"><option value="">Select markaz…</option>${scopeMarkaz.map(m => `<option value="${m.id}" ${wcCMk === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label></div><div id="wcCBody"></div>`;
+    q("wcCMk").onchange = e => { wcCMk = e.target.value; loadContacts(); };
+    const body = q("wcCBody");
+    if(!wcCMk || !scopeIds.has(wcCMk)){ wcCMk = ""; body.innerHTML = scopeMarkaz.length ? "" : `<p class="sub">Choose the tehsil (and markaz) above first.</p>`; return; }
+    body.innerHTML = `<p class="sub">Loading schools…</p>`;
+    const sch = await sb.from("schools").select("id,school_name,emis_code").eq("markaz_id", wcCMk).eq("active", true).order("school_name");
+    const ids = (sch.data || []).map(x => x.id);
+    const con = ids.length ? await sb.from("wa_collect_school_contacts").select("*").in("school_id", ids).order("created_at") : { data: [] };
+    if(sch.error || con.error){ body.innerHTML = `<div class="err">${esc((sch.error || con.error).message)}<br>(School contacts need the latest data-collection database update.)</div>`; return; }
+    const schools = sch.data || [], contacts = con.data || [], byId = Object.fromEntries(schools.map(x => [x.id, x]));
+    body.innerHTML = `
+      <div class="form-grid" style="margin-top:8px;">
+        <label>School<select id="wcCSchool"><option value="">Select school…</option>${schools.map(x => `<option value="${x.id}">${esc(x.school_name)} (${esc(x.emis_code)})</option>`).join("")}</select></label>
+        <label>Name<input id="wcCName" placeholder="Name"></label>
+        <label>Role<select id="wcCRole"><option>Head Teacher</option><option>Focal Person</option><option>Other</option></select></label>
+        <label>WhatsApp number<input id="wcCPh" placeholder="03001234567"></label>
+        <div style="align-self:end;"><button class="btn-primary" type="button" id="wcCAdd">Add number</button></div>
+      </div>
+      <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>School</th><th>Name</th><th>Role</th><th>Number</th><th>Active</th><th></th></tr></thead><tbody>
+        ${contacts.map(c => `<tr><td>${esc(byId[c.school_id]?.school_name || "-")}<br><small>${esc(byId[c.school_id]?.emis_code || "")}</small></td><td>${esc(c.contact_name)}</td><td>${esc(c.contact_role)}</td><td>${esc(c.phone_e164)}</td><td>${c.active ? "Yes" : "No"}</td>
+          <td><button type="button" class="btn-secondary" data-cact="toggle" data-id="${c.id}" data-active="${c.active}">${c.active ? "Pause" : "Resume"}</button> <button type="button" class="btn-secondary" data-cact="del" data-id="${c.id}">Remove</button></td></tr>`).join("") || `<tr><td colspan="6" style="color:var(--ink-soft)">No numbers added for this markaz yet.</td></tr>`}
+      </tbody></table></div>`;
+    q("wcCAdd").onclick = async () => {
+      const sid = q("wcCSchool").value, nm = q("wcCName").value.trim(), ph = normPh(q("wcCPh").value);
+      if(!sid){ toast("Select the school", "bad"); return; }
+      if(!nm){ toast("Enter the person's name", "bad"); return; }
+      if(!ph){ toast("Enter a valid number, e.g. 03001234567", "bad"); return; }
+      const r = await sb.from("wa_collect_school_contacts").insert({ school_id: sid, contact_name: nm, contact_role: q("wcCRole").value, phone_e164: ph });
+      if(r.error){ toast(r.error.code === "23505" ? "This number is already added for that school" : r.error.message, "bad"); return; }
+      toast("Number added"); loadContacts();
+    };
+    body.querySelectorAll("[data-cact]").forEach(b => b.onclick = async () => {
+      if(b.dataset.cact === "del"){
+        if(!confirm("Remove this number? Entries already received are kept.")) return;
+        const r = await sb.from("wa_collect_school_contacts").delete().eq("id", b.dataset.id).select("id");
+        if(r.error){ toast("Could not remove: " + r.error.message, "bad"); return; }
+        const gone = r.data && r.data.length;
+        toast(gone ? "Number removed" : "Nothing was removed", gone ? undefined : "bad");
+      } else {
+        const r = await sb.from("wa_collect_school_contacts").update({ active: b.dataset.active !== "true" }).eq("id", b.dataset.id);
+        if(r.error){ toast(r.error.message, "bad"); return; }
+      }
+      loadContacts();
+    });
+  };
+  loadContacts();
+
   const readForm = () => ({
+    aeo_id: q("wcGrpAeo").value || null, aeo_ph: q("wcGrpAeoPh").value,
     sel_jid: q("wcGroupSel").value,
     district: q("wcDist").value || null, tehsil: q("wcTeh").value || null, scope_type: q("wcScope").value,
     markaz_ids: [...box.querySelectorAll(".wcMk:checked")].map(x => x.value),
@@ -1162,7 +1232,10 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   };
   q("wcGroupSave").onclick = async () => {
     const row = readForm(), jid = row.sel_jid;
-    delete row.sel_jid;
+    const aeoId = row.aeo_id, aeoPh = normPh(row.aeo_ph);
+    delete row.sel_jid; delete row.aeo_id; delete row.aeo_ph;
+    const needAeo = aeoId && !members.some(m => m.user_id === aeoId);
+    if(needAeo && !aeoPh){ toast("Enter the AEO's valid WhatsApp number, e.g. 03001234567", "bad"); return; }
     if(!jid){ toast("Select a group", "bad"); return; }
     if(!row.tehsil){ toast("Select the tehsil", "bad"); return; }
     if(row.scope_type === "markaz" && !row.markaz_ids.length){ toast("Select at least one markaz", "bad"); return; }
@@ -1174,6 +1247,10 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     const up = await sb.from("wa_collect_groups").upsert(row, { onConflict:"group_jid" });
     if(up.error){ toast(up.error.message, "bad"); return; }
     if(moved){ const del = await sb.from("wa_collect_groups").delete().eq("group_jid", wcEdit); if(del.error){ toast(del.error.message, "bad"); return; } }
+    if(needAeo){
+      const mr = await sb.from("wa_collect_members").insert({ user_id: aeoId, phone_e164: aeoPh });
+      if(mr.error){ toast("Group saved, but the AEO could not be added: " + mr.error.message, "bad"); }
+    }
     toast(moved ? "Moved to the selected group" : (wcEdit ? "Group updated" : "Group added"));
     wcEdit = null; wcDraft = null; again();
   };
