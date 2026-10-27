@@ -41,6 +41,51 @@ async function syncGroups() {
   }
 }
 
+// ---- Data collection (branch feature): read replies in collection groups, send the daily prompt ----
+let ackOn = false, ackAt = 0;
+async function ackEnabled() {
+  if (Date.now() - ackAt > 60000) {
+    const { data } = await db.from('wa_collect_settings').select('ack_enabled').eq('id', true).maybeSingle();
+    ackOn = !!data?.ack_enabled; ackAt = Date.now();
+  }
+  return ackOn;
+}
+const textOf = (msg) => msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || '';
+async function collectIncoming(m) {
+  try {
+    const text = textOf(m.message).trim();
+    if (!text) return;
+    const ctx = m.message?.extendedTextMessage?.contextInfo;
+    const quoted = ctx?.quotedMessage ? textOf(ctx.quotedMessage) : null;
+    // newer WhatsApp versions may hide the number behind an @lid id; prefer the real phone-number id when Baileys provides it
+    const sender = (m.key.participantPn || m.key.participantAlt || m.key.participant || m.participant || '').split('@')[0].split(':')[0];
+    const { data, error } = await db.rpc('fn_wa_collect_ingest', {
+      p_group_jid: m.key.remoteJid, p_sender: sender, p_msg_id: m.key.id, p_text: text, p_quoted: quoted });
+    if (error) { log.warn(error, 'collect ingest failed'); return; }
+    if (data && connected && await ackEnabled()) await sock.sendMessage(m.key.remoteJid, { text: data }, { quoted: m });
+  } catch (e) { log.warn(e, 'collect incoming failed'); }
+}
+let collectBusy = false;
+async function collectTick() {
+  if (collectBusy || !connected) return;
+  collectBusy = true;
+  try {
+    const { data, error } = await db.rpc('fn_wa_collect_claim_next');
+    if (error) return;
+    const job = data?.[0];
+    if (!job) return;
+    await sleep(rand(job.m_min_gap, job.m_max_gap));
+    try {
+      const sent = await sock.sendMessage(job.m_jid, { text: job.m_text });
+      await db.rpc('fn_wa_collect_report_result', { p_id: job.m_id, p_ok: true, p_provider_id: sent?.key?.id });
+      log.info({ id: job.m_id }, 'collection prompt sent');
+    } catch (e) {
+      await db.rpc('fn_wa_collect_report_result', { p_id: job.m_id, p_ok: false, p_error: e.message });
+      log.error(e, 'collection prompt failed');
+    }
+  } finally { collectBusy = false; }
+}
+
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
   const { version } = await fetchLatestBaileysVersion();
@@ -87,7 +132,7 @@ async function start() {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const m of messages) {
       if (m.key.fromMe) continue;
-      if ((m.key.remoteJid || '').endsWith('@g.us')) continue;   // never act on group chatter (STOP etc.)
+      if ((m.key.remoteJid || '').endsWith('@g.us')) { await collectIncoming(m); continue; }   // groups: data collection only (never STOP etc.)
       const text = (m.message?.conversation || m.message?.extendedTextMessage?.text || '').trim().toUpperCase();
       if (text === 'STOP') {
         const phone = '+' + (m.key.remoteJid || '').split('@')[0];
@@ -148,3 +193,4 @@ async function tick() {
 
 await start();
 setInterval(tick, 60 * 1000);
+setInterval(collectTick, 60 * 1000);

@@ -7,7 +7,6 @@ create table if not exists public.wa_collect_settings (
   enabled boolean not null default false,
   send_time time not null default '12:00',
   ack_enabled boolean not null default false,       -- short acknowledgement replies in the group
-  auto_approve boolean not null default false,      -- false = Admin approves pending entries (recommended at first)
   updated_at timestamptz not null default now()
 );
 insert into public.wa_collect_settings (id) values (true) on conflict do nothing;
@@ -183,7 +182,7 @@ returns text language plpgsql security definer set search_path = public, pg_temp
 declare
   cs public.wa_collect_settings; v_member public.wa_collect_members; v_mk uuid[]; v_t text; v_q text;
   v_phone text; v_date date; v_prod uuid; v_prod_name text; v_today date := (now() at time zone 'Asia/Karachi')::date;
-  m record; sc record; v_inserted int; v_err text; v_lines text := ''; v_ok int := 0; v_bad int := 0;
+  pr record; sc record; v_inserted int; v_err text; v_lines text := ''; v_ok int := 0; v_bad int := 0;
   v_months text[] := array['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
   rx text; v_in boolean; st public.program_state; v_lock date;
   p1 text := 'emis\s*(?:code)?\s*[:=\-]?\s*(\d{8})[^0-9]{0,60}?packs?\s*(?:consumed)?\s*[:=\-]?\s*(\d{1,6})';
@@ -235,13 +234,13 @@ begin
   if v_prod is not null and v_prod_name is null then select product_name into v_prod_name from public.products where id = v_prod; end if;
 
   select * into st from public.program_state where id;
-  for m in
+  for pr in
     select a[1] as emis, a[2]::numeric as packs from regexp_matches(v_t, p1, 'g') as r(a)
     union all
     select a[1], a[2]::numeric from regexp_matches(v_t, p2, 'gn') as r(a) where not (v_t ~ p1)
   loop
     v_err := null; sc := null;
-    select s.id, s.markaz_id, s.school_name into sc from public.schools s where s.emis_code = m.emis and s.active;
+    select s.id, s.markaz_id, s.school_name into sc from public.schools s where s.emis_code = pr.emis and s.active;
     if sc.id is null then v_err := 'EMIS code not found';
     elsif not (sc.markaz_id = any(v_mk)) then v_err := 'school is not in your markaz';
     elsif v_date is null or v_prod is null then v_err := 'date/product not identified - reply to the daily message';
@@ -255,16 +254,16 @@ begin
 
     if v_err is null then
       insert into public.wa_collect_entries (group_jid, member_id, school_id, emis_code, product_id, consumption_date, packs, status, raw_text, wa_msg_id)
-      values (p_group_jid, v_member.id, sc.id, m.emis, v_prod, v_date, m.packs, 'pending', left(p_text, 2000), p_msg_id)
+      values (p_group_jid, v_member.id, sc.id, pr.emis, v_prod, v_date, pr.packs, 'pending', left(p_text, 2000), p_msg_id)
       on conflict (school_id, product_id, consumption_date) where status = 'pending'
       do update set packs = excluded.packs, raw_text = excluded.raw_text, wa_msg_id = excluded.wa_msg_id, member_id = excluded.member_id, updated_at = now();
       v_ok := v_ok + 1;
-      v_lines := v_lines || E'\n✔ ' || m.emis || ' - ' || m.packs::bigint || ' packs (' || sc.school_name || ')';
+      v_lines := v_lines || E'\n✔ ' || pr.emis || ' - ' || pr.packs::bigint || ' packs (' || sc.school_name || ')';
     else
       insert into public.wa_collect_entries (group_jid, member_id, school_id, emis_code, product_id, consumption_date, packs, status, error_text, raw_text, wa_msg_id)
-      values (p_group_jid, v_member.id, sc.id, m.emis, v_prod, v_date, m.packs, 'invalid', v_err, left(p_text, 2000), p_msg_id);
+      values (p_group_jid, v_member.id, sc.id, pr.emis, v_prod, v_date, pr.packs, 'invalid', v_err, left(p_text, 2000), p_msg_id);
       v_bad := v_bad + 1;
-      v_lines := v_lines || E'\n✖ ' || m.emis || ' - ' || v_err;
+      v_lines := v_lines || E'\n✖ ' || pr.emis || ' - ' || v_err;
     end if;
   end loop;
 
