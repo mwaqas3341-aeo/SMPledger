@@ -15,6 +15,12 @@ create table if not exists public.wa_collect_groups (
   group_jid text primary key,
   label text,
   active boolean not null default true,
+  district text,
+  tehsil text,
+  scope_type text not null default 'tehsil' check (scope_type in ('tehsil','markaz')),
+  markaz_ids uuid[] not null default '{}',
+  send_time time,          -- when the daily prompt is posted to this group (null = default time)
+  missing_time time,       -- when the list of schools that have not reported is posted (null = no missing list)
   created_at timestamptz not null default now()
 );
 
@@ -33,6 +39,7 @@ create table if not exists public.wa_collect_messages (          -- the daily pr
   group_jid text not null,
   collect_date date not null,
   product_id uuid not null references public.products(id),
+  kind text not null default 'prompt' check (kind in ('prompt','missing')),
   message_text text not null,
   status text not null default 'queued' check (status in ('queued','processing','sent','failed','cancelled')),
   attempt_count int not null default 0,
@@ -40,7 +47,7 @@ create table if not exists public.wa_collect_messages (          -- the daily pr
   last_error text,
   created_at timestamptz not null default now(),
   sent_at timestamptz,
-  unique (group_jid, collect_date, product_id)
+  unique (group_jid, collect_date, product_id, kind)
 );
 
 create table if not exists public.wa_collect_inbox (             -- every group message seen (dedupe by WhatsApp id)
@@ -119,27 +126,77 @@ create policy wa_collect_aeo_read_entries on public.wa_collect_entries for selec
   exists (select 1 from public.schools s where s.id = wa_collect_entries.school_id
           and s.markaz_id = any(public.fn_wa_collect_markaz_set(auth.uid()))));
 
--- ---------- daily prompt: queue ----------
+-- is a school (by its markaz) inside the jurisdiction attached to a group?
+create or replace function public.fn_wa_collect_in_scope(p_group text, p_markaz uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case
+    when g.scope_type = 'markaz' then p_markaz = any(g.markaz_ids)
+    when g.tehsil is not null then exists (select 1 from public.markaz m where m.id = p_markaz and m.tehsil = g.tehsil and (g.district is null or m.district = g.district))
+    else true end
+  from public.wa_collect_groups g where g.group_jid = p_group;
+$$;
+
+-- schools in the group's jurisdiction that have no recorded or pending entry for that date/product (null = none missing)
+create or replace function public.fn_wa_collect_missing_text(p_group text, p_date date, p_product uuid) returns text
+language plpgsql stable security definer set search_path = public as $$
+declare pname text; body text := ''; n int := 0; shown int := 0; r record; cur text := '~';
+begin
+  select product_name into pname from public.products where id = p_product;
+  for r in
+    select m.name as mk, s.emis_code, s.school_name
+    from public.schools s join public.markaz m on m.id = s.markaz_id
+    where s.active and public.fn_wa_collect_in_scope(p_group, s.markaz_id)
+      and not exists (select 1 from public.consumption c where c.school_id = s.id and c.product_id = p_product and c.consumption_date = p_date and c.status = 'active')
+      and not exists (select 1 from public.wa_collect_entries e where e.school_id = s.id and e.product_id = p_product and e.consumption_date = p_date and e.status in ('pending','approved'))
+    order by m.name, s.school_name
+  loop
+    n := n + 1;
+    if length(body) < 3000 then
+      if r.mk is distinct from cur then body := body || E'\n*' || r.mk || E'*\n'; cur := r.mk; end if;
+      body := body || '* ' || r.emis_code || ' – ' || r.school_name || E'\n';
+      shown := shown + 1;
+    end if;
+  end loop;
+  if n = 0 then return null; end if;
+  return E'*SMP Daily Consumption – Missing Data*\nDate: ' || to_char(p_date, 'FMDay, DD Mon YYYY') || E'\nProduct: *' || pname || E'*\n\n' ||
+         n || E' school(s) have not reported yet:' || body ||
+         case when n > shown then E'\n…and ' || (n - shown) || ' more' else '' end ||
+         E'\nPlease reply with EMIS Code and Packs Consumed.';
+end $$;
+
+-- ---------- daily prompt + missing list: queue ----------
 create or replace function public.fn_wa_collect_enqueue_due() returns integer
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare cs public.wa_collect_settings; ws public.wa_settings; v_now timestamp := now() at time zone 'Asia/Karachi';
-        v_today date; g record; p record; v_n int := 0; v_open boolean;
+        v_today date; g record; p record; v_n int := 0; v_open boolean; v_txt text;
 begin
   select * into cs from public.wa_collect_settings where id;
   select * into ws from public.wa_settings where id;
   if not cs.enabled or ws.emergency_stop then return 0; end if;
-  if v_now::time < cs.send_time then return 0; end if;
   v_today := v_now::date;
   select coalesce(is_open, true) into v_open from public.program_state where id;
   if v_open is false then return 0; end if;
   for g in select * from public.wa_collect_groups where active loop
     for p in select id, product_name from public.products where active and public.fn_wa_collect_is_day(id, v_today) loop
-      insert into public.wa_collect_messages (group_jid, collect_date, product_id, message_text)
-      values (g.group_jid, v_today, p.id,
-        E'*SMP Daily Consumption – Data Collection*\nDate: ' || to_char(v_today, 'FMDay, DD Mon YYYY') ||
-        E'\nProduct: *' || p.product_name || E'*\n\nPlease reply with:\nEMIS Code:\nPacks Consumed:')
-      on conflict (group_jid, collect_date, product_id) do nothing;
-      if found then v_n := v_n + 1; end if;
+      if v_now::time >= coalesce(g.send_time, cs.send_time) then
+        insert into public.wa_collect_messages (group_jid, collect_date, product_id, kind, message_text)
+        values (g.group_jid, v_today, p.id, 'prompt',
+          E'*SMP Daily Consumption – Data Collection*\nDate: ' || to_char(v_today, 'FMDay, DD Mon YYYY') ||
+          E'\nProduct: *' || p.product_name || E'*\n\nPlease reply with:\nEMIS Code:\nPacks Consumed:')
+        on conflict (group_jid, collect_date, product_id, kind) do nothing;
+        if found then v_n := v_n + 1; end if;
+      end if;
+      -- missing list: only after that day's prompt has really been posted to the group
+      if g.missing_time is not null and v_now::time >= g.missing_time
+         and exists (select 1 from public.wa_collect_messages x where x.group_jid = g.group_jid and x.collect_date = v_today and x.product_id = p.id and x.kind = 'prompt' and x.status = 'sent')
+         and not exists (select 1 from public.wa_collect_messages x where x.group_jid = g.group_jid and x.collect_date = v_today and x.product_id = p.id and x.kind = 'missing') then
+        v_txt := public.fn_wa_collect_missing_text(g.group_jid, v_today, p.id);
+        insert into public.wa_collect_messages (group_jid, collect_date, product_id, kind, message_text, status, last_error)
+        values (g.group_jid, v_today, p.id, 'missing', coalesce(v_txt, ''), case when v_txt is null then 'cancelled' else 'queued' end,
+                case when v_txt is null then 'Nothing missing' end)
+        on conflict (group_jid, collect_date, product_id, kind) do nothing;
+        if found and v_txt is not null then v_n := v_n + 1; end if;
+      end if;
     end loop;
   end loop;
   return v_n;
@@ -148,20 +205,32 @@ end $$;
 create or replace function public.fn_wa_collect_claim_next()
 returns table(m_id uuid, m_jid text, m_text text, m_min_gap integer, m_max_gap integer)
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare cs public.wa_collect_settings; ws public.wa_settings; v_now timestamp := now() at time zone 'Asia/Karachi'; q public.wa_collect_messages;
+declare cs public.wa_collect_settings; ws public.wa_settings; v_now timestamp := now() at time zone 'Asia/Karachi'; q public.wa_collect_messages; v_txt text;
 begin
   perform pg_advisory_xact_lock(hashtext('wa_collect_claim'));
   select * into cs from public.wa_collect_settings where id;
   select * into ws from public.wa_settings where id;
   if not cs.enabled or ws.emergency_stop or not ws.enabled then return; end if;
-  if v_now::time < cs.send_time or v_now::time > ws.window_end then return; end if;
+  if v_now::time < ws.window_start or v_now::time > ws.window_end then return; end if;
   update public.wa_collect_messages set status = 'failed', last_error = 'Worker interrupted mid-send; not retried'
    where status = 'processing' and created_at < now() - interval '10 minutes';
-  select * into q from public.wa_collect_messages
-   where status = 'queued' and collect_date = v_now::date order by created_at limit 1 for update skip locked;
-  if not found then return; end if;
-  update public.wa_collect_messages set status = 'processing', attempt_count = attempt_count + 1 where id = q.id;
-  return query select q.id, q.group_jid, q.message_text, ws.min_gap_seconds, ws.max_gap_seconds;
+  loop
+    select * into q from public.wa_collect_messages
+     where status = 'queued' and collect_date = v_now::date order by kind desc, created_at limit 1 for update skip locked;
+    if not found then return; end if;
+    if q.kind = 'missing' then      -- rebuilt from the latest data at the moment of sending
+      v_txt := public.fn_wa_collect_missing_text(q.group_jid, q.collect_date, q.product_id);
+      if v_txt is null then
+        update public.wa_collect_messages set status = 'cancelled', last_error = 'Nothing missing at send time' where id = q.id;
+        continue;
+      end if;
+      update public.wa_collect_messages set message_text = v_txt where id = q.id;
+      q.message_text := v_txt;
+    end if;
+    update public.wa_collect_messages set status = 'processing', attempt_count = attempt_count + 1 where id = q.id;
+    return query select q.id, q.group_jid, q.message_text, ws.min_gap_seconds, ws.max_gap_seconds;
+    return;
+  end loop;
 end $$;
 
 create or replace function public.fn_wa_collect_report_result(p_id uuid, p_ok boolean, p_provider_id text default null, p_error text default null)
@@ -243,6 +312,7 @@ begin
     select s.id, s.markaz_id, s.school_name into sc from public.schools s where s.emis_code = pr.emis and s.active;
     if sc.id is null then v_err := 'EMIS code not found';
     elsif not (sc.markaz_id = any(v_mk)) then v_err := 'school is not in your markaz';
+    elsif not coalesce(public.fn_wa_collect_in_scope(p_group_jid, sc.markaz_id), false) then v_err := 'school is not in this group''s jurisdiction';
     elsif v_date is null or v_prod is null then v_err := 'date/product not identified - reply to the daily message';
     elsif v_date > v_today then v_err := 'date is in the future';
     elsif not coalesce(public.fn_wa_collect_is_day(v_prod, v_date), false) then v_err := v_prod_name || ' is not a consumption day on ' || to_char(v_date, 'DD Mon');
@@ -318,7 +388,7 @@ end $$;
 
 -- ---------- permissions ----------
 revoke all on function public.fn_wa_collect_enqueue_due(), public.fn_wa_collect_claim_next(),
-  public.fn_wa_collect_report_result(uuid, boolean, text, text), public.fn_wa_collect_ingest(text, text, text, text, text) from public, anon, authenticated;
+  public.fn_wa_collect_report_result(uuid, boolean, text, text), public.fn_wa_collect_ingest(text, text, text, text, text), public.fn_wa_collect_missing_text(text, date, uuid) from public, anon, authenticated;
 grant execute on function public.fn_wa_collect_enqueue_due(), public.fn_wa_collect_claim_next(),
   public.fn_wa_collect_report_result(uuid, boolean, text, text), public.fn_wa_collect_ingest(text, text, text, text, text) to service_role;
 grant execute on function public.fn_wa_collect_update_entry(uuid, numeric), public.fn_wa_collect_reject(uuid), public.fn_wa_collect_approve(uuid) to authenticated;
