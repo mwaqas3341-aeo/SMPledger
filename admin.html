@@ -1240,7 +1240,10 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     }
     else if(a === "del"){
       if(!confirm(`Remove ${userById[m?.user_id]?.full_name || "this AEO"} from the authorised list? They will no longer be able to post data. Entries already received are kept.`)) return;
-      run(sb.from("wa_collect_members").delete().eq("id", id), "AEO removed");
+      const r = await sb.from("wa_collect_members").delete().eq("id", id).select("id");
+      if(r.error){ toast("Could not remove: " + r.error.message, "bad"); return; }
+      if(!r.data || !r.data.length){ toast("Nothing was removed - the AEO is still listed", "bad"); again(); return; }
+      toast("AEO removed"); again();
     }
     else run(sb.from("wa_collect_members").update({ active: b.dataset.active !== "true" }).eq("id", id));
   });

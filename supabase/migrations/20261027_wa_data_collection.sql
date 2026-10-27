@@ -107,6 +107,9 @@ do $$ begin
   end if;
 end $$;
 alter table public.wa_collect_settings drop column if exists auto_approve;
+-- removing an authorised AEO must not be blocked by entries they already sent
+alter table public.wa_collect_entries drop constraint if exists wa_collect_entries_member_id_fkey,
+  add constraint wa_collect_entries_member_id_fkey foreign key (member_id) references public.wa_collect_members(id) on delete set null;
 
 -- ---------- helpers ----------
 create or replace function public.fn_wa_collect_digits(p text) returns text language sql immutable as $$
