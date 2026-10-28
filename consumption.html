@@ -627,11 +627,11 @@ async function loadWaPending(){
 function waChipHtml(schoolId, productId){
   const e = waPending[schoolId + "|" + productId];
   if(!e) return "";
-  return `<div class="wa-chip" data-entry="${e.id}" style="margin-top:4px;padding:4px 6px;border:1px solid #e0b64a;background:#fff8e1;border-radius:6px;font-size:13px;line-height:1.35;min-width:240px;width:100%;box-sizing:border-box;">
-    <div><b>Auto-collected from your WhatsApp group:</b> ${fmt(e.packs)}</div>
-    <div style="color:#6b5a1e;">Please verify. If wrong, type the correct figure in Consumed and Submit.</div>
-    <div style="margin-top:3px;"><button type="button" class="btn-primary wa-approve" style="padding:5px 12px;font-size:13px;">Approve ${fmt(e.packs)}</button>
-    <button type="button" class="link-btn danger wa-dismiss" style="font-size:12px;">Dismiss</button></div></div>`;
+  return `<div class="wa-chip" data-entry="${e.id}" data-packs="${e.packs}" data-school="${schoolId}" data-product="${productId}" style="margin-top:4px;padding:6px 8px;border:1px solid #5b8def;background:#eaf2ff;border-radius:6px;font-size:13px;line-height:1.35;min-width:240px;width:100%;box-sizing:border-box;">
+    <div class="wa-chip-msg" style="color:#1d3f87;"><b>📲 From your WhatsApp group: ${fmt(e.packs)}</b></div>
+    <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
+      <button type="button" class="btn-primary wa-approve" style="padding:5px 14px;font-size:13px;">Approve</button>
+      <button type="button" class="btn-secondary wa-edit" style="padding:5px 14px;font-size:13px;">Edit</button></div></div>`;
 }
 function wireWaChips(root){
   root.querySelectorAll(".wa-chip").forEach(chip => {
@@ -643,11 +643,15 @@ function wireWaChips(root){
       toast("Approved and saved. You can still edit it with the Edit button.", "ok");
       loadConsumptionList(currentVisibleIds);
     });
-    chip.querySelector(".wa-dismiss").addEventListener("click", async () => {
-      if(!confirm("Dismiss this WhatsApp entry? You can then enter the figure yourself.")) return;
-      const { error } = await sb.rpc("fn_wa_collect_reject", { p_entry: id });
-      if(error){ toast(error.message, "bad"); return; }
-      loadConsumptionList(currentVisibleIds);
+    chip.querySelector(".wa-edit").addEventListener("click", () => {
+      const inp = document.querySelector(`.consumed-input[data-school="${chip.dataset.school}"][data-product="${chip.dataset.product}"]`);
+      if(!inp) return;
+      inp.disabled = false; inp.value = chip.dataset.packs; inp.focus(); inp.select();
+      const tr = inp.closest("tr"), btn = tr && tr.querySelector(".row-action-btn");
+      if(btn){ btn.dataset.mode = "submit"; btn.textContent = "Submit"; }
+      chip.querySelector(".wa-approve").style.display = "none";
+      chip.querySelector(".wa-edit").style.display = "none";
+      chip.querySelector(".wa-chip-msg").innerHTML = "<b>Correct the figure, then press Submit</b>";
     });
   });
 }
