@@ -84,21 +84,11 @@ async function collectIncoming(m) {
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
       p_group_jid: m.key.remoteJid, p_sender: sender, p_msg_id: m.key.id, p_text: text, p_quoted: quoted });
     if (error) { log.warn(error, 'collect ingest failed'); return; }
-    if (data === '@OK') { await collectReact(m); return; }
     if (data && connected) await collectReply(m.key.remoteJid, sender, { text: data }, { quoted: m });
   } catch (e) { log.warn(e, 'collect incoming failed'); }
 }
 // Auto-replies are optional and low volume: the database must grant each one (counts toward the shared daily limit,
 // per-day / per-person / per-group cool-down limits, reserve kept for the 4 pm reports). Refused replies are simply skipped.
-// Correct report from a head: a thumbs-up reaction (no text). Also counted in the daily limit and capped per day.
-async function collectReact(m) {
-  try {
-    const { data: ok } = await db.rpc('fn_wa_collect_reserve_send', { p_kind: 'react', p_group: m.key.remoteJid, p_sender: null });
-    if (!ok) return;
-    await new Promise(r => setTimeout(r, 3000 + Math.random() * 6000));
-    if (connected) await sock.sendMessage(m.key.remoteJid, { react: { text: '👍', key: m.key } });
-  } catch (e) { log.warn(e, 'collect react failed'); }
-}
 async function collectReply(jid, sender, content, opts) {
   try {
     const { data: ok, error } = await db.rpc('fn_wa_collect_reserve_send', { p_kind: 'reply', p_group: jid, p_sender: sender || null });
