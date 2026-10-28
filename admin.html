@@ -1123,7 +1123,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
       <label>Tehsil<select id="wcaT"></select></label>
       <label>Markaz<select id="wcaM"></select></label>
       <label>AEO name<select id="wcaU"></select></label>
-      <label>Cell number<input id="wcaPh" placeholder="Auto-filled" readonly></label>
+      <label>Cell number<input id="wcaPh" placeholder="03001234567"></label>
     </div>
     <div id="wcaMsg" class="sub" style="margin:6px 0;"></div>
     <button class="btn-primary" type="button" id="wcMemAdd" disabled>Add AEO</button>
@@ -1285,8 +1285,8 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     const u = cs.u && waUsers.find(x => x.id === cs.u);
     const ph = q("wcaPh");
     ph.value = u ? (u.cell_no || "") : "";
-    ph.readOnly = !(u && !u.cell_no);
-    ph.placeholder = u && !u.cell_no ? "03001234567" : "Auto-filled";
+    ph.readOnly = false;   // always editable: the WhatsApp number may differ from the profile cell number
+    ph.placeholder = "03001234567";
     q("wcaMsg").textContent = !cs.m ? "" : (!aeos.length ? "No AEO available for this markaz (none registered, or all already added)." : (u && !u.cell_no ? "This AEO has no cell number on their profile - enter it." : ""));
     q("wcMemAdd").disabled = !u;
   }
