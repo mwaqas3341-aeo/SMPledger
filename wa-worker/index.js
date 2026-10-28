@@ -62,7 +62,7 @@ async function collectIncoming(m) {
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
       p_group_jid: m.key.remoteJid, p_sender: sender, p_msg_id: m.key.id, p_text: text, p_quoted: quoted });
     if (error) { log.warn(error, 'collect ingest failed'); return; }
-    if (data && connected && await ackEnabled()) await sock.sendMessage(m.key.remoteJid, { text: data }, { quoted: m });
+    if (data && connected) await sock.sendMessage(m.key.remoteJid, { text: data }, { quoted: m });
   } catch (e) { log.warn(e, 'collect incoming failed'); }
 }
 let collectBusy = false;

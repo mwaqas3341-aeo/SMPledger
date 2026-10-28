@@ -423,6 +423,7 @@ async function loadConsumptionList(visibleSchoolIds){
   const scheduled = await scheduledProductsFor(selectedDate);
   if(window.smpLocks) await smpLocks.load();
   gridSavedAt = (scheduled.length ? await fetchGridSavedAt(visibleSchoolIds) : null) || {};
+  await loadWaPending();
   if(scheduled.length) renderEntryGrid(visibleSchoolIds, grid, scheduled);          // editable grid
   else renderSchoolsSummary(visibleSchoolIds, grid, scheduled);                      // nothing scheduled: balances only
   loadHistory(visibleSchoolIds);
@@ -526,6 +527,7 @@ function renderEntryGrid(visibleSchoolIds, grid, scheduled){
                  value="${consumed > 0 ? consumed : ""}" />
           <span class="save-indicator" id="ind-${s.id}-${p.id}"></span>
           <button type="button" class="link-btn danger delete-consumed-btn" data-school="${s.id}" data-product="${p.id}" style="display:${consumed > 0 ? "inline" : "none"};">Delete</button>
+          ${waChipHtml(s.id, p.id)}
         </td>
         <td class="${cls}" id="rem-${s.id}-${p.id}">${fmt(g.remaining)}</td>`;
     }).join("");
@@ -539,6 +541,7 @@ function renderEntryGrid(visibleSchoolIds, grid, scheduled){
   });
   body.querySelectorAll(".row-action-btn").forEach(btn => btn.addEventListener("click", () => handleGridRowAction(btn)));
   body.querySelectorAll(".delete-consumed-btn").forEach(btn => btn.addEventListener("click", () => handleGridDelete(btn)));
+  wireWaChips(body);
   refreshGridTotals();
   applyConsumptionLocks(scheduled);
 }
@@ -611,6 +614,44 @@ async function handleGridRowAction(btn){
   loadHistory(currentVisibleIds);
 }
 
+
+// ---- Entries collected from the AEO's WhatsApp group (shown only to registered AEOs: cell number + markaz on file) ----
+let waPending = {};
+async function loadWaPending(){
+  waPending = {};
+  try{
+    const { data, error } = await sb.rpc("fn_wa_collect_pending_for_me", { p_date: selectedDate });
+    if(!error) (data || []).forEach(e => { waPending[e.school_id + "|" + e.product_id] = e; });
+  }catch(e){ /* feature unavailable: grid works as before */ }
+}
+function waChipHtml(schoolId, productId){
+  const e = waPending[schoolId + "|" + productId];
+  if(!e) return "";
+  return `<div class="wa-chip" data-entry="${e.id}" style="margin-top:4px;padding:4px 6px;border:1px solid #e0b64a;background:#fff8e1;border-radius:6px;font-size:12px;line-height:1.3;max-width:190px;">
+    <div><b>Auto-collected from your WhatsApp group:</b> ${fmt(e.packs)}</div>
+    <div style="color:#6b5a1e;">Please verify. If wrong, type the correct figure in Consumed and Submit.</div>
+    <div style="margin-top:3px;"><button type="button" class="btn-primary wa-approve" style="padding:3px 8px;font-size:12px;">Approve ${fmt(e.packs)}</button>
+    <button type="button" class="link-btn danger wa-dismiss" style="font-size:12px;">Dismiss</button></div></div>`;
+}
+function wireWaChips(root){
+  root.querySelectorAll(".wa-chip").forEach(chip => {
+    const id = chip.dataset.entry;
+    chip.querySelector(".wa-approve").addEventListener("click", async (ev) => {
+      const b = ev.currentTarget; b.disabled = true;
+      const { data, error } = await sb.rpc("fn_wa_collect_approve", { p_entry: id });
+      if(error || data !== "OK"){ b.disabled = false; toast(error ? error.message : data, "bad"); return; }
+      toast("Approved and saved. You can still edit it with the Edit button.", "ok");
+      loadConsumptionList(currentVisibleIds);
+    });
+    chip.querySelector(".wa-dismiss").addEventListener("click", async () => {
+      if(!confirm("Dismiss this WhatsApp entry? You can then enter the figure yourself.")) return;
+      const { error } = await sb.rpc("fn_wa_collect_reject", { p_entry: id });
+      if(error){ toast(error.message, "bad"); return; }
+      loadConsumptionList(currentVisibleIds);
+    });
+  });
+}
+
 // Saves one cell through the same database function as before (it re-checks schedule, date and available stock).
 async function saveGridCell(inp){
   const school = cache.schools.find(s => s.id === inp.dataset.school);
@@ -622,6 +663,7 @@ async function saveGridCell(inp){
   if(r.ok){
     ind.className = "save-indicator ok"; ind.textContent = "✓ Saved";
     inp.dataset.saved = qty;
+    inp.parentElement.querySelector(".wa-chip")?.remove();
     const remCell = document.getElementById(`rem-${inp.dataset.school}-${inp.dataset.product}`);
     if(remCell) remCell.textContent = fmt(Number(inp.dataset.opening || 0) + Number(inp.dataset.received || 0) - qty);
     const del = inp.parentElement.querySelector(".delete-consumed-btn");
