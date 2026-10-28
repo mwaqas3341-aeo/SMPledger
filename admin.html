@@ -1101,9 +1101,11 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
       <label>Default daily message time <input type="time" id="wcTime" value="${esc(String(s.send_time).slice(0,5))}"></label>
       <label>Collection messages may be sent between <input type="time" id="wcWinS" value="${esc(String(s.window_start || "08:00").slice(0,5))}"> and <input type="time" id="wcWinE" value="${esc(String(s.window_end || "21:30").slice(0,5))}"></label>
       <label><input type="checkbox" id="wcAck" ${s.ack_enabled ? "checked" : ""}> Reply in the group to confirm what was received</label>
+      <label>Max auto-replies per day (whole system) <input type="number" min="0" max="30" id="wcRepDay" value="${s.max_replies_per_day ?? 8}"></label>
+      <label>Max auto-replies per person per day <input type="number" min="0" max="10" id="wcRepSender" value="${s.max_replies_per_sender ?? 2}"></label>
       <div><button class="btn-primary" type="button" id="wcSave">Save</button></div>
     </div>
-    <p class="sub" style="margin-top:8px;">Has its own sending window (above); set each group's daily message and missing-list times inside it. Uses the same emergency stop and WhatsApp number as Auto Message Send Settings.</p>
+    <p class="sub" style="margin-top:8px;">Has its own sending window (above); set each group's daily message and missing-list times inside it. Uses the same emergency stop, WhatsApp number and <b>daily limit</b> as Auto Message Send Settings: every collection message (daily message, missing list, reply) counts toward it, and room for all active report recipients is always kept free. Replies go out only for rejected entries, rarely, and with a random delay.</p>
   </div>
 
   <details class="wa-det" open><summary>Collection groups &amp; jurisdiction</summary><div class="wa-body">
@@ -1213,7 +1215,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   const again = () => renderWaCollectCard(waGroups, waUsers, markazById);
   const run = async (p, ok) => { const r = await p; if(r.error){ toast(r.error.message, "bad"); return false; } if(ok) toast(ok); again(); return true; };
   const q = id => document.getElementById(id);
-  q("wcSave").onclick = () => run(sb.from("wa_collect_settings").upsert({ id:true, enabled:q("wcEnabled").checked, send_time:q("wcTime").value || "12:00", window_start:q("wcWinS").value || "08:00", window_end:q("wcWinE").value || "21:30", ack_enabled:q("wcAck").checked, updated_at:new Date().toISOString() }), "Saved");
+  q("wcSave").onclick = () => run(sb.from("wa_collect_settings").upsert({ id:true, enabled:q("wcEnabled").checked, send_time:q("wcTime").value || "12:00", window_start:q("wcWinS").value || "08:00", window_end:q("wcWinE").value || "21:30", ack_enabled:q("wcAck").checked, max_replies_per_day:Math.max(0,Math.min(30,+q("wcRepDay").value||0)), max_replies_per_sender:Math.max(0,Math.min(10,+q("wcRepSender").value||0)), updated_at:new Date().toISOString() }), "Saved");
   const normPh = v => { let ph = String(v || "").replace(/[\s-]/g, ""); if(/^0\d{10}$/.test(ph)) ph = "+92" + ph.slice(1); else if(/^92\d{10}$/.test(ph)) ph = "+" + ph; return /^\+92\d{10}$/.test(ph) ? ph : null; };
   q("wcGrpAeo").onchange = e => { const o = e.target.selectedOptions[0]; if(o && o.dataset.phone) q("wcGrpAeoPh").value = o.dataset.phone; };
 

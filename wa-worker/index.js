@@ -73,7 +73,7 @@ async function collectIncoming(m) {
           p_group_jid: m.key.remoteJid, p_orig_msg_id: origId, p_edit_id: editId, p_sender: sender, p_text: newText,
           p_quoted: ctx2?.quotedMessage ? textOf(ctx2.quotedMessage) : null });
         if (error) { log.warn(error, 'collect edit failed'); return; }
-        if (data && connected) await sock.sendMessage(m.key.remoteJid, { text: data });
+        if (data && connected) await collectReply(m.key.remoteJid, sender, { text: data }, null);
       }
       return;
     }
@@ -84,8 +84,18 @@ async function collectIncoming(m) {
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
       p_group_jid: m.key.remoteJid, p_sender: sender, p_msg_id: m.key.id, p_text: text, p_quoted: quoted });
     if (error) { log.warn(error, 'collect ingest failed'); return; }
-    if (data && connected) await sock.sendMessage(m.key.remoteJid, { text: data }, { quoted: m });
+    if (data && connected) await collectReply(m.key.remoteJid, sender, { text: data }, { quoted: m });
   } catch (e) { log.warn(e, 'collect incoming failed'); }
+}
+// Auto-replies are optional and low volume: the database must grant each one (counts toward the shared daily limit,
+// per-day / per-person / per-group cool-down limits, reserve kept for the 4 pm reports). Refused replies are simply skipped.
+async function collectReply(jid, sender, content, opts) {
+  try {
+    const { data: ok, error } = await db.rpc('fn_wa_collect_reserve_send', { p_kind: 'reply', p_group: jid, p_sender: sender || null });
+    if (error || !ok) { if (error) log.warn(error, 'collect reserve failed'); return; }
+    await new Promise(r => setTimeout(r, 4000 + Math.random() * 8000));
+    if (connected) await sock.sendMessage(jid, content, opts || undefined);
+  } catch (e) { log.warn(e, 'collect reply failed'); }
 }
 let collectBusy = false;
 async function collectTick() {
