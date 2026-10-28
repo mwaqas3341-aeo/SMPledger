@@ -5,6 +5,7 @@
 
 alter table public.wa_collect_settings
   add column if not exists max_replies_per_day int not null default 8 check (max_replies_per_day between 0 and 30),
+  add column if not exists max_reacts_per_day int not null default 15 check (max_reacts_per_day between 0 and 40),
   add column if not exists max_replies_per_sender int not null default 2 check (max_replies_per_sender between 0 and 10);
 
 -- how many more messages collection may send today without touching the capacity needed for the daily reports
@@ -36,6 +37,10 @@ begin
     select count(*) into v_n from public.wa_logs where event = 'claim' and error_message like 'collect:reply|%|' || v_s and (created_at at time zone 'Asia/Karachi')::date = v_now::date;
     if v_n >= cs.max_replies_per_sender then return false; end if;
     if exists (select 1 from public.wa_logs where event = 'claim' and error_message like 'collect:reply|' || coalesce(p_group, '') || '|%' and created_at > now() - interval '3 minutes') then return false; end if;
+  end if;
+  if p_kind = 'react' then
+    select count(*) into v_n from public.wa_logs where event = 'claim' and error_message like 'collect:react|%' and (created_at at time zone 'Asia/Karachi')::date = v_now::date;
+    if v_n >= cs.max_reacts_per_day then return false; end if;
   end if;
   insert into public.wa_logs (event, dry_run, error_message) values ('claim', false, 'collect:' || p_kind || '|' || coalesce(p_group, '') || '|' || v_s);
   return true;

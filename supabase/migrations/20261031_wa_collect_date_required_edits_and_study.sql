@@ -152,7 +152,7 @@ begin
   end loop;
 
   -- saved entries are not acknowledged; only rejected ones get a reply naming the cell number and the EMIS code(s)
-  if v_bad = 0 then return null; end if;
+  if v_bad = 0 then return case when v_ok > 0 then '@OK' else null end; end if;   -- '@OK' = worker reacts with a thumbs-up, no text
   return E'⚠ Not accepted - format not followed by cell 0' || v_phone || ' - EMIS code(s):' || v_lines || v_footer;
 end $$;
 
