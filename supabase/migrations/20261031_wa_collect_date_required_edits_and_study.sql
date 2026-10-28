@@ -28,10 +28,12 @@ language sql security definer set search_path = public as $$
   values (p_group, p_phone, p_name, p_kind, p_emis, p_outcome, p_cat, p_detail, left(p_raw, 600), p_msg);
 $$;
 
+alter table public.wa_collect_entries add column if not exists sender_user_id uuid references public.profiles(id) on delete set null;
+
 create or replace function public.fn_wa_collect_ingest(p_group_jid text, p_sender text, p_msg_id text, p_text text, p_quoted text default null)
 returns text language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  cs public.wa_collect_settings; v_member public.wa_collect_members; v_member_id uuid; v_mk uuid[]; v_cschools uuid[]; v_contact boolean := false; v_cid uuid;
+  cs public.wa_collect_settings; v_member public.wa_collect_members; v_member_id uuid; v_user_id uuid; v_mk uuid[]; v_cschools uuid[]; v_contact boolean := false; v_cid uuid;
   v_t text; v_q text; v_phone text; v_name text; v_kind text; v_date date; v_prod uuid; v_prod_name text;
   v_today date := (now() at time zone 'Asia/Karachi')::date;
   pr record; sc record; v_inserted int; v_err text; v_cat text; v_lines text := ''; v_ok int := 0; v_bad int := 0; v_n int;
@@ -54,11 +56,21 @@ begin
   v_reportlike := v_parsed or v_t ~ '\m\d{8}\M' or v_t ~ 'emis' or v_t ~ 'packs?\s*consumed';
 
   v_phone := right(regexp_replace(coalesce(p_sender, ''), '\D', '', 'g'), 10);
-  select m.* into v_member from public.wa_collect_members m where m.active and right(regexp_replace(m.phone_e164, '\D', '', 'g'), 10) = v_phone;
-  if found then
-    v_member_id := v_member.id; v_kind := 'aeo';
-    v_mk := public.fn_wa_collect_markaz_set(v_member.user_id);
-    select p.full_name into v_name from public.profiles p where p.id = v_member.user_id;
+  -- an AEO / admin is authorised automatically by profile: cell number + markaz on file. A paused extra-number row switches posting off.
+  select m.* into v_member from public.wa_collect_members m where right(regexp_replace(m.phone_e164, '\D', '', 'g'), 10) = v_phone order by m.active desc limit 1;
+  if found and not v_member.active then
+    return null;
+  elsif found then
+    v_member_id := v_member.id; v_user_id := v_member.user_id;
+  else
+    select p.id into v_user_id from public.profiles p
+     where p.active and p.role in ('aeo', 'admin') and right(regexp_replace(coalesce(p.cell_no, ''), '\D', '', 'g'), 10) = v_phone
+       and cardinality(public.fn_wa_collect_markaz_set(p.id)) > 0 limit 1;
+  end if;
+  if v_user_id is not null then
+    v_kind := 'aeo';
+    v_mk := public.fn_wa_collect_markaz_set(v_user_id);
+    select p.full_name into v_name from public.profiles p where p.id = v_user_id;
   else
     select array_agg(distinct c.school_id), max(c.contact_name) into v_cschools, v_name from public.wa_collect_school_contacts c
      where c.active and right(regexp_replace(c.phone_e164, '\D', '', 'g'), 10) = v_phone;
@@ -136,15 +148,15 @@ begin
        where c.active and c.school_id = sc.id and right(regexp_replace(c.phone_e164, '\D', '', 'g'), 10) = v_phone limit 1;
     end if;
     if v_err is null then
-      insert into public.wa_collect_entries (group_jid, member_id, contact_id, school_id, emis_code, product_id, consumption_date, packs, status, raw_text, wa_msg_id)
-      values (p_group_jid, v_member_id, v_cid, sc.id, pr.emis, v_prod, v_date, pr.packs, 'pending', left(p_text, 2000), p_msg_id)
+      insert into public.wa_collect_entries (group_jid, member_id, sender_user_id, contact_id, school_id, emis_code, product_id, consumption_date, packs, status, raw_text, wa_msg_id)
+      values (p_group_jid, v_member_id, v_user_id, v_cid, sc.id, pr.emis, v_prod, v_date, pr.packs, 'pending', left(p_text, 2000), p_msg_id)
       on conflict (school_id, product_id, consumption_date) where status = 'pending'
-      do update set packs = excluded.packs, raw_text = excluded.raw_text, wa_msg_id = excluded.wa_msg_id, member_id = excluded.member_id, contact_id = excluded.contact_id, updated_at = now();
+      do update set packs = excluded.packs, raw_text = excluded.raw_text, wa_msg_id = excluded.wa_msg_id, member_id = excluded.member_id, sender_user_id = excluded.sender_user_id, contact_id = excluded.contact_id, updated_at = now();
       v_ok := v_ok + 1;
       perform public.fn_wa_collect_log(p_group_jid, v_phone, v_name, v_kind, pr.emis, 'accepted', null, null, p_text, p_msg_id);
     else
-      insert into public.wa_collect_entries (group_jid, member_id, contact_id, school_id, emis_code, product_id, consumption_date, packs, status, error_text, raw_text, wa_msg_id)
-      values (p_group_jid, v_member_id, v_cid, sc.id, pr.emis, v_prod, v_date, pr.packs, 'invalid', v_err, left(p_text, 2000), p_msg_id);
+      insert into public.wa_collect_entries (group_jid, member_id, sender_user_id, contact_id, school_id, emis_code, product_id, consumption_date, packs, status, error_text, raw_text, wa_msg_id)
+      values (p_group_jid, v_member_id, v_user_id, v_cid, sc.id, pr.emis, v_prod, v_date, pr.packs, 'invalid', v_err, left(p_text, 2000), p_msg_id);
       v_bad := v_bad + 1;
       v_lines := v_lines || E'\n✖ ' || pr.emis || ' - ' || v_err;
       perform public.fn_wa_collect_log(p_group_jid, v_phone, v_name, v_kind, pr.emis, 'rejected', v_cat, v_err, p_text, p_msg_id);

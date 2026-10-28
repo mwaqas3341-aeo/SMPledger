@@ -35,6 +35,7 @@ details.wa-det > .wa-body{ padding:2px 14px 12px; }
 .wa-casc{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:8px; }
 .wa-casc select:disabled, .wa-casc input:disabled{ opacity:.55; }
 .wa-casc label{ font-size:12px; }
+.wc-chips{display:flex;flex-wrap:wrap;gap:6px}.wc-chip{border:1px solid #cbd5e1;background:#e5e7eb;color:#475569;border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}.wc-chip.on{background:#16a34a;border-color:#15803d;color:#fff;font-weight:600}
 </style>
 </head>
 <body>
@@ -1114,14 +1115,18 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
       <label>WhatsApp group<select id="wcGroupSel"><option value="">Select a group…</option>${waGroups.map(g => `<option value="${esc(g.jid)}" ${selJid === g.jid ? "selected" : ""}>${esc(g.subject || g.jid)}${groups.some(x => x.group_jid === g.jid) ? " (already added)" : ""}</option>`).join("")}</select></label>
       <label>District<select id="wcDist"><option value="">Select district…</option>${districts.map(d => `<option ${eg.district === d ? "selected" : ""}>${esc(d)}</option>`).join("")}</select></label>
       <label>Tehsil<select id="wcTeh"><option value="">Select tehsil…</option>${tehsils.map(t => `<option ${eg.tehsil === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
-      <label>Receive data from<select id="wcScope"><option value="tehsil" ${eg.scope_type !== "markaz" ? "selected" : ""}>Whole tehsil</option><option value="markaz" ${eg.scope_type === "markaz" ? "selected" : ""}>Selected markaz only</option></select></label>
+      <label>Receive data from<select id="wcScope"><option value="tehsil" ${eg.scope_type !== "markaz" ? "selected" : ""}>Whole tehsil</option><option value="markaz" ${eg.scope_type === "markaz" ? "selected" : ""}>One or more selected markaz</option></select></label>
     </div>
-    <div id="wcMkBox" style="margin-top:8px;${eg.scope_type === "markaz" ? "" : "display:none;"}">${markazInTeh.map(m => `<label style="display:inline-block;margin-right:14px;"><input type="checkbox" class="wcMk" value="${m.id}" ${(eg.markaz_ids || []).includes(m.id) ? "checked" : ""}> ${esc(m.name)}</label>`).join("") || `<span class="sub">Choose a tehsil first.</span>`}</div>
+    <div id="wcMkBox" style="margin-top:8px;${eg.scope_type === "markaz" ? "" : "display:none;"}">
+      <div class="sub" style="margin-bottom:6px;">Tap to choose one or several markaz (green = receives data, grey = not).
+        <a href="#" id="wcMkAll">Select all</a> · <a href="#" id="wcMkNone">Clear</a></div>
+      <div class="wc-chips">${markazInTeh.map(m => `<button type="button" class="wc-chip wcMk${(eg.markaz_ids || []).includes(m.id) ? " on" : ""}" data-id="${m.id}">${esc(m.name)}</button>`).join("") || `<span class="sub">Choose a tehsil first.</span>`}</div>
+    </div>
     <div class="form-grid" style="margin-top:10px;">
       <label>AEO for this group (markaz in charge)<select id="wcGrpAeo"><option value="">${scopeMarkaz.length ? "Select AEO…" : "Select the tehsil / markaz first"}</option>${groupAeos.map(u => `<option value="${esc(u.id)}" data-phone="${esc(u.cell_no || "")}" ${eg.aeo_id === u.id ? "selected" : ""}>${esc(u.full_name)}${u.role === "admin" ? " (Admin)" : ""} — ${esc([u.markaz_id, ...(u.extra_markaz_ids || [])].map(id => markazById[id]?.name).filter(Boolean).join(", "))}${members.some(m => m.user_id === u.id) ? " ✓ authorised" : ""}</option>`).join("")}</select></label>
       <label>AEO WhatsApp number<input id="wcGrpAeoPh" placeholder="03001234567" value="${esc(eg.aeo_ph || "")}"></label>
     </div>
-    <p class="sub" style="margin-top:4px;">The selected AEO is authorised to post data for the schools of this jurisdiction (added to the authorised list when you save).</p>
+    <p class="sub" style="margin-top:4px;">Any active AEO / admin whose profile has a cell number and markaz is authorised automatically for the schools of their own markaz. Enter a number here only if the AEO uses a different WhatsApp number than the cell on their profile.</p>
     <details style="margin-top:8px;" ${wcCMk ? "open" : ""}><summary><b>School head / focal person WhatsApp numbers (optional)</b></summary>
       <p class="sub">Add one or more numbers per school so a head teacher, focal person or anyone else can share that school's report. They can post only for the school(s) they are registered for.</p>
       <div id="wcContacts"></div>
@@ -1161,7 +1166,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
   </div></details>
 
   <details class="wa-det" open><summary>Authorised AEOs (who may post data)</summary><div class="wa-body">
-    <p class="sub">An AEO is authorised once and can post in any number of groups whose area covers their markaz. An AEO can submit only for schools in their own markaz (including any extra markaz). The WhatsApp number must match the number used in the group. An Admin who is also the AEO of a markaz can be added too. Use Edit to change the WhatsApp number, Pause/Resume to switch posting off or on, or Remove to delete the AEO from this list (entries already received are kept).</p>
+    <p class="sub">This list is OPTIONAL. Every active AEO / admin with a cell number and markaz on their profile is already authorised automatically (for their own markaz and extra markaz). Add someone here only to give a different WhatsApp number, or use Pause to switch a person off. Previously: an AEO is authorised once and can post in any number of groups whose area covers their markaz. An AEO can submit only for schools in their own markaz (including any extra markaz). The WhatsApp number must match the number used in the group. An Admin who is also the AEO of a markaz can be added too. Use Edit to change the WhatsApp number, Pause/Resume to switch posting off or on, or Remove to delete the AEO from this list (entries already received are kept).</p>
     <div class="wa-casc">
       <label>District<select id="wcaD"></select></label>
       <label>Wing<select id="wcaW"></select></label>
@@ -1273,12 +1278,15 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     aeo_id: q("wcGrpAeo").value || null, aeo_ph: q("wcGrpAeoPh").value,
     sel_jid: q("wcGroupSel").value,
     district: q("wcDist").value || null, tehsil: q("wcTeh").value || null, scope_type: q("wcScope").value,
-    markaz_ids: [...box.querySelectorAll(".wcMk:checked")].map(x => x.value),
+    markaz_ids: [...box.querySelectorAll(".wcMk.on")].map(x => x.dataset.id),
     send_time: q("wcPostTime").value || null, missing_time: q("wcMissTime").value || null });
   const redraw = () => { wcDraft = readForm(); again(); };
   q("wcDist").onchange = () => { const d = readForm(); d.tehsil = null; d.markaz_ids = []; wcDraft = d; again(); };
   q("wcTeh").onchange = () => { const d = readForm(); d.markaz_ids = []; wcDraft = d; again(); };
   q("wcScope").onchange = redraw;
+  box.querySelectorAll(".wcMk").forEach(c => c.onclick = () => { c.classList.toggle("on"); redraw(); });
+  if(q("wcMkAll")) q("wcMkAll").onclick = e => { e.preventDefault(); box.querySelectorAll(".wcMk").forEach(c => c.classList.add("on")); redraw(); };
+  if(q("wcMkNone")) q("wcMkNone").onclick = e => { e.preventDefault(); box.querySelectorAll(".wcMk").forEach(c => c.classList.remove("on")); redraw(); };
   // the group can always be re-selected: an already-added group opens for editing, a new one just changes the target
   q("wcGroupSel").onchange = () => {
     const jid = q("wcGroupSel").value;
@@ -1289,8 +1297,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     const row = readForm(), jid = row.sel_jid;
     const aeoId = row.aeo_id, aeoPh = normPh(row.aeo_ph);
     delete row.sel_jid; delete row.aeo_id; delete row.aeo_ph;
-    const needAeo = aeoId && !members.some(m => m.user_id === aeoId);
-    if(needAeo && !aeoPh){ toast("Enter the AEO's valid WhatsApp number, e.g. 03001234567", "bad"); return; }
+    const needAeo = aeoId && !members.some(m => m.user_id === aeoId) && aeoPh && aeoPh !== normPh((waUsers.find(u => u.id === aeoId) || {}).cell_no);
     if(!jid){ toast("Select a group", "bad"); return; }
     if(!row.tehsil){ toast("Select the tehsil", "bad"); return; }
     if(row.scope_type === "markaz" && !row.markaz_ids.length){ toast("Select at least one markaz", "bad"); return; }
