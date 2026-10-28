@@ -53,12 +53,34 @@ async function ackEnabled() {
 const textOf = (msg) => msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || '';
 async function collectIncoming(m) {
   try {
+    // newer WhatsApp versions may hide the number behind an @lid id; prefer the real phone-number id when Baileys provides it
+    const sender = (m.key.participantPn || m.key.participantAlt || m.key.participant || m.participant || '').split('@')[0].split(':')[0];
+    // deleted / edited messages: keep the pending list in step with what the sender now shows in the group
+    const pm = m.message?.protocolMessage;
+    if (pm) {
+      const origId = pm.key?.id;
+      if (!origId) return;
+      if (pm.type === 0 || pm.type === 'REVOKE') {
+        const { error } = await db.rpc('fn_wa_collect_retract', { p_group_jid: m.key.remoteJid, p_msg_id: origId, p_sender: sender });
+        if (error) log.warn(error, 'collect retract failed');
+      } else if (pm.type === 14 || pm.type === 'MESSAGE_EDIT') {
+        const em = pm.editedMessage?.message || pm.editedMessage;
+        const newText = textOf(em).trim();
+        if (!newText) return;
+        const ctx2 = em?.extendedTextMessage?.contextInfo;
+        const editId = origId + '#e' + String(pm.timestampMs || Date.now());
+        const { data, error } = await db.rpc('fn_wa_collect_edit', {
+          p_group_jid: m.key.remoteJid, p_orig_msg_id: origId, p_edit_id: editId, p_sender: sender, p_text: newText,
+          p_quoted: ctx2?.quotedMessage ? textOf(ctx2.quotedMessage) : null });
+        if (error) { log.warn(error, 'collect edit failed'); return; }
+        if (data && connected) await sock.sendMessage(m.key.remoteJid, { text: data });
+      }
+      return;
+    }
     const text = textOf(m.message).trim();
     if (!text) return;
     const ctx = m.message?.extendedTextMessage?.contextInfo;
     const quoted = ctx?.quotedMessage ? textOf(ctx.quotedMessage) : null;
-    // newer WhatsApp versions may hide the number behind an @lid id; prefer the real phone-number id when Baileys provides it
-    const sender = (m.key.participantPn || m.key.participantAlt || m.key.participant || m.participant || '').split('@')[0].split(':')[0];
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
       p_group_jid: m.key.remoteJid, p_sender: sender, p_msg_id: m.key.id, p_text: text, p_quoted: quoted });
     if (error) { log.warn(error, 'collect ingest failed'); return; }

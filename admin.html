@@ -1013,6 +1013,49 @@ async function renderWaSendView(){
 
 /* ===================== WHATSAPP DATA COLLECTION (separate card; branch feature) ===================== */
 let wcEdit = null, wcDraft = null, wcMemEdit = null, wcCMk = "";
+const WC_CAT = { date_missing:"Date missing", product_missing:"Product missing", format_unreadable:"EMIS / packs not readable", emis_not_found:"Wrong EMIS code",
+  wrong_markaz:"School not in sender's markaz", not_registered_for_school:"Number not registered for that school", outside_group_jurisdiction:"School outside the group's area",
+  future_date:"Date in the future", not_consumption_day:"Not a consumption day", program_closed:"Program closed / before start", period_locked:"Period locked",
+  already_recorded:"Already entered in the system", unregistered_sender:"Unregistered number posting a report", message_edited:"Message edited", message_deleted:"Message deleted" };
+async function wcLoadStudy(box){
+  const body = box.querySelector("#wcStudyBody"), sel = box.querySelector("#wcStudyDays");
+  if(!body) return;
+  body.innerHTML = `<p class="sub">Loading…</p>`;
+  const { data, error } = await sb.rpc("fn_wa_collect_issue_summary", { p_days: sel.value ? Number(sel.value) : null });
+  if(error){ body.innerHTML = `<div class="err">${esc(error.message)}<br>(The mistake-study database update has not been applied yet.)</div>`; return; }
+  const d = data || {}, tot = (d.accepted || 0) + (d.rejected || 0), rate = tot ? Math.round(100 * (d.rejected || 0) / tot) : 0;
+  const dl = Number(d.days_logged || 0);
+  const lab = c => WC_CAT[c] || c || "-";
+  const t = v => v ? new Date(v).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }) : "-";
+  body.innerHTML = `
+    <p class="sub"><b>Days logged: ${dl}</b> ${dl >= 8 ? "- enough data to start finding solutions." : `- keep collecting (${8 - dl} more day${8 - dl === 1 ? "" : "s"} for a fair picture).`}${d.first_logged ? " Log began " + esc(t(d.first_logged)) + "." : ""}</p>
+    <div class="grid-4" style="margin:8px 0;">
+      <div class="stat"><div class="n">${tot}</div><div class="l">Entries read</div></div>
+      <div class="stat"><div class="n" style="color:var(--ok-fg)">${d.accepted || 0}</div><div class="l">Accepted</div></div>
+      <div class="stat"><div class="n" style="color:var(--bad-fg)">${d.rejected || 0}</div><div class="l">Rejected (${rate}%)</div></div>
+      <div class="stat"><div class="n">${(d.ignored || 0)} / ${(d.edited || 0)} / ${(d.deleted || 0)}</div><div class="l">Unregistered / edited / deleted</div></div>
+    </div>
+    <h4 style="margin:12px 0 4px;">Mistakes by type</h4>
+    <div class="table-wrap"><table><thead><tr><th>Type</th><th>Times</th><th>People</th></tr></thead><tbody>
+      ${(d.by_category || []).map(c => `<tr><td>${esc(lab(c.category))}</td><td>${c.n}</td><td>${c.senders}</td></tr>`).join("") || `<tr><td colspan="3" style="color:var(--ink-soft)">No mistakes logged yet.</td></tr>`}</tbody></table></div>
+    <h4 style="margin:12px 0 4px;">By person</h4>
+    <div class="table-wrap"><table><thead><tr><th>Person</th><th>Accepted</th><th>Rejected</th><th>Main mistake</th></tr></thead><tbody>
+      ${(d.by_sender || []).map(x => `<tr><td>${esc(x.name || "-")}<br><small>${esc(x.phone)} · ${esc(x.kind || "")}</small></td><td>${x.accepted}</td><td>${x.rejected}</td><td>${esc(x.main_mistake ? lab(x.main_mistake) : "-")}</td></tr>`).join("") || `<tr><td colspan="4" style="color:var(--ink-soft)">Nothing yet.</td></tr>`}</tbody></table></div>
+    <h4 style="margin:12px 0 4px;">By day</h4>
+    <div class="table-wrap"><table><thead><tr><th>Day</th><th>Accepted</th><th>Rejected</th></tr></thead><tbody>
+      ${(d.by_day || []).map(x => `<tr><td>${esc(x.day)}</td><td>${x.accepted}</td><td>${x.rejected}</td></tr>`).join("") || `<tr><td colspan="3" style="color:var(--ink-soft)">Nothing yet.</td></tr>`}</tbody></table></div>
+    <h4 style="margin:12px 0 4px;">Latest rejected messages</h4>
+    <div class="table-wrap"><table><thead><tr><th>When</th><th>From</th><th>Problem</th><th>Message</th></tr></thead><tbody>
+      ${(d.recent || []).map(x => `<tr><td>${esc(t(x.at))}</td><td>${esc(x.sender)}${x.emis ? "<br><small>" + esc(x.emis) + "</small>" : ""}</td><td>${esc(lab(x.category))}</td><td><small>${esc((x.text || "").slice(0, 200))}</small></td></tr>`).join("") || `<tr><td colspan="4" style="color:var(--ink-soft)">Nothing yet.</td></tr>`}</tbody></table></div>`;
+}
+async function wcStudyCsv(){
+  const { data, error } = await sb.from("wa_collect_issues").select("created_at,sender_name,sender_last10,sender_kind,emis_code,outcome,category,detail,raw_text,group_jid").order("created_at").limit(10000);
+  if(error){ toast(error.message, "bad"); return; }
+  const cols = ["created_at","sender_name","sender_last10","sender_kind","emis_code","outcome","category","detail","raw_text","group_jid"];
+  const q = v => '"' + String(v ?? "").replace(/"/g, '""').replace(/\r?\n/g, " ") + '"';
+  const csv = cols.join(",") + "\n" + (data || []).map(r => cols.map(c => q(r[c])).join(",")).join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type:"text/csv" })); a.download = "whatsapp-collection-study.csv"; a.click();
+}
 async function renderWaCollectCard(waGroups, waUsers, markazById){
   const host = document.getElementById("adminSectionContent");
   let box = document.getElementById("waCollectBox");
@@ -1148,6 +1191,15 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
         <td><span class="pill ${pill[e.status] || ""}">${esc(e.status)}</span>${e.error_text ? `<br><small>${esc(e.error_text)}</small>` : ""}</td>
         <td>${e.status === "pending" ? `<button class="btn-secondary" data-eact="save" data-id="${e.id}">Save</button> <button class="btn-primary" data-eact="approve" data-id="${e.id}">Approve</button> <button class="btn-secondary" data-eact="reject" data-id="${e.id}">Remove</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">Nothing received yet.</td></tr>`}
     </tbody></table></div>
+  </div></details>
+
+  <details class="wa-det" id="wcStudyDet"><summary>Mistake study (what goes wrong when reports are shared)</summary><div class="wa-body">
+    <p class="sub">Every report attempt in the groups is logged (accepted or rejected, with the reason). Let it run for at least 8 days, then use the totals below to decide what to fix. Message text is kept only for rejected attempts.</p>
+    <div class="form-grid" style="margin-top:6px;">
+      <label>Period<select id="wcStudyDays"><option value="">Everything since the log began</option><option value="8">Last 8 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></label>
+      <div style="align-self:end;"><button class="btn-secondary" type="button" id="wcStudyRefresh">Refresh</button> <button class="btn-secondary" type="button" id="wcStudyCsv">Download all as CSV</button></div>
+    </div>
+    <div id="wcStudyBody"><p class="sub">Open to load…</p></div>
   </div></details>
 
   <details class="wa-det"><summary>Recent daily messages</summary><div class="wa-body">
@@ -1336,6 +1388,10 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     if(r.error){ toast(r.error.message, "bad"); return; }
     toast(r.data === "OK" ? "Approved - recorded as consumption" : r.data, r.data === "OK" ? undefined : "bad"); again();
   });
+  q("wcStudyRefresh").onclick = () => wcLoadStudy(box);
+  q("wcStudyDays").onchange = () => wcLoadStudy(box);
+  q("wcStudyCsv").onclick = wcStudyCsv;
+  q("wcStudyDet").addEventListener("toggle", () => { if(q("wcStudyDet").open) wcLoadStudy(box); });
   q("wcApproveAll").onclick = async () => {
     if(!confirm(`Approve ${pending.length} pending entr${pending.length === 1 ? "y" : "ies"} and record them as consumption?`)) return;
     let ok = 0, bad = 0;
