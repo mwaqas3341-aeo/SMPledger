@@ -7,6 +7,8 @@ create table if not exists public.wa_collect_settings (
   enabled boolean not null default false,
   send_time time not null default '12:00',
   ack_enabled boolean not null default false,       -- short acknowledgement replies in the group
+  window_start time not null default '08:00',       -- collection messages are posted only inside this window
+  window_end time not null default '21:30',
   updated_at timestamptz not null default now()
 );
 insert into public.wa_collect_settings (id) values (true) on conflict do nothing;
@@ -107,6 +109,7 @@ do $$ begin
   end if;
 end $$;
 alter table public.wa_collect_settings drop column if exists auto_approve;
+alter table public.wa_collect_settings add column if not exists window_start time not null default '08:00', add column if not exists window_end time not null default '21:30';
 
 -- Head teachers / focal persons / others who may also share their own school's report (optional, several per school)
 create table if not exists public.wa_collect_school_contacts (
@@ -258,8 +261,8 @@ begin
   perform pg_advisory_xact_lock(hashtext('wa_collect_claim'));
   select * into cs from public.wa_collect_settings where id;
   select * into ws from public.wa_settings where id;
-  if not cs.enabled or ws.emergency_stop or not ws.enabled then return; end if;
-  if v_now::time < ws.window_start or v_now::time > ws.window_end then return; end if;
+  if not cs.enabled or ws.emergency_stop then return; end if;
+  if v_now::time < cs.window_start or v_now::time > cs.window_end then return; end if;   -- collection has its own window (not the sending card's)
   update public.wa_collect_messages set status = 'failed', last_error = 'Worker interrupted mid-send; not retried'
    where status = 'processing' and created_at < now() - interval '10 minutes';
   loop
