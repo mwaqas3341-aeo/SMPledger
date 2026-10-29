@@ -1014,7 +1014,7 @@ async function renderWaSendView(){
 
 /* ===================== WHATSAPP DATA COLLECTION (separate card; branch feature) ===================== */
 let wcEdit = null, wcDraft = null, wcMemEdit = null, wcCMk = "";
-const WC_CAT = { date_missing:"Date missing", product_missing:"Product missing", format_unreadable:"EMIS / packs not readable", emis_not_found:"Wrong EMIS code",
+const WC_CAT = { correction_requested:"Correction requested (recorded figure differs)", same_as_recorded:"Same as recorded", date_missing:"Date missing", product_missing:"Product missing", format_unreadable:"EMIS / packs not readable", emis_not_found:"Wrong EMIS code",
   wrong_markaz:"School not in sender's markaz", not_registered_for_school:"Number not registered for that school", outside_group_jurisdiction:"School outside the group's area",
   future_date:"Date in the future", not_consumption_day:"Not a consumption day", program_closed:"Program closed / before start", period_locked:"Period locked",
   already_recorded:"Already entered in the system", unregistered_sender:"Unregistered number posting a report", message_edited:"Message edited", message_deleted:"Message deleted" };
@@ -1194,7 +1194,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
       ${ents.map(e => `<tr>
         <td>${esc(e.consumption_date || "-")}</td><td>${esc(e.products?.product_name || "-")}</td>
         <td>${esc(e.schools?.school_name || "-")}<br><small>${esc(e.schools?.emis_code || e.emis_code || "")}</small></td>
-        <td>${e.status === "pending" ? `<input type="number" min="0" step="1" value="${esc(e.packs)}" data-packs="${e.id}" style="width:80px;">` : esc(e.packs ?? "-")}</td>
+        <td>${e.status === "pending" && e.kind === "correction" ? `<small style="color:#b45309;">Change of recorded ${esc(e.current_packs ?? "-")} → </small>` : ""}${e.status === "pending" ? `<input type="number" min="0" step="1" value="${esc(e.packs)}" data-packs="${e.id}" style="width:80px;">` : esc(e.packs ?? "-")}</td>
         <td>${esc(entFrom(e))}</td>
         <td><span class="pill ${pill[e.status] || ""}">${esc(e.status)}</span>${e.error_text ? `<br><small>${esc(e.error_text)}</small>` : ""}</td>
         <td>${e.status === "pending" ? `<button class="btn-secondary" data-eact="save" data-id="${e.id}">Save</button> <button class="btn-primary" data-eact="approve" data-id="${e.id}">Approve</button> <button class="btn-secondary" data-eact="reject" data-id="${e.id}">Remove</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">Nothing received yet.</td></tr>`}

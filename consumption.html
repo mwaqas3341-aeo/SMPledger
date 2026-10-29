@@ -628,10 +628,10 @@ function waChipHtml(schoolId, productId){
   const e = waPending[schoolId + "|" + productId];
   if(!e) return "";
   return `<div class="wa-chip" data-entry="${e.id}" data-packs="${e.packs}" data-school="${schoolId}" data-product="${productId}" style="margin-top:4px;padding:6px 8px;border:1px solid #5b8def;background:#eaf2ff;border-radius:6px;font-size:13px;line-height:1.35;min-width:240px;width:100%;box-sizing:border-box;">
-    <div class="wa-chip-msg" style="color:#1d3f87;"><b>📲 From your WhatsApp group: ${fmt(e.packs)}</b></div>
+    <div class="wa-chip-msg" style="color:#1d3f87;"><b>${e.kind === "correction" ? `📲 Change requested in your WhatsApp group: recorded ${fmt(e.current_packs)} → ${fmt(e.packs)}` : `📲 From your WhatsApp group: ${fmt(e.packs)}`}</b></div>
     <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
       <button type="button" class="btn-primary wa-approve" style="padding:5px 14px;font-size:13px;">Approve</button>
-      <button type="button" class="btn-secondary wa-edit" style="padding:5px 14px;font-size:13px;">Edit</button></div></div>`;
+      <button type="button" class="btn-secondary wa-edit" style="padding:5px 14px;font-size:13px;">Edit</button>${e.kind === "correction" ? `<button type="button" class="btn-secondary wa-reject" style="padding:5px 14px;font-size:13px;">Reject change</button>` : ""}</div></div>`;
 }
 function wireWaChips(root){
   root.querySelectorAll(".wa-chip").forEach(chip => {
@@ -641,6 +641,14 @@ function wireWaChips(root){
       const { data, error } = await sb.rpc("fn_wa_collect_approve", { p_entry: id });
       if(error || data !== "OK"){ b.disabled = false; toast(error ? error.message : data, "bad"); return; }
       toast("Approved and saved. You can still edit it with the Edit button.", "ok");
+      loadConsumptionList(currentVisibleIds);
+    });
+    const rj = chip.querySelector(".wa-reject");
+    if(rj) rj.addEventListener("click", async () => {
+      rj.disabled = true;
+      const { error } = await sb.rpc("fn_wa_collect_reject", { p_entry: id });
+      if(error){ rj.disabled = false; toast(error.message, "bad"); return; }
+      toast("Change rejected. The recorded figure stays as it is.", "ok");
       loadConsumptionList(currentVisibleIds);
     });
     chip.querySelector(".wa-edit").addEventListener("click", () => {
