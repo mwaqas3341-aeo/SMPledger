@@ -57,6 +57,70 @@ const shape = (o, d = 0) => (o && typeof o === 'object' && d < 5) ? Object.fromE
 async function diag(jid, tag, obj) {
   try { await db.rpc('fn_wa_collect_log', { p_group: jid, p_phone: null, p_name: null, p_kind: null, p_emis: null, p_outcome: 'ignored', p_cat: 'diag_' + tag, p_detail: JSON.stringify(shape(obj)).slice(0, 900), p_raw: null, p_msg: null }); } catch {}
 }
+// ---- Edits arrive end-to-end encrypted (secretEncryptedMessage) in newer WhatsApp; they are opened with the secret of the ORIGINAL message ----
+const SECRETS_FILE = './msg-secrets.json';
+let secrets = {}, secretsDirty = false;
+try { secrets = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf8')); } catch {}
+setInterval(() => {
+  try {
+    const cut = Date.now() - 3 * 86400000;
+    for (const k of Object.keys(secrets)) if (secrets[k].t < cut) { delete secrets[k]; secretsDirty = true; }
+    if (secretsDirty) { fs.writeFileSync(SECRETS_FILE, JSON.stringify(secrets)); secretsDirty = false; }
+  } catch {}
+}, 60000);
+const jidForms = (...vals) => {
+  const out = new Set();
+  for (const v of vals) {
+    if (!v) continue;
+    out.add(v);
+    const bare = String(v).split('@')[0].split(':')[0];
+    out.add(bare + '@s.whatsapp.net'); out.add(bare + '@lid');
+  }
+  return [...out];
+};
+const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+function openSecret(secretHex, id, origForms, modForms, payload, iv) {
+  const secret = Buffer.from(secretHex, 'hex'), key0 = hmac(Buffer.alloc(32), secret);
+  const ct = Buffer.from(payload).subarray(0, -16), tag = Buffer.from(payload).subarray(-16);
+  for (const useCase of ['Message Edit', 'Edit Message', 'Message Edited', 'Edit', 'Secret Encrypted Message'])
+    for (const o of origForms) for (const mo of modForms) {
+      const key = hmac(key0, Buffer.concat([Buffer.from(id), Buffer.from(o), Buffer.from(mo), Buffer.from(useCase), Buffer.from([1])]));
+      for (const aad of [`${id}\u0000${mo}`, `${id}\u0000${o}`, null]) {
+        try {
+          const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv)); d.setAuthTag(tag);
+          if (aad !== null) d.setAAD(Buffer.from(aad));
+          const plain = Buffer.concat([d.update(ct), d.final()]);
+          return { plain, how: { useCase, aad: aad === null ? 'none' : (aad.endsWith(mo) ? 'mod' : 'orig') } };
+        } catch { /* wrong combination */ }
+      }
+    }
+  return null;
+}
+async function collectSecretEdit(m, sem, sender) {
+  const jid = m.key.remoteJid, origId = sem.targetMessageKey?.id;
+  if (!origId) return;
+  const info = { enc: sem.secretEncType, haveSecret: !!secrets[origId] };
+  let ok = false;
+  try {
+    const s = secrets[origId];
+    if (s) {
+      const r = openSecret(s.s, origId, jidForms(...(s.p || [])), jidForms(m.key.participantPn, m.key.participantAlt, m.key.participant, m.participant, sender), sem.encPayload, sem.encIv);
+      info.opened = !!r; if (r) info.how = r.how;
+      if (r) {
+        const dm = baileys.proto.Message.decode(r.plain);
+        const em = dm.protocolMessage?.editedMessage || dm.editedMessage?.message || dm;
+        if (textOf(unwrap(em)).trim()) { ok = true; await collectEdited(jid, sender, origId, em, null); }
+        info.hasText = ok;
+      }
+    }
+  } catch (e) { info.err = String(e.message || e).slice(0, 80); }
+  await diag(jid, 'secretedit', info);
+  if (!ok) {
+    // the edit could not be read: the old figure is no longer trusted, so it is withdrawn and the sender is asked to send a fresh message
+    await db.rpc('fn_wa_collect_retract', { p_group_jid: jid, p_msg_id: origId, p_sender: sender });
+    await collectReply(jid, sender, { text: '⚠ An edited message cannot be read by the system, so your earlier figure was withdrawn.\n\nPlease send the corrected report as a NEW message (do not edit) in the same format as shared.' }, null);
+  }
+}
 const unwrap = (msg) => { try { return (baileys.normalizeMessageContent ? baileys.normalizeMessageContent(msg) : msg) || msg; } catch { return msg; } };
 // An edited message replaces what the sender sent before: the database re-reads the new text for that sender.
 async function collectEdited(jid, sender, origId, editedMsg, ctx2) {
@@ -80,6 +144,13 @@ async function collectIncoming(m) {
     // deleted / edited messages: keep the pending list in step with what the sender now shows in the group
     // newer WhatsApp wraps edits (editedMessage -> message -> protocolMessage); unwrap everything first
     const mc = unwrap(m.message);
+    const sec = m.message?.messageContextInfo?.messageSecret || mc?.messageContextInfo?.messageSecret;
+    if (sec && m.key.id) {                                                         // remembered so a later (encrypted) edit can be opened
+      secrets[m.key.id] = { s: Buffer.from(sec).toString('hex'), p: [m.key.participantPn, m.key.participantAlt, m.key.participant, m.participant].filter(Boolean), t: Date.now() };
+      secretsDirty = true;
+    }
+    const sem = m.message?.secretEncryptedMessage || mc?.secretEncryptedMessage;
+    if (sem) { await collectSecretEdit(m, sem, sender); return; }
     const pm = mc?.protocolMessage || m.message?.editedMessage?.message?.protocolMessage;
     if (pm) { log.info({ type: pm.type, hasEdit: !!pm.editedMessage }, 'collect: protocol message (edit/delete)'); if (pm.type !== 0 && pm.type !== 'REVOKE') await diag(m.key.remoteJid, 'protocol', { type: pm.type, pm }); }
     if (pm) {
