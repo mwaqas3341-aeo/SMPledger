@@ -76,6 +76,7 @@ async function collectIncoming(m) {
     // newer WhatsApp wraps edits (editedMessage -> message -> protocolMessage); unwrap everything first
     const mc = unwrap(m.message);
     const pm = mc?.protocolMessage || m.message?.editedMessage?.message?.protocolMessage;
+    if (pm) log.info({ type: pm.type, hasEdit: !!pm.editedMessage }, 'collect: protocol message (edit/delete)');
     if (pm) {
       const origId = pm.key?.id;
       if (!origId) return;
@@ -88,7 +89,7 @@ async function collectIncoming(m) {
       return;
     }
     const text = textOf(mc).trim();
-    if (!text) return;
+    if (!text) { log.info({ kinds: Object.keys(m.message || {}), unwrapped: Object.keys(mc || {}) }, 'collect: group message without text (ignored)'); return; }
     const ctx = mc?.extendedTextMessage?.contextInfo;
     const quoted = ctx?.quotedMessage ? textOf(ctx.quotedMessage) : null;
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
@@ -167,6 +168,7 @@ async function start() {
   sock.ev.on('messages.update', async (updates) => {
     for (const u of updates) {
       if (u.key?.fromMe && u.update?.status >= 3) await db.rpc('fn_wa_mark_delivered', { p_provider_id: u.key.id });
+      if (u.update?.message && (u.key?.remoteJid || '').endsWith('@g.us') && !u.key?.fromMe) log.info({ keys: Object.keys(u.update.message) }, 'collect: group message update');
       const ed = u.update?.message?.editedMessage;
       if (ed && !u.key?.fromMe && (u.key?.remoteJid || '').endsWith('@g.us')) {
         const snd = (u.key.participantPn || u.key.participantAlt || u.key.participant || '').split('@')[0].split(':')[0];
