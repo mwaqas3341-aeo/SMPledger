@@ -52,6 +52,11 @@ async function ackEnabled() {
   return ackOn;
 }
 const textOf = (msg) => msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || '';
+// Diagnostics for edits: write the SHAPE (key names only, no message text) of unusual group events to the issue log, so it can be read in the database.
+const shape = (o, d = 0) => (o && typeof o === 'object' && d < 5) ? Object.fromEntries(Object.keys(o).slice(0, 12).map(k => [k, shape(o[k], d + 1)])) : (o === null || o === undefined ? o : typeof o);
+async function diag(jid, tag, obj) {
+  try { await db.rpc('fn_wa_collect_log', { p_group: jid, p_phone: null, p_name: null, p_kind: null, p_emis: null, p_outcome: 'ignored', p_cat: 'diag_' + tag, p_detail: JSON.stringify(shape(obj)).slice(0, 900), p_raw: null, p_msg: null }); } catch {}
+}
 const unwrap = (msg) => { try { return (baileys.normalizeMessageContent ? baileys.normalizeMessageContent(msg) : msg) || msg; } catch { return msg; } };
 // An edited message replaces what the sender sent before: the database re-reads the new text for that sender.
 async function collectEdited(jid, sender, origId, editedMsg, ctx2) {
@@ -76,7 +81,7 @@ async function collectIncoming(m) {
     // newer WhatsApp wraps edits (editedMessage -> message -> protocolMessage); unwrap everything first
     const mc = unwrap(m.message);
     const pm = mc?.protocolMessage || m.message?.editedMessage?.message?.protocolMessage;
-    if (pm) log.info({ type: pm.type, hasEdit: !!pm.editedMessage }, 'collect: protocol message (edit/delete)');
+    if (pm) { log.info({ type: pm.type, hasEdit: !!pm.editedMessage }, 'collect: protocol message (edit/delete)'); if (pm.type !== 0 && pm.type !== 'REVOKE') await diag(m.key.remoteJid, 'protocol', { type: pm.type, pm }); }
     if (pm) {
       const origId = pm.key?.id;
       if (!origId) return;
@@ -89,7 +94,7 @@ async function collectIncoming(m) {
       return;
     }
     const text = textOf(mc).trim();
-    if (!text) { log.info({ kinds: Object.keys(m.message || {}), unwrapped: Object.keys(mc || {}) }, 'collect: group message without text (ignored)'); return; }
+    if (!text) { log.info({ kinds: Object.keys(m.message || {}), unwrapped: Object.keys(mc || {}) }, 'collect: group message without text (ignored)'); await diag(m.key.remoteJid, 'notext', m.message); return; }
     const ctx = mc?.extendedTextMessage?.contextInfo;
     const quoted = ctx?.quotedMessage ? textOf(ctx.quotedMessage) : null;
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
@@ -168,7 +173,7 @@ async function start() {
   sock.ev.on('messages.update', async (updates) => {
     for (const u of updates) {
       if (u.key?.fromMe && u.update?.status >= 3) await db.rpc('fn_wa_mark_delivered', { p_provider_id: u.key.id });
-      if (u.update?.message && (u.key?.remoteJid || '').endsWith('@g.us') && !u.key?.fromMe) log.info({ keys: Object.keys(u.update.message) }, 'collect: group message update');
+      if (u.update?.message && (u.key?.remoteJid || '').endsWith('@g.us') && !u.key?.fromMe) { log.info({ keys: Object.keys(u.update.message) }, 'collect: group message update'); await diag(u.key.remoteJid, 'update', { key: u.key, update: u.update }); }
       const ed = u.update?.message?.editedMessage;
       if (ed && !u.key?.fromMe && (u.key?.remoteJid || '').endsWith('@g.us')) {
         const snd = (u.key.participantPn || u.key.participantAlt || u.key.participant || '').split('@')[0].split(':')[0];
