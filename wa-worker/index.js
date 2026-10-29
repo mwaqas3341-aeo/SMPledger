@@ -2,6 +2,7 @@
 // The daily cap (max 50), time window, emergency stop and dry-run are all enforced in the database.
 import 'dotenv/config';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import * as baileys from '@whiskeysockets/baileys';
 const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
 const makeWASocket = typeof baileys.default === 'function' ? baileys.default : (baileys.makeWASocket || baileys.default?.default);
@@ -51,35 +52,44 @@ async function ackEnabled() {
   return ackOn;
 }
 const textOf = (msg) => msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || '';
+const unwrap = (msg) => { try { return (baileys.normalizeMessageContent ? baileys.normalizeMessageContent(msg) : msg) || msg; } catch { return msg; } };
+// An edited message replaces what the sender sent before: the database re-reads the new text for that sender.
+async function collectEdited(jid, sender, origId, editedMsg, ctx2) {
+  try {
+    const em = unwrap(editedMsg?.message || editedMsg);
+    const newText = textOf(em).trim();
+    if (!newText) return;
+    const editId = origId + '#e' + crypto.createHash('sha1').update(newText).digest('hex').slice(0, 10);   // same edit seen twice = processed once
+    const { data, error } = await db.rpc('fn_wa_collect_edit', {
+      p_group_jid: jid, p_orig_msg_id: origId, p_edit_id: editId, p_sender: sender, p_text: newText,
+      p_quoted: ctx2?.quotedMessage ? textOf(ctx2.quotedMessage) : null });
+    log.info({ origId, ok: !error, replied: !!data }, 'collect edit');
+    if (error) { log.warn(error, 'collect edit failed'); return; }
+    if (data && connected) await collectReply(jid, sender, { text: data }, null);
+  } catch (e) { log.warn(e, 'collect edit crashed'); }
+}
 async function collectIncoming(m) {
   try {
     // newer WhatsApp versions may hide the number behind an @lid id; prefer the real phone-number id when Baileys provides it
     const sender = (m.key.participantPn || m.key.participantAlt || m.key.participant || m.participant || '').split('@')[0].split(':')[0];
     // deleted / edited messages: keep the pending list in step with what the sender now shows in the group
-    const pm = m.message?.protocolMessage;
+    // newer WhatsApp wraps edits (editedMessage -> message -> protocolMessage); unwrap everything first
+    const mc = unwrap(m.message);
+    const pm = mc?.protocolMessage || m.message?.editedMessage?.message?.protocolMessage;
     if (pm) {
       const origId = pm.key?.id;
       if (!origId) return;
       if (pm.type === 0 || pm.type === 'REVOKE') {
         const { error } = await db.rpc('fn_wa_collect_retract', { p_group_jid: m.key.remoteJid, p_msg_id: origId, p_sender: sender });
         if (error) log.warn(error, 'collect retract failed');
-      } else if (pm.type === 14 || pm.type === 'MESSAGE_EDIT') {
-        const em = pm.editedMessage?.message || pm.editedMessage;
-        const newText = textOf(em).trim();
-        if (!newText) return;
-        const ctx2 = em?.extendedTextMessage?.contextInfo;
-        const editId = origId + '#e' + String(pm.timestampMs || Date.now());
-        const { data, error } = await db.rpc('fn_wa_collect_edit', {
-          p_group_jid: m.key.remoteJid, p_orig_msg_id: origId, p_edit_id: editId, p_sender: sender, p_text: newText,
-          p_quoted: ctx2?.quotedMessage ? textOf(ctx2.quotedMessage) : null });
-        if (error) { log.warn(error, 'collect edit failed'); return; }
-        if (data && connected) await collectReply(m.key.remoteJid, sender, { text: data }, null);
+      } else if (pm.type === 14 || pm.type === 'MESSAGE_EDIT' || pm.editedMessage) {
+        await collectEdited(m.key.remoteJid, sender, origId, pm.editedMessage, pm.editedMessage?.extendedTextMessage?.contextInfo);
       }
       return;
     }
-    const text = textOf(m.message).trim();
+    const text = textOf(mc).trim();
     if (!text) return;
-    const ctx = m.message?.extendedTextMessage?.contextInfo;
+    const ctx = mc?.extendedTextMessage?.contextInfo;
     const quoted = ctx?.quotedMessage ? textOf(ctx.quotedMessage) : null;
     const { data, error } = await db.rpc('fn_wa_collect_ingest', {
       p_group_jid: m.key.remoteJid, p_sender: sender, p_msg_id: m.key.id, p_text: text, p_quoted: quoted });
@@ -157,6 +167,11 @@ async function start() {
   sock.ev.on('messages.update', async (updates) => {
     for (const u of updates) {
       if (u.key?.fromMe && u.update?.status >= 3) await db.rpc('fn_wa_mark_delivered', { p_provider_id: u.key.id });
+      const ed = u.update?.message?.editedMessage;
+      if (ed && !u.key?.fromMe && (u.key?.remoteJid || '').endsWith('@g.us')) {
+        const snd = (u.key.participantPn || u.key.participantAlt || u.key.participant || '').split('@')[0].split(':')[0];
+        await collectEdited(u.key.remoteJid, snd, u.key.id, ed, null);
+      }
     }
   });
 
