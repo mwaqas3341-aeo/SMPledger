@@ -21,6 +21,7 @@ declare d text; n text;
 begin
   d := pg_get_functiondef(procedure_sig);
   if position('v_corr' in d) > 0 then return; end if;
+  d := replace(d, E'\r\n', E'\n');   -- the SQL editor may have stored Windows line endings
   n := d;
   n := replace(n, 'v_ok int := 0;', 'v_ok int := 0; v_cur numeric; v_corr boolean := false;');
   n := replace(n, 'v_err := null; v_cat := null; sc := null; v_cid := null;', 'v_err := null; v_cat := null; sc := null; v_cid := null; v_corr := false;');
