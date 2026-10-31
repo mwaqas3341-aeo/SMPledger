@@ -342,8 +342,20 @@
 
   // Already signed in? Skip straight past the login screen.
   (async () => {
+    if (new URLSearchParams(location.search).get("expired") === "1") {
+      showError("Your session ended automatically after 8 hours. Please sign in again.");
+    }
     const { data: { session } } = await sb.auth.getSession();
-    if (session) window.location.href = "dashboard.html";
+    if (session) {
+      let at = 0;
+      try { at = parseInt(localStorage.getItem("smp_login_at") || "0", 10) || 0; } catch (e) {}
+      if (at && Date.now() - at >= 8 * 3600 * 1000) {      // signed in for 8 hours or more: end it instead of skipping the login screen
+        try { await sb.auth.signOut(); localStorage.removeItem("smp_login_at"); } catch (e) {}
+        showError("Your session ended automatically after 8 hours. Please sign in again.");
+        return;
+      }
+      window.location.href = "dashboard.html";
+    }
   })();
 
   form.addEventListener("submit", async (e) => {
@@ -386,6 +398,7 @@
         return;
       }
 
+      try { localStorage.setItem("smp_login_at", String(Date.now())); sessionStorage.setItem("smp_promo_pending", "1"); } catch (e) {}
       const jurisdictionWarning = data.markaz_warning || data.tehsil_warning;
       if (jurisdictionWarning) {
         sessionStorage.setItem("smp_jurisdiction_warning", jurisdictionWarning);
