@@ -7,7 +7,7 @@
   var SESSION_HOURS = 8;
   var LOGIN_KEY = "smp_login_at";          // set by index.html at sign-in (localStorage, shared by all tabs)
   var PROMO_KEY = "smp_promo_pending";     // set by index.html at sign-in (sessionStorage); consumed by the first page that shows it
-  var PROMO_ENABLED = true;
+  var PROMO_ENABLED = false;               // popup switched OFF for now; set to true to show it again (text, price and design are kept below)
   var PRICE_TEXT = "Rs. 200";
   var PERIOD_TEXT = "per month";
   var CONTACT_TEXT = "Contact the program Admin to subscribe.";   // put a phone / WhatsApp number here when ready, e.g. "WhatsApp 03XX-XXXXXXX to subscribe."
