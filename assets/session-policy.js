@@ -1,7 +1,7 @@
 // Two session-wide behaviours, loaded on every signed-in page:
 //  1) AUTO LOGOUT: every user is signed out 8 hours after logging in (checked every 30 s, on tab focus and on page load;
 //     a gentle warning appears for the last 10 minutes).
-//  2) LOGIN POPUP: once per login, signed-in users (not the Admin) see an offer for the WhatsApp auto data collection service.
+//  2) LOGIN POPUP: once per login, every signed-in user sees an offer for the WhatsApp auto data collection service.
 // Self-contained (own styles), never throws into the page.
 (function(){
   var SESSION_HOURS = 8;
@@ -117,7 +117,7 @@
       if(prof && prof.id){
         if(document.getElementById("smpEmOverlay")) return;            // the required Gmail dialog goes first
         clearInterval(t);
-        if(prof.role !== "admin") showPromo(); else { try{ sessionStorage.removeItem(PROMO_KEY); }catch(e){} }
+        showPromo();
       } else if(tries > 60){ clearInterval(t); }
     }, 500);
   }
