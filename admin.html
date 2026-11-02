@@ -37,6 +37,7 @@ details.wa-det > .wa-body{ padding:2px 14px 12px; }
 .wa-casc select:disabled, .wa-casc input:disabled{ opacity:.55; }
 .wa-casc label{ font-size:12px; }
 .wc-chips{display:flex;flex-wrap:wrap;gap:6px}.wc-chip{border:1px solid #cbd5e1;background:#e5e7eb;color:#475569;border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}.wc-chip.on{background:#16a34a;border-color:#15803d;color:#fff;font-weight:600}
+.wa-wstat{margin:6px 0 12px;padding:10px 12px;border:1px solid var(--line,#d5dbe3);border-radius:10px;background:#f8fafc}.wa-wline{display:flex;gap:8px;align-items:flex-start}.wa-dot{flex:0 0 12px;height:12px;border-radius:50%;margin-top:4px;background:#9aa4b2}.wa-dot.on{background:#16a34a;box-shadow:0 0 0 3px #bbf7d0}.wa-dot.off{background:#dc2626;box-shadow:0 0 0 3px #fecaca}.wa-dot.warn{background:#f59e0b;box-shadow:0 0 0 3px #fde68a}
 </style>
 </head>
 <body>
@@ -685,11 +686,28 @@ function renderWhatsappSection(){
   const content = document.getElementById("adminSectionContent");
   if(waView === "send") return renderWaSendView();
   if(waView === "collect") return renderWaCollectView();
-  content.innerHTML = `<div class="card"><h3>WhatsApp Automations</h3><p class="sub" style="margin-bottom:10px;">Choose what to configure. The two sections work independently.</p>
+  content.innerHTML = `<div class="card"><h3>WhatsApp Automations</h3><div id="waWorkerStatus" class="wa-wstat">Checking WhatsApp worker…</div><p class="sub" style="margin-bottom:10px;">Choose what to configure. The two sections work independently.</p>
     <div class="wa-hub">
       <div class="wa-tile" onclick="waGo('send')"><span class="ic">&#128228;</span><span><span class="t">Auto Message Send Settings</span><span class="d">Missing-consumption messages: status, schedule, recipients, queue &amp; delivery log</span></span></div>
       <div class="wa-tile" onclick="waGo('collect')"><span class="ic">&#128229;</span><span><span class="t">Auto Data Collection Settings</span><span class="d">Daily group prompts, authorised AEOs, received entries and approvals</span></span></div>
     </div></div>`;
+  waLoadWorkerStatus();
+}
+async function waLoadWorkerStatus(){
+  const el = document.getElementById("waWorkerStatus"); if(!el) return;
+  const { data: s, error } = await sb.rpc("fn_wa_worker_status");
+  if(error){ el.innerHTML = `<span class="wa-dot off"></span> Worker status unavailable (${esc(error.message)}). The heartbeat database change may not be applied yet.`; return; }
+  const ago = x => x == null ? "-" : x < 90 ? x + " s ago" : x < 5400 ? Math.round(x / 60) + " min ago" : Math.round(x / 3600) + " h ago";
+  const fmt = d => d ? new Date(d).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }) : "-";
+  let cls, head;
+  if(!s.seen){ cls = "off"; head = "No heartbeat received yet - replace index.js on the server with the latest version and restart it."; }
+  else if(!s.running){ cls = "off"; head = `OFFLINE - the worker has not reported since ${fmt(s.last_seen)} (${ago(s.seconds_ago)}). Start / restart the server on Wispbyte.`; }
+  else if(!s.connected){ cls = "warn"; head = "Worker is running but WhatsApp is NOT connected - it may be reconnecting; if this stays, check the server console."; }
+  else { cls = "on"; head = `Worker online - WhatsApp connected (last report ${ago(s.seconds_ago)}).`; }
+  const rec = (s.recent || []).map(o => `<li>${fmt(o.from)} &rarr; ${fmt(o.back)} (${o.minutes >= 90 ? Math.round(o.minutes / 60) + " h" : o.minutes + " min"})</li>`).join("");
+  el.innerHTML = `<div class="wa-wline"><span class="wa-dot ${cls}"></span><b>${esc(head)}</b></div>
+    <div class="sub">Last 30 days: ${s.outages_30d} outage(s), ${s.down_minutes_30d >= 120 ? Math.round(s.down_minutes_30d / 60) + " h" : s.down_minutes_30d + " min"} down in total. Started ${fmt(s.started_at)}.${s.version ? " Version " + esc(s.version) + "." : ""}</div>
+    ${rec ? `<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;">Recent outages</summary><ul class="sub" style="margin:4px 0 0 18px;">${rec}</ul></details>` : ""}`;
 }
 async function waLoadMarkazWings(){
   const out = {};

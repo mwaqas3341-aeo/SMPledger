@@ -222,11 +222,13 @@ async function start() {
     if (connection === 'open') {
       connected = true;
       log.info('WhatsApp connected');
+      beat(false);
       fs.rm('./qr.png', { force: true }, () => {});   // the QR is no longer needed (and must not be left lying around)
       setTimeout(syncGroups, 5000);
     }
     if (connection === 'close') {
       connected = false;
+      beat(false);
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut || code === 403 || code === 401) {
         await emergencyStop(`Session ended (code ${code}). Possible restriction; do not relink until checked.`);
@@ -317,5 +319,11 @@ async function tick() {
 }
 
 await start();
+// Heartbeat: tells the database every minute that this program is alive and whether WhatsApp is connected
+// (the Admin page shows Online / OFFLINE and records outages).
+const WORKER_VERSION = '2026-11-02';
+const beat = (started = false) => db.rpc('fn_wa_worker_beat', { p_connected: connected, p_started: started, p_version: WORKER_VERSION }).then(({ error }) => { if (error) log.warn(error, 'heartbeat failed'); }, () => {});
+beat(true);
+setInterval(() => beat(false), 60 * 1000);
 setInterval(tick, 60 * 1000);
 setInterval(collectTick, 60 * 1000);
