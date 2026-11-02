@@ -430,7 +430,7 @@ async function renderPreview(){
   if(sendable.length){
     previewBtn.disabled = true; previewBtn.textContent = "Checking…";
     try{
-      const { data, error } = await sb.rpc("fn_validate_company_invoice_upload", { p_rows: uploadState.sendRows, p_allow_multi_product: !!uploadState.allowMulti });
+      const { data, error } = await sb.rpc("fn_validate_company_invoice_upload", { p_rows: uploadState.sendRows, p_allow_multi_product: !!uploadState.allowMulti, p_skip_problems: true });
       if(error) throw error;
       report = data;
     }catch(err){ checkError = (err && err.message) || "Unknown error"; }
@@ -456,7 +456,7 @@ async function renderPreview(){
         <div class="stat"><div class="n">${skippedRows.length}</div><div class="l">Outside ${esc(upTehsil)} / ${esc(upWing)} or invalid (skipped)</div></div>
       </div>
       ${report.issues.length ? `
-        <p class="sub" style="margin-top:12px;"><strong>Nothing will be imported while any of these remain.</strong> The import is all-or-nothing - fix or remove these rows in the file and upload again.</p>
+        <p class="sub" style="margin-top:12px;"><strong>${report.will_import ?? report.new} of ${report.total} rows will be imported.</strong> Rows marked "Invoice Number Conflict" inside your file are imported and flagged for rectification; rows whose invoice already exists in the system (or exact repeats) are excluded. Download the list below to follow up.</p><p><button class="btn-secondary" type="button" id="dlProblems">Download problem rows (CSV)</button></p>
         <div class="table-wrap"><table><thead><tr><th>Row</th><th>Invoice #</th><th>Date</th><th>Product</th><th>Qty</th><th>EMIS</th><th>Result</th><th>Details</th></tr></thead><tbody>
           ${report.issues.map(i => { const [lbl, cls] = UPLOAD_STATUS_LABEL[i.status] || [i.status, "pill-warn"]; return `<tr>
             <td>${esc(fileRow(i.row))}</td><td>${esc(i.invoice_number)}</td><td>${esc(i.invoice_date)}</td><td>${esc(i.product)}</td><td>${esc(i.quantity)}</td><td>${esc(i.school_emis)}</td>
@@ -474,17 +474,26 @@ async function renderPreview(){
       <p class="sub" style="margin-top:12px; color:var(--edit);"><strong>Not saved yet.</strong> Preview only checks the file. Nothing is written to the database until you click Import.${uploadState.ignoredRows ? ` (${uploadState.ignoredRows} blank/summary row(s) ignored.)` : ""}</p>
     </div>
   `;
+  const dlb = document.getElementById("dlProblems");
+  if(dlb) dlb.addEventListener("click", () => {
+    const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+    const lines = [["File row","Invoice #","Date","Product","Quantity","EMIS","Result","Details"].map(q).join(",")]
+      .concat(report.issues.map(i => [fileRow(i.row), i.invoice_number, i.invoice_date, i.product, i.quantity, i.school_emis, (UPLOAD_STATUS_LABEL[i.status]||[i.status])[0], i.detail].map(q).join(",")));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv" }));
+    a.download = "company_import_problem_rows.csv"; a.click();
+  });
   const multiBox = document.getElementById("allowMulti");
   if(multiBox) multiBox.addEventListener("change", () => { uploadState.allowMulti = multiBox.checked; renderPreview(); });
 
   // The Import button lives next to Preview (top of the wizard) so nobody has to scroll to find it.
   const ok = !!(uploadState.report && uploadState.report.can_import);
   importBtn.disabled = !ok;
-  importBtn.textContent = `Import ${sendable.length} rows`;
+  importBtn.textContent = `Import ${report.will_import ?? report.new ?? 0} rows`;
   importBtn.onclick = runImport;
-  document.getElementById("importHint").textContent = ok ? "All rows are new - nothing is saved until you click Import."
+  document.getElementById("importHint").textContent = ok ? (report.issues.length ? `${report.will_import ?? report.new} rows will be imported (${report.flagged_rows || 0} flagged for rectification); ${report.excluded_rows || 0} excluded.` : "All rows are new - nothing is saved until you click Import.")
     : checkError ? "The database check failed - nothing can be imported."
-    : sendable.length ? "Import is blocked until every row listed above is fixed or removed."
+    : sendable.length ? "No valid new rows to import - see the list above."
     : "No valid rows to import - see the skipped list below.";
 }
 
@@ -529,7 +538,7 @@ async function runImport(){
   let res = null, rpcErr = null;
   try{
     // One database transaction: every invoice and line item is saved, or none is.
-    const { data, error } = await sb.rpc("fn_import_company_invoices", { p_rows: sendRows, p_allow_multi_product: !!uploadState.allowMulti, p_auto_certify: false });
+    const { data, error } = await sb.rpc("fn_import_company_invoices", { p_rows: sendRows, p_allow_multi_product: !!uploadState.allowMulti, p_auto_certify: false, p_skip_problems: true });
     if(error) throw error;
     res = data;
   }catch(err){ rpcErr = (err && err.message) || "Unknown database error"; }
@@ -563,8 +572,9 @@ async function runImport(){
   }catch(err){
     failures.push({ invoice: "(verification)", rows: 0, message: "Saved, but confirmation read-back failed: " + ((err && err.message) || "unknown error") });
   }
-  const status = (verifiedItems === sendRows.length && !failures.length) ? "saved" : verifiedItems === 0 ? "failed" : "partial";
-  renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified: null, finishedAt: new Date() });
+  const expectedSaved = (res.items_created ?? sendRows.length);
+  const status = (verifiedItems === expectedSaved && !failures.length) ? "saved" : verifiedItems === 0 ? "failed" : "partial";
+  renderUploadResult({ ...base, expectedItems: expectedSaved, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified: null, finishedAt: new Date() });
   toast(status === "saved" ? `Saved: ${verifiedItems} records confirmed in Supabase` : "Saved, but the confirmation count differs - see result panel", status === "saved" ? "ok" : "bad");
 
   // Import is finished and confirmed - only now does auto-certification start, with its own progress popup.
@@ -582,7 +592,7 @@ async function runImport(){
     const cert = await runAutoCertification(createdGroups, recon);
     certified = cert.certified;
   }
-  renderUploadResult({ ...base, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
+  renderUploadResult({ ...base, expectedItems: expectedSaved, status, invoices: createdInvoiceIds.length, verifiedItems, failures, certified, finishedAt: new Date() });
 
   await loadComparison(new FormData(document.getElementById("filterForm")));
   renderUploadWizard(document.getElementById("uploadMount"));
