@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
 /* =========================================================================
    SMP — SHARED THEME
    Used by every page (index.html, operations.html, consumption.html, ...).
@@ -332,3 +333,116 @@ input:disabled, select:disabled, textarea:disabled{
 
 /* Sync button (left of the user's name in the top bar) */
 #topbar .sync-me-btn{ padding:5px 10px; font-size:12px; }
+
+
+/* =========================================================================
+   LIGHT MODERN THEME (restyle) - colours, type, spacing and component finish only.
+   No markup, script or behaviour is touched: every class/id the pages use keeps working.
+   To go back to the previous look, delete everything from this banner down (and the
+   @import line at the top).
+   ========================================================================= */
+:root{
+  --navy:#2563eb;          /* primary accent (name kept: pages reference --navy) */
+  --navy-dark:#1d4ed8;
+  --slate:#475569;
+  --paper:#f8fafc;
+  --card:#ffffff;
+  --line:#e8ecf4;
+  --ink:#0f172a;
+  --ink-soft:#64748b;
+  --gold:#2563eb;
+  --ok-bg:#ecfdf5;  --ok-fg:#047857;
+  --warn-bg:#fffbeb; --warn-fg:#b45309;
+  --bad-bg:#fef2f2;  --bad-fg:#b91c1c;
+  --radius:12px;
+  --go:#16a34a; --edit:#f59e0b; --lock-bg:#f1f5f9; --lock-fg:#94a3b8; --lock-line:#e2e8f0; --open-bg:#fffbeb; --open-line:#f59e0b;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.05), 0 1px 3px rgba(15,23,42,.04);
+  --shadow-md:0 8px 24px rgba(15,23,42,.10);
+}
+body{ font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:var(--paper); color:var(--ink); }
+::-webkit-scrollbar{ width:7px; height:7px; }
+::-webkit-scrollbar-track{ background:#f1f5f9; }
+::-webkit-scrollbar-thumb{ background:#cbd5e1; border-radius:4px; }
+::-webkit-scrollbar-thumb:hover{ background:#94a3b8; }
+
+/* Login */
+#loginScreen{ background:linear-gradient(160deg, #eff6ff 0%, #dbeafe 100%); }
+.login-card{ border-radius:18px; box-shadow:var(--shadow-md); border:1px solid var(--line); }
+.login-card .eyebrow{ color:var(--navy); }
+.login-card h1{ color:var(--ink); font-weight:800; letter-spacing:-.01em; }
+
+/* Forms */
+label{ color:#475569; font-weight:600; }
+input, select, textarea{ border:1.5px solid #e2e8f0; border-radius:10px; background:#f8fafc; transition:border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+input:hover, select:hover, textarea:hover{ border-color:#cbd5e1; }
+input:focus, select:focus, textarea:focus{ outline:none; border-color:var(--navy); background:#fff; box-shadow:0 0 0 3px rgba(37,99,235,.15); }
+input[readonly]{ background:#f1f5f9; }
+button{ border-radius:10px; }
+.btn-primary{ background:var(--navy); color:#fff; box-shadow:0 1px 2px rgba(37,99,235,.35); }
+.btn-primary:hover{ background:var(--navy-dark); filter:none; }
+.btn-secondary{ background:#eff6ff; color:var(--navy); }
+.btn-secondary:hover{ background:#dbeafe; filter:none; }
+.btn-export{ background:#f26b00; }
+.err{ border-radius:10px; border:1px solid #fecaca; }
+.msg{ border-radius:10px; border:1px solid #a7f3d0; }
+
+/* Top bar: white, light, with a hairline border */
+#topbar{ background:#fff; color:var(--ink); border-bottom:1px solid var(--line); box-shadow:var(--shadow-sm); }
+#topbar .brand .eyebrow{ color:var(--navy); }
+#topbar .brand h2{ color:var(--ink); font-weight:800; letter-spacing:-.01em; }
+#topbar .who{ color:var(--ink-soft); }
+#topbar .who b{ color:var(--ink); }
+#sidebarToggle{ color:var(--ink); }
+#sidebarToggle:hover{ background:#f1f5f9; }
+
+/* Sidebar: white, rounded pill links, blue active state */
+#sidebarNav{ background:#fff; color:#475569; border-right:1px solid #f1f5f9; }
+#sidebarNav .sn-brand{ border-bottom:1px solid #f1f5f9; padding:18px 20px 16px; }
+#sidebarNav .sn-brand .sn-title{ color:var(--ink); font-size:15px; font-weight:800; letter-spacing:-.01em; }
+#sidebarNav .sn-brand .sn-sub{ color:#94a3b8; }
+#sidebarNav nav{ padding:12px 10px 20px; }
+#sidebarNav a.sn-link, #sidebarNav button.sn-group{ color:#475569; font-weight:600; border-radius:10px; padding:10px 14px; }
+#sidebarNav a.sn-link:hover, #sidebarNav button.sn-group:hover{ background:#f8fafc; color:var(--ink); }
+#sidebarNav a.sn-link.active{ background:#eff6ff; color:var(--navy); font-weight:700; }
+#sidebarNav .sn-subnav{ border-left:1px solid #e2e8f0; }
+#sidebarNav .sn-section-label{ color:#94a3b8; }
+#sidebarOverlay{ background:rgba(15,23,42,.35); }
+@media (max-width: 860px){ #sidebarNav{ box-shadow:var(--shadow-md); } }
+
+/* Menu cards */
+.menu-card{ border:1.5px solid var(--line); border-radius:14px; box-shadow:var(--shadow-sm); transition:border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.menu-card:hover{ border-color:var(--navy); box-shadow:var(--shadow-md); transform:translateY(-1px); }
+.menu-card.active{ border-color:var(--navy); background:#eff6ff; }
+.menu-card .label{ color:var(--ink); }
+
+/* Cards and stat tiles */
+.card{ border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-sm); }
+.card h3{ color:var(--ink); font-weight:700; font-size:15.5px; letter-spacing:-.005em; }
+.stat{ border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-sm); }
+.stat .n{ color:var(--ink); font-weight:800; letter-spacing:-.02em; }
+
+/* Tables */
+.table-wrap{ border-radius:10px; }
+thead th{ background:#f8fafc; color:#64748b; font-weight:700; border-bottom:1px solid var(--line); }
+thead th:first-child{ border-top-left-radius:8px; } thead th:last-child{ border-top-right-radius:8px; }
+tbody td{ border-bottom:1px solid #f1f5f9; }
+tbody tr:hover{ background:#f8fafc; }
+thead .sticky-col, thead .col-group-milk, thead .col-group-biscuit{ background:#f8fafc; }
+.col-group-milk{ background:#f5faff; }
+.col-group-biscuit{ background:#fffaf2; }
+
+/* Pills */
+.pill{ font-weight:700; }
+.pill-role{ background:#eff6ff; color:var(--navy); }
+.link-btn{ color:var(--navy); }
+
+/* Toasts and modals */
+.toast{ border-radius:12px; box-shadow:var(--shadow-md); }
+.toast.ok{ background:#0f172a; color:#fff; }
+.modal-overlay{ background:rgba(15,23,42,.45); }
+.modal-box{ border-radius:18px; box-shadow:0 24px 60px rgba(15,23,42,.25); }
+.modal-box h3{ color:var(--ink); }
+.product-check{ border-radius:12px; }
+
+/* Row action buttons keep their go/edit colours, just a little softer */
+.link-btn.edit, .link-btn.danger, .delete-consumed-btn{ border-radius:8px; }
