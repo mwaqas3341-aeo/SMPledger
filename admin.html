@@ -1037,6 +1037,7 @@ const WC_CAT = { correction_requested:"Correction requested (recorded figure dif
   wrong_markaz:"School not in sender's markaz", not_registered_for_school:"Number not registered for that school", outside_group_jurisdiction:"School outside the group's area",
   future_date:"Date in the future", not_consumption_day:"Not a consumption day", program_closed:"Program closed / before start", period_locked:"Period locked",
   already_recorded:"Already entered in the system", unregistered_sender:"Unregistered number posting a report", message_edited:"Message edited", message_deleted:"Message deleted" };
+const WC_FMT = { full_template:"Full message as sent (header + instruction line)", no_instruction_line:"Header kept, 'Please reply with' removed", no_header:"Header removed (Date / Product / EMIS / Packs lines only)", labels_only:"Only EMIS and Packs lines", bare_pair:"Just 'EMIS packs' on one line", free_text:"Free text", unclassified:"Older, not classified" };
 async function wcLoadStudy(box){
   const body = box.querySelector("#wcStudyBody"), sel = box.querySelector("#wcStudyDays");
   if(!body) return;
@@ -1046,6 +1047,8 @@ async function wcLoadStudy(box){
   const d = data || {}, tot = (d.accepted || 0) + (d.rejected || 0), rate = tot ? Math.round(100 * (d.rejected || 0) / tot) : 0;
   const dl = Number(d.days_logged || 0);
   const lab = c => WC_CAT[c] || c || "-";
+  const { data: fmt, error: fmtE } = await sb.rpc("fn_wa_collect_format_study", { p_days: sel.value ? Number(sel.value) : 3650 });
+  const fmtErr = fmtE ? fmtE.message : "";
   const t = v => v ? new Date(v).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }) : "-";
   body.innerHTML = `
     <p class="sub"><b>Days logged: ${dl}</b> ${dl >= 8 ? "- enough data to start finding solutions." : `- keep collecting (${8 - dl} more day${8 - dl === 1 ? "" : "s"} for a fair picture).`}${d.first_logged ? " Log began " + esc(t(d.first_logged)) + "." : ""}</p>
@@ -1055,6 +1058,9 @@ async function wcLoadStudy(box){
       <div class="stat"><div class="n" style="color:var(--bad-fg)">${d.rejected || 0}</div><div class="l">Rejected (${rate}%)</div></div>
       <div class="stat"><div class="n">${(d.ignored || 0)} / ${(d.edited || 0)} / ${(d.deleted || 0)}</div><div class="l">Unregistered / edited / deleted</div></div>
     </div>
+    <h4 style="margin:12px 0 4px;">How teachers write the message (format study)</h4>
+    <div class="table-wrap"><table><thead><tr><th>Format</th><th>Messages</th><th>Share</th><th>Accepted</th><th>Rejected</th><th>Main problem</th></tr></thead><tbody>
+      ${(fmt || []).map(f => `<tr><td>${esc(WC_FMT[f.variant] || f.variant)}</td><td>${f.messages}</td><td>${f.share_pct}%</td><td>${f.accepted}</td><td>${f.rejected}</td><td>${esc(f.top_reason ? lab(f.top_reason) : "-")}</td></tr>`).join("") || `<tr><td colspan="6" style="color:var(--ink-soft)">${fmtErr ? esc(fmtErr) + " (the format-study database update has not been applied yet)" : "Nothing yet."}</td></tr>`}</tbody></table></div>
     <h4 style="margin:12px 0 4px;">Mistakes by type</h4>
     <div class="table-wrap"><table><thead><tr><th>Type</th><th>Times</th><th>People</th></tr></thead><tbody>
       ${(d.by_category || []).map(c => `<tr><td>${esc(lab(c.category))}</td><td>${c.n}</td><td>${c.senders}</td></tr>`).join("") || `<tr><td colspan="3" style="color:var(--ink-soft)">No mistakes logged yet.</td></tr>`}</tbody></table></div>
