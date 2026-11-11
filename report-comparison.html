@@ -189,9 +189,12 @@ async function renderPage(){
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply filter</button></div>
       </form>
       <div class="actions-row" style="margin-top:12px;">
+        <span style="display:inline-flex;align-items:center;gap:6px;"><label for="dlProduct" style="margin:0;font-size:13px;">Download for</label>
+          <select id="dlProduct"><option value="">Product chosen above</option><option value="all">All products (Milk + Biscuits)</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} only</option>`).join("")}</select></span>
         <button class="btn-export" type="button" id="dlCmpAllBtn">Download Excel - all rows</button>
         <button class="btn-export" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
         <button class="btn-export" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
+        <button class="btn-export" type="button" id="dlAeoListBtn">Download Excel - AEO-entered list (inventory received)</button>
         ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button>' : ""}
       </div>
     </div>
@@ -209,6 +212,7 @@ async function renderPage(){
   document.getElementById("dlCmpAllBtn").addEventListener("click", () => downloadComparison(false));
   document.getElementById("dlCmpIssuesBtn").addEventListener("click", () => downloadComparison(true));
   document.getElementById("dlCompanyListBtn").addEventListener("click", downloadCompanyList);
+  document.getElementById("dlAeoListBtn").addEventListener("click", downloadAeoList);
   const rb = document.getElementById("reconcileBtn");
   if(rb) rb.addEventListener("click", async () => {
     rb.disabled = true;
@@ -707,8 +711,53 @@ async function runAutoCertification(groups, recon){
 
 // Excel export of exactly what the filters currently show (period, district/tehsil/wing/markaz/EMIS),
 // with a plain-language remark on every row that has a problem.
-function downloadComparison(issuesOnly){
-  const all = window.lastComparisonRows || [];
+// Product for the downloads: "" = the product picked in the filter above, "all" = every product, or one product id.
+function dlProductId(fd){
+  const sel = (document.getElementById("dlProduct") || {}).value || "";
+  return sel === "" ? (fd.get("product") || "") : sel === "all" ? "" : sel;
+}
+function dlProductLabel(id){ return id ? ((cache.products.find(x => x.id === id) || {}).product_name || "product") : "all-products"; }
+function readGeo(){
+  return { d: document.getElementById("jfDistrict").value, t: document.getElementById("jfTehsil").value,
+           m: document.getElementById("jfMarkaz").value, w: document.getElementById("jfWing").value,
+           e: (document.getElementById("jfEmis")?.value || "").trim() };
+}
+function geoMatch(school, g){
+  if(g.e) return (school?.emis_code || "").includes(g.e);
+  const mk = cache.markaz.find(m => m.id === school?.markaz_id);
+  if(g.m) { if(school?.markaz_id !== g.m) return false; }
+  else if(g.t) { if(mk?.tehsil !== g.t) return false; }
+  else if(g.d) { if(mk?.district !== g.d) return false; }
+  if(g.w && school?.wing !== g.w) return false;
+  return true;
+}
+// Same rows as the table, but for the product chosen in the download box (not only the one the table shows).
+async function fetchComparisonRows(fd, productId){
+  const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter"), g = readGeo();
+  const out = [];
+  for(let start = 0; ; start += 1000){
+    let q = sb.from("v_company_vs_aeo_comparison").select("*").gte("delivery_date", from).lte("delivery_date", to);
+    if(productId) q = q.eq("product_id", productId);
+    const { data: page, error } = await q.order("delivery_date", { ascending: false }).order("school_id").order("product_id").order("invoice_number").range(start, start + 999);
+    if(error) throw error;
+    out.push(...(page || []));
+    if(!page || page.length < 1000) break;
+  }
+  const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
+  const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
+  let rows = out.map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] })).filter(r => geoMatch(r.school, g));
+  if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0 || r.remarks);
+  if(filter === "flagged") rows = rows.filter(r => r.aeo_flag);
+  rows.sort((a, b) => a.delivery_date !== b.delivery_date ? (a.delivery_date < b.delivery_date ? 1 : -1) : (a.school?.emis_code || "").localeCompare(b.school?.emis_code || ""));
+  return rows;
+}
+async function downloadComparison(issuesOnly){
+  const fd0 = new FormData(document.getElementById("filterForm"));
+  let all;
+  try{
+    const sel = (document.getElementById("dlProduct") || {}).value || "";
+    all = sel === "" ? (window.lastComparisonRows || []) : await fetchComparisonRows(fd0, dlProductId(fd0));
+  }catch(err){ toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad"); return; }
   const isIssue = r => r.status !== "Matched" || !!r.remarks;
   const rows = issuesOnly ? all.filter(isIssue) : all;
   if(!rows.length){ toast(issuesOnly ? "No issues found for the current filters and period." : "Nothing to download - apply the filters first.", "bad"); return; }
@@ -727,7 +776,8 @@ function downloadComparison(issuesOnly){
     });
     const count = (f) => all.filter(f).length;
     const summary = [
-      ["Period", `${dmy(window.lastComparisonPeriod?.from)} to ${dmy(window.lastComparisonPeriod?.to)}`],
+      ["Period", `${dmy(fd0.get("from"))} to ${dmy(fd0.get("to"))}`],
+      ["Product", dlProductId(fd0) ? dlProductLabel(dlProductId(fd0)) : "All products"],
       ["Total rows (current filters)", all.length],
       ["Matched, no issue", count(r => !isIssue(r))],
       ["Matched, but invoice number written differently", count(r => r.status === "Matched" && r.remarks)],
@@ -744,8 +794,8 @@ function downloadComparison(issuesOnly){
     const ss = XLSX.utils.aoa_to_sheet([["Company vs AEO - summary"], [], ...summary]);
     ss["!cols"] = [{ wch: 52 }, { wch: 28 }];
     XLSX.utils.book_append_sheet(wb, ss, "Summary");
-    const p = window.lastComparisonPeriod || {};
-    XLSX.writeFile(wb, `company-vs-aeo_${issuesOnly ? "issues" : "all"}_${p.from || "all"}_to_${p.to || "all"}.xlsx`);
+    const p = { from: fd0.get("from"), to: fd0.get("to") };
+    XLSX.writeFile(wb, `company-vs-aeo_${issuesOnly ? "issues" : "all"}_${dlProductLabel(dlProductId(fd0))}_${p.from || "all"}_to_${p.to || "all"}.xlsx`);
     toast(`Downloaded ${rows.length} row(s).`);
   }catch(err){
     console.error("[SMP] comparison download failed:", err && err.message);
@@ -763,6 +813,7 @@ async function downloadCompanyList(){
       .select("id, quantity, unit, aeo_verification_status, school_id, product_id, company_invoices!inner(invoice_number, invoice_date, delivery_date, status)")
       .eq("company_invoices.status", "active")
       .gte("company_invoices.delivery_date", from).lte("company_invoices.delivery_date", to)
+      .match(dlProductId(fd) ? { product_id: dlProductId(fd) } : {})
       .order("id"));
     if(error) throw error;
     if(!data.length){ toast("No company-provided data in this period.", "bad"); return; }
@@ -770,7 +821,8 @@ async function downloadCompanyList(){
     const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
     const markazById = Object.fromEntries(cache.markaz.map(x => [x.id, x]));
     const dmy = d => d ? new Date(d).toLocaleDateString("en-GB") : "";
-    const rows = data.map(r => {
+    const geo = readGeo();
+    const rows = data.filter(r => geoMatch(schoolById[r.school_id], geo)).map(r => {
       const sc = schoolById[r.school_id];
       return { d: r.company_invoices.delivery_date, row: [
         dmy(r.company_invoices.delivery_date), dmy(r.company_invoices.invoice_date), r.company_invoices.invoice_number || "",
@@ -780,9 +832,57 @@ async function downloadCompanyList(){
     const header = ["Delivery date","Invoice date","Invoice #","EMIS","School","Markaz","Tehsil","Wing","Product","Quantity","Unit","AEO certification"];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...rows]), "Company list");
-    XLSX.writeFile(wb, `company-provided-list_${from}_to_${to}.xlsx`);
+    XLSX.writeFile(wb, `company-provided-list_${dlProductLabel(dlProductId(fd))}_${from}_to_${to}.xlsx`);
   }catch(err){
     console.error("[SMP] company list download failed:", err && err.message);
+    toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
+  }
+}
+
+// Excel export of what the AEOs entered as inventory received (their own receipts), whether or not the company
+// provided a matching delivery - one row per receipt, for the period, product and area chosen above.
+async function downloadAeoList(){
+  const fd = new FormData(document.getElementById("filterForm"));
+  const from = fd.get("from"), to = fd.get("to"), pid = dlProductId(fd), geo = readGeo();
+  try{
+    const { data, error } = await smpFetchAll(() => {
+      let q = sb.from("school_receipts")
+        .select("id, school_id, product_id, receipt_date, invoice_number, quantity_received, created_by, created_at, invoice_flag, invoice_flag_note, status")
+        .eq("status", "active").gte("receipt_date", from).lte("receipt_date", to);
+      if(pid) q = q.eq("product_id", pid);
+      return q.order("id");
+    });
+    if(error) throw error;
+    const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
+    const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
+    const markazById = Object.fromEntries(cache.markaz.map(x => [x.id, x]));
+    const list = (data || []).filter(r => geoMatch(schoolById[r.school_id], geo));
+    if(!list.length){ toast("No AEO-entered receipts for these filters.", "bad"); return; }
+    let names = {};
+    try{
+      const ids = [...new Set(list.map(r => r.created_by).filter(Boolean))];
+      for(let i = 0; i < ids.length; i += 100){
+        const { data: pr } = await sb.from("profiles").select("id, full_name").in("id", ids.slice(i, i + 100));
+        (pr || []).forEach(x => { names[x.id] = x.full_name; });
+      }
+    }catch(e){}
+    const dmy = d => { if(!d) return ""; const q = String(d).slice(0, 10).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : String(d); };
+    const rows = list.map(r => {
+      const sc = schoolById[r.school_id], mk = markazById[sc?.markaz_id];
+      return { d: r.receipt_date, e: sc?.emis_code || "", row: [dmy(r.receipt_date), sc?.wing || "", mk?.tehsil || "", mk?.name || "", sc?.emis_code || "", sc?.school_name || "",
+        productById[r.product_id]?.product_name || "", r.invoice_number || "", Number(r.quantity_received) || 0,
+        names[r.created_by] || "", dmy(r.created_at), r.invoice_flag || "", r.invoice_flag_note || ""] };
+    }).sort((a, b) => a.d !== b.d ? (a.d < b.d ? 1 : -1) : a.e.localeCompare(b.e)).map(x => x.row);
+    const header = ["Receipt date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Invoice #","Quantity received","Entered by","Entered on","Flag","Flag note"];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    ws["!cols"] = [14,8,14,20,12,34,12,20,16,24,12,16,50].map(w => ({ wch: w }));
+    ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:rows.length,c:header.length-1} }) };
+    XLSX.utils.book_append_sheet(wb, ws, "AEO entered");
+    XLSX.writeFile(wb, `aeo-entered-inventory_${dlProductLabel(pid)}_${from}_to_${to}.xlsx`);
+    toast(`Downloaded ${rows.length} AEO receipt(s).`);
+  }catch(err){
+    console.error("[SMP] AEO list download failed:", err && err.message);
     toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
   }
 }
