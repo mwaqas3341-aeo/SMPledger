@@ -313,7 +313,7 @@ async function renderMyReceipts(content){
 }
 
 let lastVisibleSchoolIds = [];
-let receiptFilter = { date: "", product: "" };   // applied History filter (changes only on "Apply filter")
+let receiptFilter = { date: "", product: "", from: "", to: "" };   // applied History filter (changes only on "Apply filter")
 let receiptRowsCache = [];
 
 async function renderMyReceiptsBody(visibleSchoolIds){
@@ -333,8 +333,10 @@ async function renderMyReceiptsBody(visibleSchoolIds){
 
     <div class="card">
       <h3>Receipts already entered</h3>
-      <p class="sub">Sorted by date (most recent first), then by EMIS code. Pick a date and/or product and click Apply filter to see only those entries for checking or editing.</p>
+      <p class="sub">Sorted by date (most recent first), then by EMIS code. Pick a period (From / To), a date and/or product and click Apply filter to see only those entries for checking or editing.</p>
       <div class="form-row" style="align-items:end; margin:8px 0 12px;">
+        <div><label>From</label><input type="date" id="rcFrom"/></div>
+        <div><label>To</label><input type="date" id="rcTo"/></div>
         <div><label>Date</label><select id="rcDate"><option value="">All dates</option></select></div>
         <div><label>Product</label><select id="rcProduct"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
         <div><button class="btn-primary" id="rcApply" type="button">Apply filter</button></div>
@@ -347,10 +349,13 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     </div>
   `;
   document.getElementById("addInventoryBtn").addEventListener("click", () => showAddInventoryModal(visibleSchoolIds));
-  receiptFilter = { date: "", product: "" };           // a fresh section shows everything
+  receiptFilter = { date: "", product: "", from: "", to: "" };           // a fresh section shows everything
   document.getElementById("rcApply").addEventListener("click", () => {
     receiptFilter.date = document.getElementById("rcDate").value;
     receiptFilter.product = document.getElementById("rcProduct").value;
+    receiptFilter.from = document.getElementById("rcFrom").value;
+    receiptFilter.to = document.getElementById("rcTo").value;
+    if(receiptFilter.from && receiptFilter.to && receiptFilter.from > receiptFilter.to){ toast("'From' date is after 'To' date.", "bad"); return; }
     renderReceiptRows(visibleSchoolIds);               // uses the entries already loaded - no reload
   });
   document.getElementById("rcDlShown").addEventListener("click", () => downloadReceiptHistory(false));
@@ -793,12 +798,14 @@ async function loadReceiptsTable(schoolIds){
   renderReceiptRows(schoolIds);
 }
 
+// Period chosen with From / To (either may be empty) - applies to the table and to both Excel downloads.
+function inPeriod(r){ return (!receiptFilter.from || r.receipt_date >= receiptFilter.from) && (!receiptFilter.to || r.receipt_date <= receiptFilter.to); }
 // Draws the history table from the loaded entries, applying the Date / Product filter chosen with "Apply filter".
 function renderReceiptRows(schoolIds){
   const tbody = document.querySelector("#receiptsTable tbody");
   if(!tbody) return;
   // Requested sort: date descending, then EMIS code ascending within each date.
-  const sortedRows = receiptRowsCache.slice().sort((a, b) => {
+  const sortedRows = receiptRowsCache.filter(inPeriod).sort((a, b) => {
     if(a.receipt_date !== b.receipt_date) return a.receipt_date < b.receipt_date ? 1 : -1;
     return (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || "");
   });
@@ -815,7 +822,7 @@ function renderReceiptRows(schoolIds){
       r.schools?.school_name, r.products?.product_name, r.quantity_received, r.invoice_number, r.collected_by, r.remarks]);
   });
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">${sortedRows.length ? "No receipts match your search or filter." : "No receipts entered yet."}</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="11" style="color:var(--ink-soft)">${sortedRows.length ? "No receipts match your search, period or filter." : "No receipts entered yet."}</td></tr>`; return; }
 
   tbody.innerHTML = rows.map(r => `
     <tr>
@@ -841,7 +848,7 @@ function renderReceiptRows(schoolIds){
 // Excel export of the receipts already entered. "As shown" = the date / product filter and search currently applied;
 // "full history" = every receipt in the area you are allowed to see, all dates and products, sorted by date then EMIS.
 function downloadReceiptHistory(full){
-  const sorted = receiptRowsCache.slice().sort((a, b) => a.receipt_date !== b.receipt_date ? (a.receipt_date < b.receipt_date ? 1 : -1)
+  const sorted = receiptRowsCache.filter(inPeriod).sort((a, b) => a.receipt_date !== b.receipt_date ? (a.receipt_date < b.receipt_date ? 1 : -1)
     : (a.schools?.emis_code || "").localeCompare(b.schools?.emis_code || ""));
   const rows = full ? sorted : sorted.filter(r => (!receiptFilter.date || r.receipt_date === receiptFilter.date)
       && (!receiptFilter.product || r.product_id === receiptFilter.product)).filter(r => {
@@ -867,7 +874,7 @@ function downloadReceiptHistory(full){
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:body.length,c:header.length-1} }) };
     XLSX.utils.book_append_sheet(wb, ws, "Inventory history");
     const pl = !full && receiptFilter.product ? ((cache.products.find(x => x.id === receiptFilter.product) || {}).product_name || "product") : "all-products";
-    const dl = !full && receiptFilter.date ? receiptFilter.date : "all-dates";
+    const dl = receiptFilter.from || receiptFilter.to ? `${receiptFilter.from || "start"}_to_${receiptFilter.to || "latest"}` : (!full && receiptFilter.date ? receiptFilter.date : "all-dates");
     XLSX.writeFile(wb, `inventory-history_${pl}_${dl}.xlsx`);
     toast(`Downloaded ${body.length} receipt(s).`);
   }catch(err){
