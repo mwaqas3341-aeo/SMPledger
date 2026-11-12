@@ -45,6 +45,7 @@ begin
     raise exception 'not allowed';
   end if;
 
+  drop table if exists _cmp;
   create temp table _cmp on commit drop as
   with scope as (
     select s.id school_id, s.emis_code, pr.id product_id, st.product, st.first_cons_date
@@ -81,12 +82,8 @@ begin
      and c.res = 'ok' and i.status = 'open';
   get diagnostics v_res = row_count;
 
-  -- matching entries are not kept: portal rows that agree with the AEO figure are dropped, as is anything past the window
-  delete from public.portal_consumption pc using _cmp c
-   where c.emis_code = pc.emis_code and c.d = pc.cons_date and c.res = 'ok'
-     and exists (select 1 from public.products pr where pr.id = c.product_id and lower(pr.product_name) like '%' || pc.product || '%')
-     and coalesce(c.pq,0) > 0;
-  get diagnostics v_purged = row_count;
+  -- matched rows are kept (they record that the head teacher reported that day); only rows past the window are pruned
+  v_purged := 0;
   delete from public.portal_consumption where cons_date < v_from - 5;
 
   return jsonb_build_object('issues_changed', v_new, 'resolved', v_res, 'matched_rows_dropped', v_purged);

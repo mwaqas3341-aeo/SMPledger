@@ -1,0 +1,4 @@
+-- Fix: fn_portal_compare_consumption no longer deletes matched portal rows. Deleting them made the next comparison
+-- read "no portal row" as "head teacher did not report". Run applied this as a function patch; see 20261119 for the full text.
+-- After applying, derived data was reset so the next sync reloads everything:
+--   delete from consumption_issues; delete from portal_sync_state; delete from portal_consumption;
