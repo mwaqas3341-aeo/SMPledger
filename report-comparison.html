@@ -781,7 +781,7 @@ async function downloadComparison(issuesOnly){
       return [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "",
         r.product?.product_name || "", r.company_invoice_number || "", r.aeo_invoice_number || "", dmy(r.invoice_date),
         Number(r.company_qty) || 0, Number(r.aeo_qty) || 0, r.head_qty == null ? "" : Number(r.head_qty), r.head_challan || "", dmy(r.head_date), Number(r.difference) || 0,
-        r.status || "", r.three_way_status || "", r.aeo_verification_status || "", r.remarks || (r.status === "Matched" ? "" : r.status)];
+        r.status || "", r.three_way_status || "", r.aeo_verification_status || "", [r.remarks || (r.status === "Matched" ? "" : r.status), r.head_note].filter(Boolean).join(" ")];
     });
     const count = (f) => all.filter(f).length;
     const summary = [
@@ -930,7 +930,7 @@ async function downloadHeadTeacher(kind){
       return [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "", r.product?.product_name || "",
         r.head_challan || "", dmy(r.head_date), h == null ? "" : h,
         r.company_invoice_number || "", Number(r.company_qty) || 0, r.aeo_invoice_number || "", Number(r.aeo_qty) || 0,
-        h == null ? "" : h - (Number(r.aeo_qty) || 0), h == null ? "" : h - (Number(r.company_qty) || 0), r.three_way_status || "", r.remarks || ""];
+        h == null ? "" : h - (Number(r.aeo_qty) || 0), h == null ? "" : h - (Number(r.company_qty) || 0), r.three_way_status || "", [r.remarks, r.head_note].filter(Boolean).join(" ")];
     });
     const names = { list: "head-teacher-list", aeo_no_head: "aeo-entered_head-teacher-not-reported", head_no_aeo: "head-teacher-reported_aeo-not-entered" };
     const wb = XLSX.utils.book_new();
@@ -1053,7 +1053,7 @@ async function loadComparison(fd){
       <td>${pillFor(r.status)}</td>
       <td style="font-size:12px;">${threeWayPill(r.three_way_status)}</td>
       <td>${certPillFor(r.aeo_verification_status)}</td>
-      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("wrong_invoice") ? "invoice belongs to another school" : r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc(r.remarks) || "—"}</td>
+      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("wrong_invoice") ? "invoice belongs to another school" : r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc([r.remarks, r.head_note].filter(Boolean).join(" ")) || "—"}</td>
     </tr>`;
   }).join("");
 }
