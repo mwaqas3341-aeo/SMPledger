@@ -448,6 +448,27 @@ def _submit_login(page: Any, non_interactive: bool) -> None:
         )
 
 
+def _page_hint(page: Any) -> str:
+    """Where the browser is and any visible error text - no form values, no query string."""
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(page.url)
+        where = f"{parts.netloc}{parts.path}"
+    except Exception:
+        where = "unknown"
+    try:
+        title = (page.title() or "").strip()[:80]
+    except Exception:
+        title = ""
+    notes = ""
+    try:
+        texts = page.locator('.alert:visible, .error:visible, .invalid-feedback:visible, [role="alert"]:visible, .text-danger:visible').all_inner_texts()
+        notes = " | ".join(" ".join(t.split())[:120] for t in texts[:3])
+    except Exception:
+        pass
+    return f"[page: {where}; title: {title!r}; message: {notes!r}]"
+
+
 def _ensure_authenticated(
     page: Any,
     base_url: str,
@@ -470,10 +491,13 @@ def _ensure_authenticated(
             _goto(page, target, timeout_ms)
 
     if _visible_password(page):
-        raise AuthenticationError("The portal is still requesting a sign-in.")
+        raise AuthenticationError(
+            "The portal is still requesting a sign-in (the login was accepted but the school page sent us back to the login form: "
+            "wrong account for this school, or the session was not kept). " + _page_hint(page)
+        )
     if not _is_detail_path(page.url, first_code):
         raise AuthenticationError(
-            "Could not reach the requested school detail page after sign-in."
+            "Could not reach the requested school detail page after sign-in. " + _page_hint(page)
         )
 
 
