@@ -195,6 +195,9 @@ async function renderPage(){
         <button class="btn-export" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
         <button class="btn-export" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
         <button class="btn-export" type="button" id="dlAeoListBtn">Download Excel - AEO-entered list (inventory received)</button>
+        <button class="btn-export" type="button" id="dlHeadListBtn">Download Excel - head teacher list (SMP)</button>
+        <button class="btn-export" type="button" id="dlAeoNoHeadBtn">Download Excel - AEO entered, head teacher not reported</button>
+        <button class="btn-export" type="button" id="dlHeadNoAeoBtn">Download Excel - head teacher reported, AEO not entered</button>
         ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button>' : ""}
       </div>
     </div>
@@ -213,6 +216,9 @@ async function renderPage(){
   document.getElementById("dlCmpIssuesBtn").addEventListener("click", () => downloadComparison(true));
   document.getElementById("dlCompanyListBtn").addEventListener("click", downloadCompanyList);
   document.getElementById("dlAeoListBtn").addEventListener("click", downloadAeoList);
+  document.getElementById("dlHeadListBtn").addEventListener("click", () => downloadHeadTeacher("list"));
+  document.getElementById("dlAeoNoHeadBtn").addEventListener("click", () => downloadHeadTeacher("aeo_no_head"));
+  document.getElementById("dlHeadNoAeoBtn").addEventListener("click", () => downloadHeadTeacher("head_no_aeo"));
   const rb = document.getElementById("reconcileBtn");
   if(rb) rb.addEventListener("click", async () => {
     rb.disabled = true;
@@ -890,6 +896,52 @@ async function downloadAeoList(){
     toast(`Downloaded ${rows.length} AEO receipt(s).`);
   }catch(err){
     console.error("[SMP] AEO list download failed:", err && err.message);
+    toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
+  }
+}
+
+// Head teacher (SMP portal) downloads. All three use the same three-way rows, period, product and area as the table.
+//   list          - everything the head teachers reported, with the company and AEO figures beside it for comparison
+//   aeo_no_head   - AEO entered a receipt, head teacher has not reported it on SMP (only schools the portal sync covers)
+//   head_no_aeo   - head teacher reported it on SMP, AEO has not entered it
+async function downloadHeadTeacher(kind){
+  const fd = new FormData(document.getElementById("filterForm"));
+  fd.set("filter", "all");
+  try{
+    let all = await fetchComparisonRows(fd, dlProductId(fd));
+    if(kind === "aeo_no_head"){
+      const { data: st, error } = await sb.from("portal_sync_state").select("emis_code");
+      if(error) throw error;
+      const covered = new Set((st || []).map(x => x.emis_code));
+      if(!covered.size){ toast("No head teacher data has been synced from SMP yet.", "bad"); return; }
+      all = all.filter(r => r.aeo_qty > 0 && r.head_qty == null && covered.has(r.school?.emis_code));
+    } else if(kind === "head_no_aeo"){
+      all = all.filter(r => r.head_qty != null && !(r.aeo_qty > 0));
+    } else {
+      all = all.filter(r => r.head_qty != null);
+    }
+    if(!all.length){ toast(kind === "list" ? "No head teacher data for these filters yet." : "Nothing to list for these filters.", "bad"); return; }
+    const dmy = d => { if(!d) return ""; const q = String(d).slice(0, 10).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : String(d); };
+    const mk = id => cache.markaz.find(m => m.id === id);
+    const header = ["Date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Head Teacher Challan # (SMP)","Head Teacher Date","Head Teacher Qty",
+      "Company Invoice #","Company Qty","AEO Invoice #","AEO Qty","Head - AEO","Head - Company","Three-way Result","Remarks"];
+    const body = all.map(r => {
+      const m = mk(r.school?.markaz_id), h = r.head_qty == null ? null : Number(r.head_qty);
+      return [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "", r.product?.product_name || "",
+        r.head_challan || "", dmy(r.head_date), h == null ? "" : h,
+        r.company_invoice_number || "", Number(r.company_qty) || 0, r.aeo_invoice_number || "", Number(r.aeo_qty) || 0,
+        h == null ? "" : h - (Number(r.aeo_qty) || 0), h == null ? "" : h - (Number(r.company_qty) || 0), r.three_way_status || "", r.remarks || ""];
+    });
+    const names = { list: "head-teacher-list", aeo_no_head: "aeo-entered_head-teacher-not-reported", head_no_aeo: "head-teacher-reported_aeo-not-entered" };
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    ws["!cols"] = [12,8,14,20,12,34,12,24,14,12,18,11,18,9,11,13,38,60].map(w => ({ wch: w }));
+    ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:body.length,c:header.length-1} }) };
+    XLSX.utils.book_append_sheet(wb, ws, "Inventory received");
+    XLSX.writeFile(wb, `${names[kind]}_${dlProductLabel(dlProductId(fd))}_${fd.get("from") || "all"}_to_${fd.get("to") || "all"}.xlsx`);
+    toast(`Downloaded ${body.length} row(s).`);
+  }catch(err){
+    console.error("[SMP] head teacher download failed:", err && err.message);
     toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
   }
 }

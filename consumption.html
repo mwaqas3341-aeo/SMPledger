@@ -12,6 +12,7 @@
 <script src="assets/period-lock.js?v=20261022a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css?v=20261103a" />
 </head>
 <body>
@@ -312,6 +313,49 @@ const weekdayName = d => new Date(d + "T00:00:00").toLocaleDateString("en-GB", {
 let histFrom = "", histTo = "";
 const daysAgoStr = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
 
+const HEAD_ISSUE_TEXT = {
+  qty_differs: "Figures differ",
+  aeo_missing: "On SMP, not recorded here",
+  head_missing: "Recorded here, not reported on SMP",
+};
+let headIssueRows = [];
+async function loadHeadIssues(){
+  const card = document.getElementById("headIssuesCard");
+  if(!card) return;
+  try{
+    const out = [];
+    for(let start = 0; ; start += 1000){
+      const { data, error } = await sb.from("consumption_issues").select("school_id, product_id, emis_code, cons_date, issue, head_qty, aeo_qty")
+        .eq("status", "open").order("cons_date", { ascending: false }).order("emis_code").range(start, start + 999);
+      if(error) throw error;
+      out.push(...(data || []));
+      if(!data || data.length < 1000) break;
+    }
+    const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
+    const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
+    headIssueRows = out.filter(r => schoolById[r.school_id]).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
+    if(!headIssueRows.length){ card.style.display = "none"; return; }   // nothing to fix (or portal data not synced yet)
+    card.style.display = "";
+    document.getElementById("headIssuesCount").textContent = headIssueRows.length + " open";
+    document.querySelector("#headIssuesTable tbody").innerHTML = headIssueRows.map(r => `<tr>
+      <td>${esc(r.cons_date)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.school.school_name)}</td><td>${esc(r.product?.product_name)}</td>
+      <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td></tr>`).join("");
+    document.getElementById("headIssuesDl").onclick = () => {
+      const dmy = d => { const q = String(d).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : d; };
+      const mkById = Object.fromEntries(cache.markaz.map(m => [m.id, m]));
+      const rows = headIssueRows.map(r => [dmy(r.cons_date), r.school.wing || "", mkById[r.school.markaz_id]?.tehsil || "", mkById[r.school.markaz_id]?.name || "",
+        r.emis_code, r.school.school_name, r.product?.product_name || "", r.head_qty == null ? "" : Number(r.head_qty), r.aeo_qty == null ? "" : Number(r.aeo_qty),
+        (r.head_qty == null ? 0 : Number(r.head_qty)) - (r.aeo_qty == null ? 0 : Number(r.aeo_qty)), HEAD_ISSUE_TEXT[r.issue] || r.issue]);
+      const header = ["Date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Head teacher qty (SMP)","Recorded here","Head - recorded","Issue"];
+      const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+      ws["!cols"] = [12,8,14,20,12,34,12,18,14,14,38].map(w => ({ wch: w }));
+      ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:rows.length,c:header.length-1} }) };
+      XLSX.utils.book_append_sheet(wb, ws, "Consumption issues");
+      XLSX.writeFile(wb, `head-teacher-consumption-issues_${todayStr()}.xlsx`);
+    };
+  }catch(e){ card.style.display = "none"; }
+}
+
 async function renderConsumption(){
   const content = document.getElementById("content");
   histTo = todayStr();
@@ -332,6 +376,14 @@ async function renderConsumption(){
       <p class="sub" id="consLockNote" style="color:var(--bad-fg);"></p>
       <p class="sub">Enter the figure for a school, then click Submit to save the row. A row with data already saved for this date is locked - click Edit to change it. Use the filter above to look at one markaz.</p>
       <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
+    </div>
+    <div class="card" id="headIssuesCard" style="display:none;">
+      <h3>Head teacher (SMP) consumption needs rectification</h3>
+      <p class="sub">Consumption reported by head teachers on the SMP portal that differs from, or is missing in, the figures recorded here. Matching entries are not listed. An entry leaves this list by itself once the two figures agree.</p>
+      <div class="actions-row" style="margin-bottom:8px;"><button class="btn-export" type="button" id="headIssuesDl">Download Excel</button> <span class="sub" id="headIssuesCount"></span></div>
+      <div class="table-wrap" style="max-height:340px;overflow:auto;"><table id="headIssuesTable"><thead><tr>
+        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th>
+      </tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">
       <h3>Consumption history</h3>
@@ -390,6 +442,7 @@ async function renderConsumption(){
     loadHistory(currentVisibleIds);
   });
 
+  loadHeadIssues();
   scheduledProductsFor(selectedDate).then(list => {
     const el = document.getElementById("consDaySub");
     if(!el) return;
