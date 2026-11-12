@@ -10,6 +10,11 @@ on:
         required: false
         default: "3"
         type: string
+      only_shard:
+        description: Run just one shard, e.g. 3/3 (leave blank to run all shards).
+        required: false
+        default: ""
+        type: string
       delay:
         description: Seconds to wait between school pages.
         required: false
@@ -36,6 +41,7 @@ jobs:
       - id: m
         env:
           SHARDS: ${{ inputs.shards || '3' }}
+          ONLY_SHARD: ${{ inputs.only_shard }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
@@ -43,7 +49,7 @@ jobs:
           TOTAL=$(wc -l < "$RUNNER_TEMP/codes.txt")
           N=${SHARDS}; [ "${N}" -gt 6 ] && N=6; [ "${N}" -lt 1 ] && N=1
           echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
-          python3 -c "import json,sys; n=int(sys.argv[1]); print('matrix='+json.dumps({'shard':[f'{i}/{n}' for i in range(1,n+1)]}))" "${N}" >> "$GITHUB_OUTPUT"
+          python3 -c "import json,sys; n=int(sys.argv[1]); only=sys.argv[2].strip(); print('matrix='+json.dumps({'shard':([only] if only else [f'{i}/{n}' for i in range(1,n+1)])}))" "${N}" "${ONLY_SHARD}" >> "$GITHUB_OUTPUT"
 
   extract:
     needs: plan
@@ -51,6 +57,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      max-parallel: 1     # one portal login at a time: the portal drops sessions when the same account signs in twice
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     defaults:
       run:
@@ -89,13 +96,18 @@ jobs:
         run: python scripts/fetch_scope.py "$RUNNER_TEMP/codes.txt"
       - name: Extract this shard
         run: |
-          set +e
-          python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
-            --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay "${DELAY_INPUT}"
-          STATUS=$?
-          set -e
+          # Sign-in is retried: the portal sometimes bounces a fresh login back to the login page.
+          for attempt in 1 2 3; do
+            set +e
+            python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
+              --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay "${DELAY_INPUT}"
+            STATUS=$?
+            set -e
+            if [ "${STATUS}" -eq 0 ] || [ "${STATUS}" -eq 1 ]; then break; fi
+            echo "::warning::Attempt ${attempt} stopped with exit code ${STATUS}."
+            [ "${attempt}" -lt 3 ] && sleep 60
+          done
           echo "EXTRACT_STATUS=${STATUS}" >> "$GITHUB_ENV"
-          # exit 1 = some schools incomplete (still pushed); anything else = nothing usable was captured
           if [ "${STATUS}" -ne 0 ] && [ "${STATUS}" -ne 1 ]; then
             echo "::error::The extractor stopped with exit code ${STATUS} before saving anything. See the log above (login failed, site unreachable, or a timeout)."
             exit "${STATUS}"
