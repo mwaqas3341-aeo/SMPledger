@@ -78,5 +78,15 @@ class ScopeTests(unittest.TestCase):
             _validate_codes(["99999999"], codes)
 
 
+class ScopeFetchTests(unittest.TestCase):
+    def test_keeps_only_valid_codes_and_writes_file(self):
+        from scripts import fetch_scope
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(fetch_scope, "fetch", return_value=["32220084", "32220085"]), \
+             mock.patch.dict("os.environ", {"SUPABASE_URL": "https://x", "SUPABASE_SERVICE_ROLE_KEY": "k"}):
+            out = Path(d) / "c.txt"
+            self.assertEqual(fetch_scope.main([str(out)]), 0)
+            self.assertEqual(out.read_text().split(), ["32220084", "32220085"])
+
+
 if __name__ == "__main__":
     unittest.main()

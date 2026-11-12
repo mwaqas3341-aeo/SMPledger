@@ -5,7 +5,7 @@ straight into this project's Supabase (`portal_receipts`, `portal_consumption`, 
 Only data not already stored is sent (the database remembers the last date per school and product; the last 3 days are re-sent).
 
 Setup: add repository secrets `SMP_USERNAME`, `SMP_PASSWORD`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
-put the school list in `portal-sync/karor_mee_codes.txt` (one 8-digit EMIS per line), then run
+The school list comes from Supabase (`fn_portal_scope`: tehsil/wing in table `portal_sync_settings`, default Karor Lalisan / M-EE, active schools = 132). Run
 Actions -> "Portal sync to Supabase". It also runs daily at 20:30 Pakistan time.
 
 Local dry run on an existing export: `python scripts/push_supabase.py --bundle <folder> --dry-run`.

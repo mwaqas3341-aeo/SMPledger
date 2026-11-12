@@ -1,6 +1,6 @@
 name: Portal sync to Supabase
 
-# Pulls the school-detail tables for the schools in portal-sync/karor_mee_codes.txt and writes them
+# Pulls the school-detail tables for the schools returned by Supabase (fn_portal_scope) and writes them
 # straight into the Supabase project (portal_receipts / portal_consumption). Nothing is committed.
 on:
   workflow_dispatch:
@@ -36,11 +36,11 @@ jobs:
       - id: m
         env:
           SHARDS: ${{ inputs.shards || '3' }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          TOTAL=$(sed 's/#.*//' portal-sync/karor_mee_codes.txt | tr -s '[:space:],' '\n' | grep -cE '^[0-9]{8}$' || true)
-          if [ "${TOTAL}" -eq 0 ]; then
-            echo "::error::portal-sync/karor_mee_codes.txt has no EMIS codes yet."; exit 1
-          fi
+          python3 portal-sync/scripts/fetch_scope.py "$RUNNER_TEMP/codes.txt"
+          TOTAL=$(wc -l < "$RUNNER_TEMP/codes.txt")
           N=${SHARDS}; [ "${N}" -gt 6 ] && N=6; [ "${N}" -lt 1 ] && N=1
           echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
           python3 -c "import json,sys; n=int(sys.argv[1]); print('matrix='+json.dumps({'shard':[f'{i}/{n}' for i in range(1,n+1)]}))" "${N}" >> "$GITHUB_OUTPUT"
@@ -85,10 +85,12 @@ jobs:
       - run: python scripts/setup_workflow_env.py
       - if: ${{ steps.browser-cache.outputs.cache-hit != 'true' }}
         run: python -m playwright install --with-deps chromium
+      - name: Get the school list from Supabase
+        run: python scripts/fetch_scope.py "$RUNNER_TEMP/codes.txt"
       - name: Extract this shard
         run: |
           set +e
-          python -m smp_extractor --non-interactive --headless --codes-file karor_mee_codes.txt \
+          python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
             --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay "${DELAY_INPUT}"
           echo "EXTRACT_STATUS=$?" >> "$GITHUB_ENV"
           exit 0
