@@ -184,7 +184,7 @@ const MODULES = [
   { href:"transfers.html",   label:"Permanent Transfer of Stock", desc:"Move stock permanently between schools - no return expected" },
   { href:"transfers.html?section=loans", label:"Stock Rationalization", desc:"Rationalize surplus stock from one school to another" },
   { href:"report-generation.html", label:"Reports & Demand", desc:"Period reports and enrollment-based demand" },
-  { href:"report-comparison.html", label:"Report Comparison", desc:"Company vs AEO data", roles:["admin","super_admin","tr"] },
+  { href:"report-comparison.html", label:"Report Comparison", desc:"Company vs AEO vs Head Teacher data", roles:["admin","super_admin","tr"] },
   { href:"admin.html", label:"Admin Panel", desc:"Consumption schedule & exceptions", roles:["admin","super_admin"] },
 ];
 function buildModuleCards(){
@@ -473,7 +473,7 @@ async function loadCompare(){
   const c = await getComparisonCounts();
   return `
     <div class="card">
-      <h3>Company vs AEO Comparison</h3>
+      <h3>Company vs AEO vs Head Teacher Comparison</h3>
       <div class="grid-4">
         <div class="stat"><div class="n">${c["Matched"]}</div><div class="l">Matched</div></div>
         <div class="stat"><div class="n">${c["Short Received"]}</div><div class="l">Short</div></div>

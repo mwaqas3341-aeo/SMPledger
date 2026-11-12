@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Report Comparison — School Meal Program</title>
+<title>Company vs AEO vs Head Teacher Comparison — School Meal Program</title>
 <script src="assets/safety.js?v=20261015a"></script>
 <script src="assets/layout.js?v=20261018a"></script>
 <script src="assets/sync-me.js?v=20261015a"></script>
@@ -173,8 +173,8 @@ async function renderPage(){
     <div id="uploadMount"></div>
     <div id="uploadResult"></div>
     <div class="card">
-      <h3>Company vs AEO comparison</h3>
-      <p class="sub">Company-uploaded vendor invoice quantities against what AEOs reported receiving. Non-zero differences are flagged for follow-up.</p>
+      <h3>Company vs AEO vs Head Teacher Comparison (reported data on SMP)</h3>
+      <p class="sub">Company-uploaded vendor invoice quantities against what AEOs reported receiving and what head teachers reported on the SMP portal. Differences are flagged for follow-up. Head teacher data appears once the portal sync has run; until then that column shows "—".</p>
       <form id="filterForm" class="form-row">
         <div><label>From</label><input type="date" name="from" value="${daysAgoStr(30)}"/></div>
         <div><label>To</label><input type="date" name="to" value="${todayStr()}"/></div>
@@ -184,7 +184,7 @@ async function renderPage(){
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
         <div><label>Product</label><select name="product"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
-        <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option><option value="flagged">Flagged for rectification</option></select></div>
+        <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option><option value="flagged">Flagged for rectification</option><option value="head">Head teacher differs from company/AEO</option><option value="nohead">Head teacher has not reported</option></select></div>
         <div style="flex:1 1 260px;"><label>Search <span id="cmpSearchCount" class="sub"></span></label><input type="search" id="cmpSearch" placeholder="Type to search: school, markaz, invoice #, remarks…" autocomplete="off"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply filter</button></div>
       </form>
@@ -202,8 +202,8 @@ async function renderPage(){
     <div class="card">
       <div class="table-wrap"><table id="compTable"><thead><tr>
         <th>Delivery date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Invoice #</th>
-        <th>Company qty</th><th>AEO qty</th><th>Difference</th><th>Status</th><th>AEO Certification</th><th>Remarks / issue</th>
-      </tr></thead><tbody><tr><td colspan="12" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
+        <th>Company qty</th><th>AEO qty</th><th>Head teacher qty (SMP)</th><th>Difference (AEO − Company)</th><th>Status</th><th>Three-way result</th><th>AEO Certification</th><th>Remarks / issue</th>
+      </tr></thead><tbody><tr><td colspan="14" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
   `;
 
@@ -732,11 +732,12 @@ function geoMatch(school, g){
   return true;
 }
 // Same rows as the table, but for the product chosen in the download box (not only the one the table shows).
+const headDiffers = r => r.head_qty != null && (r.company_qty > 0 && Number(r.head_qty) !== Number(r.company_qty) || r.aeo_qty > 0 && Number(r.head_qty) !== Number(r.aeo_qty) || (r.company_qty == 0 && r.aeo_qty == 0));
 async function fetchComparisonRows(fd, productId){
   const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter"), g = readGeo();
   const out = [];
   for(let start = 0; ; start += 1000){
-    let q = sb.from("v_company_vs_aeo_comparison").select("*").gte("delivery_date", from).lte("delivery_date", to);
+    let q = sb.from("v_three_way_comparison").select("*").gte("delivery_date", from).lte("delivery_date", to);
     if(productId) q = q.eq("product_id", productId);
     const { data: page, error } = await q.order("delivery_date", { ascending: false }).order("school_id").order("product_id").order("invoice_number").range(start, start + 999);
     if(error) throw error;
@@ -746,8 +747,10 @@ async function fetchComparisonRows(fd, productId){
   const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
   const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
   let rows = out.map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] })).filter(r => geoMatch(r.school, g));
-  if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0 || r.remarks);
+  if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0 || r.remarks || headDiffers(r));
   if(filter === "flagged") rows = rows.filter(r => r.aeo_flag);
+  if(filter === "head") rows = rows.filter(headDiffers);
+  if(filter === "nohead") rows = rows.filter(r => r.head_qty == null && r.company_qty > 0);
   rows.sort((a, b) => a.delivery_date !== b.delivery_date ? (a.delivery_date < b.delivery_date ? 1 : -1) : (a.school?.emis_code || "").localeCompare(b.school?.emis_code || ""));
   return rows;
 }
@@ -758,21 +761,21 @@ async function downloadComparison(issuesOnly){
     const sel = (document.getElementById("dlProduct") || {}).value || "";
     all = sel === "" ? (window.lastComparisonRows || []) : await fetchComparisonRows(fd0, dlProductId(fd0));
   }catch(err){ toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad"); return; }
-  const isIssue = r => r.status !== "Matched" || !!r.remarks;
+  const isIssue = r => r.status !== "Matched" || !!r.remarks || headDiffers(r);
   const rows = issuesOnly ? all.filter(isIssue) : all;
   if(!rows.length){ toast(issuesOnly ? "No issues found for the current filters and period." : "Nothing to download - apply the filters first.", "bad"); return; }
   try{
     const markazName = id => cache.markaz.find(m => m.id === id);
     const header = ["Delivery / receipt date","Wing","Tehsil","Markaz","EMIS Code","School","Product",
-      "Company Invoice #","AEO Invoice #","Company Invoice Date","Company Qty","AEO Qty","Difference",
-      "Status","AEO Certification","Remarks / Issue"];
+      "Company Invoice #","AEO Invoice #","Company Invoice Date","Company Qty","AEO Qty","Head Teacher Qty (SMP)","Head Teacher Challan #","Head Teacher Date","Difference (AEO-Company)",
+      "Status","Three-way Result","AEO Certification","Remarks / Issue"];
     const dmy = d => { if(!d) return ""; const p = String(d).split("-"); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : String(d); };
     const body = rows.map(r => {
       const m = markazName(r.school?.markaz_id);
       return [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "",
         r.product?.product_name || "", r.company_invoice_number || "", r.aeo_invoice_number || "", dmy(r.invoice_date),
-        Number(r.company_qty) || 0, Number(r.aeo_qty) || 0, Number(r.difference) || 0,
-        r.status || "", r.aeo_verification_status || "", r.remarks || (r.status === "Matched" ? "" : r.status)];
+        Number(r.company_qty) || 0, Number(r.aeo_qty) || 0, r.head_qty == null ? "" : Number(r.head_qty), r.head_challan || "", dmy(r.head_date), Number(r.difference) || 0,
+        r.status || "", r.three_way_status || "", r.aeo_verification_status || "", r.remarks || (r.status === "Matched" ? "" : r.status)];
     });
     const count = (f) => all.filter(f).length;
     const summary = [
@@ -785,17 +788,21 @@ async function downloadComparison(issuesOnly){
       ["Excess received (AEO more than company)", count(r => r.status === "Excess Received")],
       ["Company provided, AEO did not enter", count(r => r.status === "Company provided, AEO did not enter")],
       ["AEO entered, company did not provide", count(r => r.status === "AEO entered, company did not provide")],
+      ["All three match", count(r => r.three_way_status === "All three match")],
+      ["Head teacher reported (SMP)", count(r => r.head_qty != null)],
+      ["Head teacher differs from company / AEO", count(headDiffers)],
+      ["Head teacher has not reported", count(r => r.head_qty == null && r.company_qty > 0)],
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-    ws["!cols"] = [14,8,14,20,12,34,12,18,18,14,11,9,11,34,18,80].map(w => ({ wch: w }));
+    ws["!cols"] = [14,8,14,20,12,34,12,18,18,14,11,9,14,16,14,11,34,34,18,80].map(w => ({ wch: w }));
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:body.length,c:header.length-1} }) };
     XLSX.utils.book_append_sheet(wb, ws, issuesOnly ? "Issues" : "Comparison");
-    const ss = XLSX.utils.aoa_to_sheet([["Company vs AEO - summary"], [], ...summary]);
+    const ss = XLSX.utils.aoa_to_sheet([["Company vs AEO vs Head Teacher - summary"], [], ...summary]);
     ss["!cols"] = [{ wch: 52 }, { wch: 28 }];
     XLSX.utils.book_append_sheet(wb, ss, "Summary");
     const p = { from: fd0.get("from"), to: fd0.get("to") };
-    XLSX.writeFile(wb, `company-vs-aeo_${issuesOnly ? "issues" : "all"}_${dlProductLabel(dlProductId(fd0))}_${p.from || "all"}_to_${p.to || "all"}.xlsx`);
+    XLSX.writeFile(wb, `company-vs-aeo-vs-head-teacher_${issuesOnly ? "issues" : "all"}_${dlProductLabel(dlProductId(fd0))}_${p.from || "all"}_to_${p.to || "all"}.xlsx`);
     toast(`Downloaded ${rows.length} row(s).`);
   }catch(err){
     console.error("[SMP] comparison download failed:", err && err.message);
@@ -893,12 +900,12 @@ async function loadComparison(fd){
   const selDistrict = dEl.value, selTehsil = tEl.value, selMarkazId = mEl.value, selWing = wEl.value;
   const selEmis = (document.getElementById("jfEmis")?.value || "").trim();
   const tbody = document.querySelector("#compTable tbody");
-  tbody.innerHTML = `<tr><td colspan="12" style="color:var(--ink-soft)">Loading…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="14" style="color:var(--ink-soft)">Loading…</td></tr>`;
 
   let data = [];
   try{
     for(let start = 0; ; start += 1000){
-      let q = sb.from("v_company_vs_aeo_comparison").select("*")
+      let q = sb.from("v_three_way_comparison").select("*")
         .gte("delivery_date", from).lte("delivery_date", to);
       if(selProduct) q = q.eq("product_id", selProduct);
       const { data: page, error } = await q
@@ -908,7 +915,7 @@ async function loadComparison(fd){
       data.push(...(page || []));
       if(!page || page.length < 1000) break;
     }
-  }catch(error){ tbody.innerHTML = `<tr><td colspan="12" class="err">${esc(error.message || "Could not load the comparison")}</td></tr>`; return; }
+  }catch(error){ tbody.innerHTML = `<tr><td colspan="14" class="err">${esc(error.message || "Could not load the comparison")}</td></tr>`; return; }
 
   const schoolById = Object.fromEntries(cache.schools.map(s => [s.id, s]));
   const productById = Object.fromEntries(cache.products.map(p => [p.id, p]));
@@ -925,8 +932,10 @@ async function loadComparison(fd){
     else if(selDistrict) rows = rows.filter(r => markazById[r.school?.markaz_id]?.district === selDistrict);
     if(selWing) rows = rows.filter(r => r.school?.wing === selWing);
   }
-  if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0 || r.remarks);
+  if(filter === "mismatch") rows = rows.filter(r => Number(r.difference) !== 0 || r.remarks || headDiffers(r));
   if(filter === "flagged") rows = rows.filter(r => r.aeo_flag);
+  if(filter === "head") rows = rows.filter(headDiffers);
+  if(filter === "nohead") rows = rows.filter(r => r.head_qty == null && r.company_qty > 0);
 
   // date desc, EMIS asc within date - same convention as Inventory Received.
   rows.sort((a, b) => {
@@ -945,10 +954,13 @@ async function loadComparison(fd){
     <div class="stat"><div class="n">${matched}</div><div class="l">Matching</div></div>
     <div class="stat"><div class="n">${aeoOnly}</div><div class="l">AEO entered, company didn't</div></div>
     <div class="stat"><div class="n">${companyOnly}</div><div class="l">Company provided, AEO didn't</div></div>
+    <div class="stat"><div class="n">${rows.filter(r => r.three_way_status === "All three match").length}</div><div class="l">All three match</div></div>
+    <div class="stat"><div class="n">${rows.filter(r => r.head_qty != null).length}</div><div class="l">Head teacher reported</div></div>
+    <div class="stat"><div class="n">${rows.filter(headDiffers).length}</div><div class="l">Head teacher differs</div></div>
     <div class="stat"><div class="n">${rows.filter(r => r.aeo_flag).length}</div><div class="l">⚠ Flagged for rectification (invoice entered twice)</div></div>
   `;
 
-  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="12" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
+  if(!rows.length){ tbody.innerHTML = `<tr><td colspan="14" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
 
   const pillFor = (status) => {
     if(status === "Matched") return '<span class="pill pill-ok">Matched</span>';
@@ -959,6 +971,12 @@ async function loadComparison(fd){
 
   // aeo_verification_status is set automatically by the database when an AEO receipt matches the
   // company invoice (manual certification was removed) - only meaningful on rows where company data exists.
+  const threeWayPill = (st) => {
+    if(!st) return "—";
+    if(st === "All three match") return '<span class="pill pill-ok">All three match</span>';
+    if(st === "Head teacher has not reported" || st === "No head teacher report") return '<span class="pill pill-warn">Head teacher: not reported</span>';
+    return '<span class="pill pill-bad">' + esc(st) + '</span>';
+  };
   const certPillFor = (status) => {
     if(!status) return "—";
     if(status === "flagged_mismatch") return '<span class="pill pill-warn">⚠ Qty matches other invoice</span>';
@@ -978,8 +996,10 @@ async function loadComparison(fd){
       <td>${esc(r.invoice_number) || "—"}</td>
       <td>${fmt(r.company_qty)}</td>
       <td>${fmt(r.aeo_qty)}</td>
+      <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td>
       <td>${diff > 0 ? "+" : ""}${fmt(diff)}</td>
       <td>${pillFor(r.status)}</td>
+      <td style="font-size:12px;">${threeWayPill(r.three_way_status)}</td>
       <td>${certPillFor(r.aeo_verification_status)}</td>
       <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("wrong_invoice") ? "invoice belongs to another school" : r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc(r.remarks) || "—"}</td>
     </tr>`;
