@@ -1,0 +1,99 @@
+name: Portal sync to Supabase
+
+# Pulls the school-detail tables for the schools in portal-sync/karor_mee_codes.txt and writes them
+# straight into the Supabase project (portal_receipts / portal_consumption). Nothing is committed.
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Number of parallel jobs (each takes every Nth school).
+        required: false
+        default: "3"
+        type: string
+      delay:
+        description: Seconds to wait between school pages.
+        required: false
+        default: "2.0"
+        type: string
+  schedule:
+    - cron: "30 15 * * *"   # 20:30 Pakistan time, daily
+
+concurrency:
+  group: smp-to-supabase
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      total: ${{ steps.m.outputs.total }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: m
+        env:
+          SHARDS: ${{ inputs.shards || '3' }}
+        run: |
+          TOTAL=$(sed 's/#.*//' portal-sync/karor_mee_codes.txt | tr -s '[:space:],' '\n' | grep -cE '^[0-9]{8}$' || true)
+          if [ "${TOTAL}" -eq 0 ]; then
+            echo "::error::portal-sync/karor_mee_codes.txt has no EMIS codes yet."; exit 1
+          fi
+          N=${SHARDS}; [ "${N}" -gt 6 ] && N=6; [ "${N}" -lt 1 ] && N=1
+          echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
+          python3 -c "import json,sys; n=int(sys.argv[1]); print('matrix='+json.dumps({'shard':[f'{i}/{n}' for i in range(1,n+1)]}))" "${N}" >> "$GITHUB_OUTPUT"
+
+  extract:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        working-directory: portal-sync
+    env:
+      SMP_USERNAME: ${{ secrets.SMP_USERNAME }}
+      SMP_PASSWORD: ${{ secrets.SMP_PASSWORD }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      DELAY_INPUT: ${{ inputs.delay || '2.0' }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check secrets
+        run: |
+          for v in SMP_USERNAME SMP_PASSWORD SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::Repository secret $v is missing."; exit 1; fi
+          done
+      - name: Set up scratch directory
+        run: echo "STAGING_DIR=$RUNNER_TEMP/smp-exports" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('portal-sync/requirements.txt', 'portal-sync/scripts/setup_workflow_env.py') }}
+      - uses: actions/cache@v5
+        id: browser-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('portal-sync/requirements.txt') }}
+      - run: python scripts/setup_workflow_env.py
+      - if: ${{ steps.browser-cache.outputs.cache-hit != 'true' }}
+        run: python -m playwright install --with-deps chromium
+      - name: Extract this shard
+        run: |
+          set +e
+          python -m smp_extractor --non-interactive --headless --codes-file karor_mee_codes.txt \
+            --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay "${DELAY_INPUT}"
+          echo "EXTRACT_STATUS=$?" >> "$GITHUB_ENV"
+          exit 0
+      - name: Push to Supabase
+        run: python scripts/push_supabase.py --bundle "${STAGING_DIR}" --shard "${{ matrix.shard }}"
+      - name: Fail if some schools were incomplete
+        if: ${{ env.EXTRACT_STATUS != '0' }}
+        run: echo "::warning::Some schools were not fully captured; the rest were pushed."

@@ -1,0 +1,2 @@
+# Karor MEE schools (132). One 8-digit EMIS code per line; '#' starts a comment.
+# Paste the list here before the first run.
