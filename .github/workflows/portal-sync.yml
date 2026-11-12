@@ -92,8 +92,14 @@ jobs:
           set +e
           python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
             --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay "${DELAY_INPUT}"
-          echo "EXTRACT_STATUS=$?" >> "$GITHUB_ENV"
-          exit 0
+          STATUS=$?
+          set -e
+          echo "EXTRACT_STATUS=${STATUS}" >> "$GITHUB_ENV"
+          # exit 1 = some schools incomplete (still pushed); anything else = nothing usable was captured
+          if [ "${STATUS}" -ne 0 ] && [ "${STATUS}" -ne 1 ]; then
+            echo "::error::The extractor stopped with exit code ${STATUS} before saving anything. See the log above (login failed, site unreachable, or a timeout)."
+            exit "${STATUS}"
+          fi
       - name: Push to Supabase
         run: python scripts/push_supabase.py --bundle "${STAGING_DIR}" --shard "${{ matrix.shard }}"
       - name: Fail if some schools were incomplete
