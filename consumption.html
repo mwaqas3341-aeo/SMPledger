@@ -319,13 +319,30 @@ const HEAD_ISSUE_TEXT = {
   head_missing: "Recorded here, not reported on SMP",
 };
 let headIssueRows = [];
+// ids = one or more issue ids (the per-entry button), or null for every entry the head teacher reported a figure for.
+// Works in locked periods too: this is the correction route. A "head teacher reported nothing" entry is never touched.
+async function applyHead(ids, count, noReport){
+  const n = ids ? ids.length : count;
+  const msg = `Record the head teacher's reported quantity for ${n} entr${n === 1 ? "y" : "ies"}? Entries in a locked period are corrected too.`
+    + (ids ? "" : `\n\n${noReport} entr${noReport === 1 ? "y" : "ies"} where the head teacher reported nothing will stay as they are.`);
+  if(!confirm(msg)) return;
+  document.querySelectorAll("[data-head-apply], #headApplyBtn").forEach(b => b.disabled = true);
+  try{
+    const { data, error } = await sb.rpc("fn_apply_head_consumption", { p_school_ids: null, p_issue_ids: ids });
+    if(error) throw error;
+    const failed = data.failed || [];
+    toast(`Updated ${data.applied} entr${data.applied === 1 ? "y" : "ies"}.` + (failed.length ? ` ${failed.length} could not be updated: ${failed.slice(0,2).map(f => `${f.emis} ${f.date} - ${f.reason}`).join("; ")}` : ""), failed.length ? "bad" : undefined);
+  }catch(e){ toast("Update failed: " + ((e && e.message) || "unknown error"), "bad"); }
+  await loadHeadIssues();
+  if(typeof renderConsumption === "function") renderConsumption();
+}
 async function loadHeadIssues(){
   const card = document.getElementById("headIssuesCard");
   if(!card) return;
   try{
     const out = [];
     for(let start = 0; ; start += 1000){
-      const { data, error } = await sb.from("consumption_issues").select("school_id, product_id, emis_code, cons_date, issue, head_qty, aeo_qty, remark")
+      const { data, error } = await sb.from("consumption_issues").select("id, school_id, product_id, emis_code, cons_date, issue, head_qty, aeo_qty, remark")
         .eq("status", "open").order("cons_date", { ascending: false }).order("emis_code").range(start, start + 999);
       if(error) throw error;
       out.push(...(data || []));
@@ -347,24 +364,15 @@ async function loadHeadIssues(){
     document.getElementById("headIssuesCount").textContent = headIssueRows.length + " open";
     document.querySelector("#headIssuesTable tbody").innerHTML = headIssueRows.map(r => `<tr>
       <td>${esc(r.cons_date)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.school.school_name)}</td><td>${esc(r.product?.product_name)}</td>
-      <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td><td>${esc(r.remark || "")}</td></tr>`).join("");
+      <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td><td>${esc(r.remark || "")}</td>
+      <td>${r.issue !== "head_missing" && Number(r.head_qty) > 0 ? `<button class="btn-primary" type="button" data-head-apply="${r.id}" style="white-space:nowrap;">Update</button>` : ""}</td></tr>`).join("");
+    document.querySelectorAll("[data-head-apply]").forEach(b => { b.onclick = () => applyHead([Number(b.dataset.headApply)]); });
     const applicable = headIssueRows.filter(r => r.issue !== "head_missing" && Number(r.head_qty) > 0).length;
     const noReport = headIssueRows.length - applicable;
     const btn = document.getElementById("headApplyBtn");
     btn.disabled = !applicable;
     btn.textContent = applicable ? `Update from head teacher (${applicable})` : "Update from head teacher";
-    btn.onclick = async () => {
-      if(!confirm(`Record the head teacher's reported quantity for ${applicable} entr${applicable === 1 ? "y" : "ies"}?\n\n${noReport} entr${noReport === 1 ? "y" : "ies"} where the head teacher reported nothing will stay as they are.`)) return;
-      btn.disabled = true;
-      try{
-        const { data, error } = await sb.rpc("fn_apply_head_consumption", { p_school_ids: null });
-        if(error) throw error;
-        const failed = (data.failed || []);
-        toast(`Updated ${data.applied} entr${data.applied === 1 ? "y" : "ies"}.` + (failed.length ? ` ${failed.length} could not be updated: ${failed.slice(0,2).map(f => `${f.emis} ${f.date} - ${f.reason}`).join("; ")}` : ""), failed.length ? "bad" : undefined);
-      }catch(e){ toast("Update failed: " + ((e && e.message) || "unknown error"), "bad"); }
-      await loadHeadIssues();
-      if(typeof renderConsumption === "function") renderConsumption();
-    };
+    btn.onclick = () => applyHead(null, applicable, noReport);
     document.getElementById("headIssuesDl").onclick = () => {
       const dmy = d => { const q = String(d).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : d; };
       const mkById = Object.fromEntries(cache.markaz.map(m => [m.id, m]));
@@ -409,9 +417,9 @@ async function renderConsumption(){
         <button class="btn-primary" type="button" id="headApplyBtn">Update from head teacher</button>
         <button class="btn-export" type="button" id="headIssuesDl">Download Excel</button> <span class="sub" id="headIssuesCount"></span></div>
       <p class="sub" id="headSyncInfo"></p>
-      <p class="sub">"Update from head teacher" records the quantity the head teacher reported on SMP, only where one was reported. Where the head teacher has reported nothing, your figure is kept and is never changed to zero.</p>
+      <p class="sub">"Update from head teacher" records the quantity the head teacher reported on SMP, only where one was reported, and also corrects entries in a locked period. Where the head teacher has reported nothing, your figure is kept and is never changed to zero.</p>
       <div class="table-wrap" style="max-height:340px;overflow:auto;"><table id="headIssuesTable"><thead><tr>
-        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th><th>Remarks</th>
+        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th><th>Remarks</th><th></th>
       </tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">

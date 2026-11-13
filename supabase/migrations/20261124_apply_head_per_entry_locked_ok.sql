@@ -1,0 +1,4 @@
+-- Per-entry head-teacher correction that also works in locked periods (applied via the MCP; text kept here for the repo).
+-- fn_period_lock_guard now returns early when the transaction-local setting smp.head_correction = 'on'
+-- (set only inside fn_apply_head_consumption). fn_apply_head_consumption(p_school_ids uuid[], p_issue_ids bigint[]).
+-- See the function definitions in the live database (pg_get_functiondef) for the exact text.
