@@ -325,7 +325,7 @@ async function loadHeadIssues(){
   try{
     const out = [];
     for(let start = 0; ; start += 1000){
-      const { data, error } = await sb.from("consumption_issues").select("school_id, product_id, emis_code, cons_date, issue, head_qty, aeo_qty")
+      const { data, error } = await sb.from("consumption_issues").select("school_id, product_id, emis_code, cons_date, issue, head_qty, aeo_qty, remark")
         .eq("status", "open").order("cons_date", { ascending: false }).order("emis_code").range(start, start + 999);
       if(error) throw error;
       out.push(...(data || []));
@@ -336,19 +336,44 @@ async function loadHeadIssues(){
     headIssueRows = out.filter(r => schoolById[r.school_id]).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
     if(!headIssueRows.length){ card.style.display = "none"; return; }   // nothing to fix (or portal data not synced yet)
     card.style.display = "";
+    try{
+      const { data: ls } = await sb.rpc("fn_portal_last_sync");
+      const el = document.getElementById("headSyncInfo");
+      if(ls){
+        const hrs = (Date.now() - new Date(ls).getTime()) / 36e5;
+        el.textContent = "Head teacher data last refreshed: " + new Date(ls).toLocaleString("en-GB", { timeZone: "Asia/Karachi" }) + " (Pakistan time)." + (hrs > 36 ? " This is more than a day and a half old - the daily refresh may be failing." : "");
+      }
+    }catch(_){}
     document.getElementById("headIssuesCount").textContent = headIssueRows.length + " open";
     document.querySelector("#headIssuesTable tbody").innerHTML = headIssueRows.map(r => `<tr>
       <td>${esc(r.cons_date)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.school.school_name)}</td><td>${esc(r.product?.product_name)}</td>
-      <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td></tr>`).join("");
+      <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td><td>${esc(r.remark || "")}</td></tr>`).join("");
+    const applicable = headIssueRows.filter(r => r.issue !== "head_missing" && Number(r.head_qty) > 0).length;
+    const noReport = headIssueRows.length - applicable;
+    const btn = document.getElementById("headApplyBtn");
+    btn.disabled = !applicable;
+    btn.textContent = applicable ? `Update from head teacher (${applicable})` : "Update from head teacher";
+    btn.onclick = async () => {
+      if(!confirm(`Record the head teacher's reported quantity for ${applicable} entr${applicable === 1 ? "y" : "ies"}?\n\n${noReport} entr${noReport === 1 ? "y" : "ies"} where the head teacher reported nothing will stay as they are.`)) return;
+      btn.disabled = true;
+      try{
+        const { data, error } = await sb.rpc("fn_apply_head_consumption", { p_school_ids: null });
+        if(error) throw error;
+        const failed = (data.failed || []);
+        toast(`Updated ${data.applied} entr${data.applied === 1 ? "y" : "ies"}.` + (failed.length ? ` ${failed.length} could not be updated: ${failed.slice(0,2).map(f => `${f.emis} ${f.date} - ${f.reason}`).join("; ")}` : ""), failed.length ? "bad" : undefined);
+      }catch(e){ toast("Update failed: " + ((e && e.message) || "unknown error"), "bad"); }
+      await loadHeadIssues();
+      if(typeof renderConsumption === "function") renderConsumption();
+    };
     document.getElementById("headIssuesDl").onclick = () => {
       const dmy = d => { const q = String(d).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : d; };
       const mkById = Object.fromEntries(cache.markaz.map(m => [m.id, m]));
       const rows = headIssueRows.map(r => [dmy(r.cons_date), r.school.wing || "", mkById[r.school.markaz_id]?.tehsil || "", mkById[r.school.markaz_id]?.name || "",
         r.emis_code, r.school.school_name, r.product?.product_name || "", r.head_qty == null ? "" : Number(r.head_qty), r.aeo_qty == null ? "" : Number(r.aeo_qty),
-        (r.head_qty == null ? 0 : Number(r.head_qty)) - (r.aeo_qty == null ? 0 : Number(r.aeo_qty)), HEAD_ISSUE_TEXT[r.issue] || r.issue]);
-      const header = ["Date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Head teacher qty (SMP)","Recorded here","Head - recorded","Issue"];
+        (r.head_qty == null ? 0 : Number(r.head_qty)) - (r.aeo_qty == null ? 0 : Number(r.aeo_qty)), HEAD_ISSUE_TEXT[r.issue] || r.issue, r.remark || ""]);
+      const header = ["Date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Head teacher qty (SMP)","Recorded here","Head - recorded","Issue","Remarks"];
       const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
-      ws["!cols"] = [12,8,14,20,12,34,12,18,14,14,38].map(w => ({ wch: w }));
+      ws["!cols"] = [12,8,14,20,12,34,12,18,14,14,38,60].map(w => ({ wch: w }));
       ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:rows.length,c:header.length-1} }) };
       XLSX.utils.book_append_sheet(wb, ws, "Consumption issues");
       XLSX.writeFile(wb, `head-teacher-consumption-issues_${todayStr()}.xlsx`);
@@ -380,9 +405,13 @@ async function renderConsumption(){
     <div class="card" id="headIssuesCard" style="display:none;">
       <h3>Head teacher (SMP) consumption needs rectification</h3>
       <p class="sub">Consumption reported by head teachers on the SMP portal that differs from, or is missing in, the figures recorded here. Matching entries are not listed. An entry leaves this list by itself once the two figures agree.</p>
-      <div class="actions-row" style="margin-bottom:8px;"><button class="btn-export" type="button" id="headIssuesDl">Download Excel</button> <span class="sub" id="headIssuesCount"></span></div>
+      <div class="actions-row" style="margin-bottom:8px;">
+        <button class="btn-primary" type="button" id="headApplyBtn">Update from head teacher</button>
+        <button class="btn-export" type="button" id="headIssuesDl">Download Excel</button> <span class="sub" id="headIssuesCount"></span></div>
+      <p class="sub" id="headSyncInfo"></p>
+      <p class="sub">"Update from head teacher" records the quantity the head teacher reported on SMP, only where one was reported. Where the head teacher has reported nothing, your figure is kept and is never changed to zero.</p>
       <div class="table-wrap" style="max-height:340px;overflow:auto;"><table id="headIssuesTable"><thead><tr>
-        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th>
+        <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th><th>Remarks</th>
       </tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">

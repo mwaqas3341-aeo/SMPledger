@@ -103,6 +103,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait between school pages (default: 1.5).",
     )
     parser.add_argument(
+        "--jitter",
+        type=float,
+        default=0.0,
+        help="Random extra seconds (0 to this value) added to every pause between schools.",
+    )
+    parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=0.0,
+        help="Do not start a new school after this many minutes (0 = no limit). Captured schools are kept.",
+    )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Visit the schools in a random order.",
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=45,
@@ -175,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    if args.shuffle:
+        import random
+        random.shuffle(codes)
     print(f"Portal: {base_url}")
     print(f"EMIS codes: {', '.join(codes)}")
     print("Credentials are requested only if the portal presents a login form.")
@@ -185,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
             base_url,
             codes,
             delay_seconds=args.delay,
+            jitter_seconds=args.jitter,
+            deadline_seconds=args.max_minutes * 60,
             headless=args.headless,
             timeout_seconds=args.timeout,
             max_pages=args.max_pages,

@@ -1,38 +1,53 @@
 name: Portal sync to Supabase
 
-# Pulls the school-detail tables for the schools returned by Supabase (fn_portal_scope) and writes them
-# straight into the Supabase project (portal_receipts / portal_consumption). Nothing is committed.
+# Daily, at a random time between 04:00 and 05:15 Pakistan time (finishes before 07:00).
+# A cheap "gate" job runs every 15 minutes from 04:00 to 06:59 PKT and asks Supabase (fn_portal_gate) whether
+# today's random start time has passed and no run has started yet. Shards run one after another, slowly,
+# with random pauses between schools. Run manually from the Actions tab at any time (it skips the gate).
 on:
   workflow_dispatch:
     inputs:
       shards:
-        description: Number of parallel jobs (each takes every Nth school).
+        description: Number of shards, run one after another (each takes every Nth school).
         required: false
-        default: "3"
+        default: "6"
         type: string
       only_shard:
-        description: Run just one shard, e.g. 3/3 (leave blank to run all shards).
+        description: Run just one shard, e.g. 3/6 (leave blank to run all shards).
         required: false
         default: ""
         type: string
-      delay:
-        description: Seconds to wait between school pages.
-        required: false
-        default: "2.0"
-        type: string
   schedule:
-    - cron: "30 15 * * *"   # 20:30 Pakistan time, daily
-
-concurrency:
-  group: smp-to-supabase
-  cancel-in-progress: false
+    - cron: "*/15 23 * * *"     # 04:00-04:59 PKT
+    - cron: "*/15 0,1 * * *"    # 05:00-06:59 PKT
 
 permissions:
   contents: read
 
 jobs:
-  plan:
+  gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: portal-sync/scripts
+      - id: g
+        env:
+          EVENT: ${{ github.event_name }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ "${EVENT}" = "workflow_dispatch" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          python3 portal-sync/scripts/portal_gate.py >> "$GITHUB_OUTPUT"
+
+  plan:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
       total: ${{ steps.m.outputs.total }}
@@ -40,24 +55,24 @@ jobs:
       - uses: actions/checkout@v5
       - id: m
         env:
-          SHARDS: ${{ inputs.shards || '3' }}
+          SHARDS: ${{ inputs.shards || '6' }}
           ONLY_SHARD: ${{ inputs.only_shard }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python3 portal-sync/scripts/fetch_scope.py "$RUNNER_TEMP/codes.txt"
           TOTAL=$(wc -l < "$RUNNER_TEMP/codes.txt")
-          N=${SHARDS}; [ "${N}" -gt 6 ] && N=6; [ "${N}" -lt 1 ] && N=1
+          N=${SHARDS}; [ "${N}" -gt 12 ] && N=12; [ "${N}" -lt 1 ] && N=1
           echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
           python3 -c "import json,sys; n=int(sys.argv[1]); only=sys.argv[2].strip(); print('matrix='+json.dumps({'shard':([only] if only else [f'{i}/{n}' for i in range(1,n+1)])}))" "${N}" "${ONLY_SHARD}" >> "$GITHUB_OUTPUT"
 
   extract:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 50
     strategy:
       fail-fast: false
-      max-parallel: 1     # one portal login at a time: the portal drops sessions when the same account signs in twice
+      max-parallel: 1     # one portal login at a time
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     defaults:
       run:
@@ -67,7 +82,6 @@ jobs:
       SMP_PASSWORD: ${{ secrets.SMP_PASSWORD }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      DELAY_INPUT: ${{ inputs.delay || '2.0' }}
     steps:
       - uses: actions/checkout@v5
       - name: Check secrets
@@ -96,24 +110,25 @@ jobs:
         run: python scripts/fetch_scope.py "$RUNNER_TEMP/codes.txt"
       - name: Extract this shard
         run: |
-          # Sign-in is retried: the portal sometimes bounces a fresh login back to the login page.
+          # Slow and uneven on purpose: 4 s + up to 8 s random between schools, random school order,
+          # no new school after 35 minutes. Sign-in is retried; whatever was captured is always pushed.
           for attempt in 1 2 3; do
             set +e
             python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
-              --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay "${DELAY_INPUT}"
+              --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay 4 --jitter 8 --shuffle --max-minutes 35
             STATUS=$?
             set -e
             if [ "${STATUS}" -eq 0 ] || [ "${STATUS}" -eq 1 ]; then break; fi
             echo "::warning::Attempt ${attempt} stopped with exit code ${STATUS}."
-            [ "${attempt}" -lt 3 ] && sleep 60
+            [ "${attempt}" -lt 3 ] && sleep $((60 + RANDOM % 60))
           done
           echo "EXTRACT_STATUS=${STATUS}" >> "$GITHUB_ENV"
           if [ "${STATUS}" -ne 0 ] && [ "${STATUS}" -ne 1 ]; then
-            echo "::error::The extractor stopped with exit code ${STATUS} before saving anything. See the log above (login failed, site unreachable, or a timeout)."
+            echo "::error::The extractor stopped with exit code ${STATUS} before saving anything (login failed, site unreachable, or a timeout)."
             exit "${STATUS}"
           fi
       - name: Push to Supabase
         run: python scripts/push_supabase.py --bundle "${STAGING_DIR}" --shard "${{ matrix.shard }}"
-      - name: Fail if some schools were incomplete
+      - name: Note incomplete schools
         if: ${{ env.EXTRACT_STATUS != '0' }}
-        run: echo "::warning::Some schools were not fully captured; the rest were pushed."
+        run: echo "::warning::Some schools were not fully captured; the rest were pushed and the missed ones are picked up tomorrow."

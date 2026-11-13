@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import random
 import re
 import time
 from typing import Any
@@ -1144,8 +1145,18 @@ def extract_schools(
     timeout_seconds: int = 45,
     max_pages: int = 100,
     non_interactive: bool = False,
+    jitter_seconds: float = 0.0,
+    deadline_seconds: float = 0.0,
+    max_consecutive_errors: int = 5,
+    max_relogins: int = 2,
 ) -> list[SchoolResult]:
-    """Log in once and collect tables for each requested EMIS detail page."""
+    """Log in once and collect tables for each requested EMIS detail page.
+
+    Safeguards: a random extra pause (0..jitter_seconds) between schools so requests are slow and uneven;
+    no new school is started after deadline_seconds; the session is re-established if the portal drops it
+    (max_relogins times); the run stops after max_consecutive_errors failures in a row (portal probably down).
+    Whatever was captured before a stop is still returned, the rest is marked skipped.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -1190,6 +1201,9 @@ def extract_schools(
             )
 
             stop_reason = ""
+            started = time.monotonic()
+            consecutive_errors = 0
+            relogins = 0
             for index, code in enumerate(emis_codes):
                 url = detail_url(base_url, code)
                 result = SchoolResult(emis_code=code, url=url)
@@ -1199,11 +1213,27 @@ def extract_schools(
                     outcomes.append(result)
                     continue
 
-                if index and delay_seconds > 0:
-                    time.sleep(delay_seconds)
+                if deadline_seconds and time.monotonic() - started > deadline_seconds:
+                    stop_reason = "Stopped at the time limit; the remaining schools are picked up in the next run."
+                    result.status = "skipped"
+                    result.error = stop_reason
+                    outcomes.append(result)
+                    continue
+
+                if index and (delay_seconds > 0 or jitter_seconds > 0):
+                    time.sleep(delay_seconds + random.uniform(0, max(jitter_seconds, 0.0)))
 
                 try:
-                    _extract_school(page, result, max_pages, timeout_ms)
+                    try:
+                        _extract_school(page, result, max_pages, timeout_ms)
+                    except AuthenticationError:
+                        if relogins >= max_relogins:
+                            raise
+                        relogins += 1                      # the portal dropped the session: sign in again, retry this school once
+                        time.sleep(20 + random.uniform(0, 20))
+                        _ensure_authenticated(page, base_url, code, timeout_ms, non_interactive)
+                        result = SchoolResult(emis_code=code, url=url)
+                        _extract_school(page, result, max_pages, timeout_ms)
                 except RateLimitedError as exc:
                     result.status = "error"
                     result.error = str(exc)
@@ -1216,6 +1246,9 @@ def extract_schools(
                     result.status = "error"
                     message = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
                     result.error = f"{type(exc).__name__}: {message[:300]}"
+                consecutive_errors = consecutive_errors + 1 if result.status == "error" else 0
+                if consecutive_errors >= max_consecutive_errors and not stop_reason:
+                    stop_reason = f"Stopped after {consecutive_errors} schools failed in a row (the portal looks unavailable)."
                 outcomes.append(result)
         finally:
             context.close()

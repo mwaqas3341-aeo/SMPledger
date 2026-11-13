@@ -130,7 +130,7 @@ def push(bundle: Path, url: str, key: str, shard: str = "", overlap_days: int = 
     print(f"Pushed run {run}: {len(ok)} school(s), {sent_r} receipt row(s), {sent_c} stock-day row(s).")
     if skipped:
         print(f"Not pushed (incomplete or failed): {', '.join(skipped)}", file=sys.stderr)
-    return 1 if skipped else 0
+    return 0 if ok or not skipped else 1   # a partial run is fine; red only if nothing at all could be pushed
 
 
 def main(argv: list[str] | None = None) -> int:

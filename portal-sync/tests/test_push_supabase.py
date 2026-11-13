@@ -42,7 +42,7 @@ class PushTests(unittest.TestCase):
             return {"run_id": 7, "receipts": len(payload.get("p_receipts", [])), "consumption": len(payload.get("p_consumption", []))}
         with tempfile.TemporaryDirectory() as d, mock.patch.object(ps, "rpc", fake):
             code = ps.push(make_bundle(Path(d)), "https://x", "k")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertEqual(calls[-1]["p_run"]["status"], "partial")
         self.assertEqual(len(calls), 3)
         self.assertEqual(calls[1]["p_run"]["ok_emis"], ["32230155"])
