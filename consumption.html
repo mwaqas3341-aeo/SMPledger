@@ -318,13 +318,13 @@ const HEAD_ISSUE_TEXT = {
   aeo_missing: "On SMP, not recorded here",
   head_missing: "Recorded here, not reported on SMP",
 };
-let headIssueRows = [];
-// ids = one or more issue ids (the per-entry button), or null for every entry the head teacher reported a figure for.
+let headIssueRows = [], headIssueAll = [];
+// ids = the issue ids to apply (one for the per-entry button, or every shown entry the head teacher reported a figure for).
 // Works in locked periods too: this is the correction route. A "head teacher reported nothing" entry is never touched.
-async function applyHead(ids, count, noReport){
-  const n = ids ? ids.length : count;
+async function applyHead(ids, noReport){
+  const n = ids.length;
   const msg = `Record the head teacher's reported quantity for ${n} entr${n === 1 ? "y" : "ies"}? Entries in a locked period are corrected too.`
-    + (ids ? "" : `\n\n${noReport} entr${noReport === 1 ? "y" : "ies"} where the head teacher reported nothing will stay as they are.`);
+    + (noReport ? `\n\n${noReport} shown entr${noReport === 1 ? "y" : "ies"} where the head teacher reported nothing will stay as they are.` : "");
   if(!confirm(msg)) return;
   document.querySelectorAll("[data-head-apply], #headApplyBtn").forEach(b => b.disabled = true);
   try{
@@ -350,8 +350,8 @@ async function loadHeadIssues(){
     }
     const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
     const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
-    headIssueRows = out.filter(r => schoolById[r.school_id]).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
-    if(!headIssueRows.length){ card.style.display = "none"; return; }   // nothing to fix (or portal data not synced yet)
+    headIssueAll = out.filter(r => schoolById[r.school_id]).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
+    if(!headIssueAll.length){ card.style.display = "none"; return; }   // nothing to fix (or portal data not synced yet)
     card.style.display = "";
     try{
       const { data: ls } = await sb.rpc("fn_portal_last_sync");
@@ -361,20 +361,34 @@ async function loadHeadIssues(){
         el.textContent = "Head teacher data last refreshed: " + new Date(ls).toLocaleString("en-GB", { timeZone: "Asia/Karachi" }) + " (Pakistan time)." + (hrs > 36 ? " This is more than a day and a half old - the daily refresh may be failing." : "");
       }
     }catch(_){}
-    document.getElementById("headIssuesCount").textContent = headIssueRows.length + " open";
-    document.querySelector("#headIssuesTable tbody").innerHTML = headIssueRows.map(r => `<tr>
+    renderHeadIssues();
+  }catch(e){ card.style.display = "none"; }
+}
+
+// Same filters as the consumption history: the area/school filter at the top and the history From/To dates.
+function renderHeadIssues(){
+  const card = document.getElementById("headIssuesCard");
+  if(!card || !headIssueAll.length) return;
+  const idSet = Array.isArray(currentVisibleIds) ? new Set(currentVisibleIds) : null;
+  headIssueRows = headIssueAll.filter(r => (!idSet || idSet.has(r.school_id)) && (!histFrom || r.cons_date >= histFrom) && (!histTo || r.cons_date <= histTo));
+  try{
+    document.getElementById("headIssuesCount").textContent = headIssueRows.length + " open" + (headIssueRows.length < headIssueAll.length ? ` (of ${headIssueAll.length} before the filter)` : "");
+    document.querySelector("#headIssuesTable tbody").innerHTML = !headIssueRows.length
+      ? `<tr><td colspan="9" style="color:var(--ink-soft)">No head teacher differences for this filter and date range.</td></tr>`
+      : headIssueRows.map(r => `<tr>
       <td>${esc(r.cons_date)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.school.school_name)}</td><td>${esc(r.product?.product_name)}</td>
       <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td><td>${esc(r.remark || "")}</td>
       <td>${["aeo", "tr", "admin", "super_admin"].includes(currentProfile.role) && r.issue !== "head_missing" && Number(r.head_qty) > 0 ? `<button class="btn-primary" type="button" data-head-apply="${r.id}" style="white-space:nowrap;">Update</button>` : ""}</td></tr>`).join("");
     document.querySelectorAll("[data-head-apply]").forEach(b => { b.onclick = () => applyHead([Number(b.dataset.headApply)]); });
-    const applicable = headIssueRows.filter(r => r.issue !== "head_missing" && Number(r.head_qty) > 0).length;
+    const applicableIds = headIssueRows.filter(r => r.issue !== "head_missing" && Number(r.head_qty) > 0).map(r => r.id);
+    const applicable = applicableIds.length;
     const noReport = headIssueRows.length - applicable;
     const btn = document.getElementById("headApplyBtn");
     const canApply = ["aeo", "tr", "admin", "super_admin"].includes(currentProfile.role);   // not school users
     btn.style.display = canApply ? "" : "none";
     btn.disabled = !applicable;
     btn.textContent = applicable ? `Update from head teacher (${applicable})` : "Update from head teacher";
-    btn.onclick = () => applyHead(null, applicable, noReport);
+    btn.onclick = () => applyHead(applicableIds, noReport);
     document.getElementById("headIssuesDl").onclick = () => {
       const dmy = d => { const q = String(d).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : d; };
       const mkById = Object.fromEntries(cache.markaz.map(m => [m.id, m]));
@@ -814,6 +828,7 @@ const HISTORY_ROW_LIMIT = 500;
 async function loadHistory(visibleSchoolIds){
   const tbody = document.querySelector("#consumptionTable tbody");
   if(!tbody) return;
+  renderHeadIssues();
   if(!visibleSchoolIds.length){ tbody.innerHTML = `<tr><td colspan="8" style="color:var(--ink-soft)">No schools match this filter.</td></tr>`; return; }
   tbody.innerHTML = `<tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr>`;
   const idSet = new Set(visibleSchoolIds);
