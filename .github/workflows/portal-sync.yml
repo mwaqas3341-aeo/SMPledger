@@ -71,7 +71,7 @@ jobs:
   extract:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       max-parallel: 1     # one portal login at a time
@@ -114,7 +114,7 @@ jobs:
         run: |
           # Slow and uneven on purpose: 4 s + up to 8 s random between schools, random school order,
           # no new school after 35 minutes. Sign-in is retried; whatever was captured is always pushed.
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4; do
             set +e
             python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
               --shard "${{ matrix.shard }}" --output-dir "${STAGING_DIR}" --delay 4 --jitter 8 --shuffle --max-minutes 35
@@ -122,7 +122,7 @@ jobs:
             set -e
             if [ "${STATUS}" -eq 0 ] || [ "${STATUS}" -eq 1 ]; then break; fi
             echo "::warning::Attempt ${attempt} stopped with exit code ${STATUS}."
-            [ "${attempt}" -lt 3 ] && sleep $((60 + RANDOM % 60))
+            [ "${attempt}" -lt 4 ] && sleep $((180 + RANDOM % 120))   # the portal sometimes refuses a quick re-login: wait 3-5 minutes
           done
           echo "EXTRACT_STATUS=${STATUS}" >> "$GITHUB_ENV"
           if [ "${STATUS}" -ne 0 ] && [ "${STATUS}" -ne 1 ]; then
@@ -133,4 +133,4 @@ jobs:
         run: python scripts/push_supabase.py --bundle "${STAGING_DIR}" --shard "${{ matrix.shard }}"
       - name: Note incomplete schools
         if: ${{ env.EXTRACT_STATUS != '0' }}
-        run: echo "::warning::Some schools were not fully captured; the rest were pushed and the missed ones are picked up tomorrow."
+        run: echo "::warning::Some schools were not fully captured; the rest were pushed and the missed ones are picked up by the next run."
