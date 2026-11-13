@@ -94,7 +94,7 @@ def rpc(url: str, key: str, payload: dict, fn: str = "fn_portal_import"):
 
 
 def apply_watermarks(receipts: list[dict], cons: list[dict], marks: list[dict], overlap_days: int) -> tuple[list[dict], list[dict]]:
-    """Drop rows the database already has. Keeps the last ``overlap_days`` days so late edits on the portal are picked up."""
+    """Drop stock-day rows the database already has, keeping the last ``overlap_days`` days so late edits are picked up."""
     cut = dt.timedelta(days=overlap_days)
     lc = {(m["emis"], m["product"]): dt.date.fromisoformat(m["cons"]) for m in marks if m.get("cons")}
     lr = {(m["emis"], m["product"]): dt.date.fromisoformat(m["receipt"]) for m in marks if m.get("receipt")}
@@ -103,10 +103,12 @@ def apply_watermarks(receipts: list[dict], cons: list[dict], marks: list[dict], 
         mark = table.get((row["emis"], row["product"]))
         return mark is None or dt.date.fromisoformat(row["date"]) > mark - cut
 
-    return [r for r in receipts if fresh(r, lr)], [c for c in cons if fresh(c, lc)]
+    # Receipts are always sent in full: a head teacher can add a receipt later with an OLDER date (e.g. entered on 12 Nov for 13 Oct),
+    # and a date-based position would never see it. They are few (about 1,500 rows) and the database ignores unchanged rows.
+    return list(receipts), [c for c in cons if fresh(c, lc)]
 
 
-def push(bundle: Path, url: str, key: str, shard: str = "", overlap_days: int = 3, full: bool = False) -> int:
+def push(bundle: Path, url: str, key: str, shard: str = "", overlap_days: int = 45, full: bool = False) -> int:
     receipts, cons, ok, skipped = collect(bundle)
     total_r, total_c = len(receipts), len(cons)
     if not full:
@@ -137,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bundle", type=Path, required=True, help="Bundle folder containing run_manifest.json")
     ap.add_argument("--shard", default="", help="Label stored with the run, e.g. 1/3")
-    ap.add_argument("--overlap-days", type=int, default=3, help="Re-send this many days before the last stored date (default 3).")
+    ap.add_argument("--overlap-days", type=int, default=45, help="Re-send stock-day rows this many days before the last stored date (default 45).")
     ap.add_argument("--full", action="store_true", help="Ignore the stored position and send everything.")
     ap.add_argument("--dry-run", action="store_true", help="Parse and count only; do not contact Supabase.")
     args = ap.parse_args(argv)

@@ -739,8 +739,8 @@ function geoMatch(school, g){
 }
 // Same rows as the table, but for the product chosen in the download box (not only the one the table shows).
 // Remark asking the head teacher to add what is missing on the SMP app.
-const headAsk = r => (r.head_qty == null && (r.company_qty > 0 || r.aeo_qty > 0)) ? "Head teacher needs to add this inventory (receipt) on the SMP app." : "";
-const headDiffers = r => r.head_qty != null && (r.company_qty > 0 && Number(r.head_qty) !== Number(r.company_qty) || r.aeo_qty > 0 && Number(r.head_qty) !== Number(r.aeo_qty) || (r.company_qty == 0 && r.aeo_qty == 0));
+const headAsk = r => (!r.settled_on_totals && r.head_qty == null && (r.company_qty > 0 || r.aeo_qty > 0)) ? "Head teacher needs to add this inventory (receipt) on the SMP app." : "";
+const headDiffers = r => !r.settled_on_totals && r.head_qty != null && (r.company_qty > 0 && Number(r.head_qty) !== Number(r.company_qty) || r.aeo_qty > 0 && Number(r.head_qty) !== Number(r.aeo_qty) || (r.company_qty == 0 && r.aeo_qty == 0));
 async function fetchComparisonRows(fd, productId){
   const from = fd.get("from"), to = fd.get("to"), filter = fd.get("filter"), g = readGeo();
   const out = [];
@@ -1012,6 +1012,7 @@ async function loadComparison(fd){
     <div class="stat"><div class="n">${rows.filter(r => r.head_qty != null).length}</div><div class="l">Head teacher reported</div></div>
     <div class="stat"><div class="n">${rows.filter(headDiffers).length}</div><div class="l">Head teacher differs</div></div>
     <div class="stat"><div class="n">${rows.filter(r => r.aeo_flag).length}</div><div class="l">⚠ Flagged for rectification (invoice entered twice)</div></div>
+    ${rows.some(r => r.settled_on_totals) ? `<div class="stat" style="flex:1 1 100%;text-align:left;"><div class="l"><b>Note:</b> Biscuit inventory issues up to 16 October are not displayed because each school's overall totals (company, AEO and head teacher) were matched. ${rows.filter(r => r.settled_on_totals).length} entr${rows.filter(r => r.settled_on_totals).length === 1 ? "y is" : "ies are"} treated as matched on the school total.</div></div>` : ""}
   `;
 
   if(!rows.length){ tbody.innerHTML = `<tr><td colspan="14" style="color:var(--ink-soft)">No data for this period.</td></tr>`; return; }
@@ -1028,6 +1029,7 @@ async function loadComparison(fd){
   const threeWayPill = (st) => {
     if(!st) return "—";
     if(st === "All three match") return '<span class="pill pill-ok">All three match</span>';
+    if(st === "Matched on school total") return '<span class="pill pill-ok" title="Overall totals of company, AEO and head teacher are equal">Matched on school total</span>';
     if(st === "Head teacher has not reported" || st === "No head teacher report") return '<span class="pill pill-warn">Head teacher: not reported</span>';
     return '<span class="pill pill-bad">' + esc(st) + '</span>';
   };

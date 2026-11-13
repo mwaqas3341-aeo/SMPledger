@@ -1,0 +1,7 @@
+-- Applied live via MCP ("inventory_total_match_rules", "portal_import_skip_unchanged").
+-- inventory_total_match_rules(product_name, through_date, active, note): for a school+product, rows dated up to through_date are judged on the
+-- overall totals. If company, AEO and head-teacher totals are equal, the rows are shown as 'Matched on school total' (status Matched,
+-- no remarks/flags, settled_on_totals = true). Seeded: Biscuit through 2026-10-16.
+-- v_three_way_comparison now wraps v_three_way_base (the previous definition, see 20261126) and adds that override.
+-- fn_portal_import now skips unchanged rows (is distinct from) so re-sending every receipt costs nothing.
+-- Exact SQL: pg_get_viewdef('public.v_three_way_comparison'::regclass, true).

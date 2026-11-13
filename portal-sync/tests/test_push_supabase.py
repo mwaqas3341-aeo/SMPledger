@@ -55,7 +55,8 @@ class PushTests(unittest.TestCase):
         rows_c = [{"emis": "1", "product": "milk", "date": "2026-09-19"}, {"emis": "1", "product": "milk", "date": "2026-09-21"}]
         marks = [{"emis": "1", "product": "milk", "cons": "2026-09-22", "receipt": "2026-09-22"}]
         r, c = ps.apply_watermarks(rows_r, rows_c, marks, 3)
-        self.assertEqual([x["date"] for x in r], ["2026-09-20", "2026-01-01"])
+        self.assertEqual(len(r), 3)   # receipts are never dropped: late entries can carry old dates
+
         self.assertEqual([x["date"] for x in c], ["2026-09-21"])
 
     def test_dry_run_needs_no_credentials(self):
