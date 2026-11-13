@@ -307,6 +307,23 @@ function renderJurisdictionFilter(container, onApply){
 }
 
 /* ===================== SECTION: MY RECEIPTS ===================== */
+
+// Minimize / maximize big button for a card: wraps the card's <h3> and adds the toggle.
+function makeCollapsible(card, startCollapsed){
+  if(!card || card.dataset.cxReady) return;
+  card.dataset.cxReady = "1";
+  const h = card.querySelector("h3");
+  const head = document.createElement("div"); head.className = "cx-head";
+  h.parentNode.insertBefore(head, h); head.appendChild(h);
+  const btn = document.createElement("button"); btn.type = "button"; btn.className = "cx-btn";
+  head.appendChild(btn);
+  const set = (c) => { card.classList.toggle("collapsed", c); btn.textContent = c ? "▼  Maximize  (show)" : "▲  Minimize  (hide)"; btn.setAttribute("aria-expanded", String(!c)); };
+  btn.onclick = () => set(!card.classList.contains("collapsed"));
+  card._cxSet = set;
+  set(!!startCollapsed);
+}
+
+
 async function renderMyReceipts(content){
   content.innerHTML = `<div id="filterMount"></div><div id="receiptsMount"></div>`;
   renderJurisdictionFilter(document.getElementById("filterMount"), (schoolIds) => renderMyReceiptsBody(schoolIds));
@@ -321,17 +338,33 @@ async function renderMyReceiptsBody(visibleSchoolIds){
   const mount = document.getElementById("receiptsMount");
   // Inventory is added through a form (one delivery at a time) instead of a grid of every school.
   mount.innerHTML = `
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div>
-          <h3 style="margin:0;">Inventory received</h3>
-          <p class="sub" style="margin:4px 0 0;">Add a delivery as per the challan. Every inventory you add is listed below, where you can edit or delete it.</p>
-        </div>
-        <button class="btn-primary" id="addInventoryBtn" type="button">+ Add inventory</button>
-      </div>
+    <style>
+.cx-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.cx-head h3{margin:0;}
+.cx-btn{border:0;cursor:pointer;font-weight:800;font-size:15px;letter-spacing:.3px;color:#fff;padding:12px 26px;border-radius:999px;
+  background:linear-gradient(135deg,#2563eb 0%,#7c3aed 55%,#db2777 100%);box-shadow:0 4px 14px rgba(37,99,235,.45),inset 0 1px 0 rgba(255,255,255,.45);
+  text-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .12s,box-shadow .12s,filter .12s;}
+.cx-btn:hover{transform:translateY(-1px);filter:brightness(1.1);box-shadow:0 7px 20px rgba(124,58,237,.5),inset 0 1px 0 rgba(255,255,255,.5);}
+.cx-btn:active{transform:translateY(1px);}
+.cx.collapsed > :not(.cx-head){display:none !important;}
+</style>
+    <div class="card cx" id="addInvCard">
+      <h3>Inventory received</h3>
+      <p class="sub" style="margin:4px 0 8px;">Add a delivery as per the challan. Every inventory you add is listed below, where you can edit or delete it.</p>
+      <button class="btn-primary" id="addInventoryBtn" type="button">+ Add inventory</button>
     </div>
 
-    <div class="card">
+    <div class="card cx" id="headInvCard" style="display:none;">
+      <h3>Inventory entered by AEO but not reported by head teacher on SMP</h3>
+      <p class="sub">Deliveries recorded here that the head teacher has not yet entered as received on the SMP app. Head teachers should be asked to add them. An entry leaves this list by itself once it appears on SMP.</p>
+      <div class="actions-row" style="margin-bottom:8px;"><button class="btn-export" type="button" id="headInvDl">Download Excel</button> <span class="sub" id="headInvCount"></span></div>
+      <p class="sub" id="headInvSync"></p>
+      <div class="table-wrap" style="max-height:340px;overflow:auto;"><table id="headInvTable"><thead><tr>
+        <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty (AEO)</th><th>Invoice #</th><th>Remarks</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div class="card cx" id="rcHistCard">
       <h3>Receipts already entered</h3>
       <p class="sub">Sorted by date (most recent first), then by EMIS code. Pick a period (From / To), a date and/or product and click Apply filter to see only those entries for checking or editing.</p>
       <div class="form-row" style="align-items:end; margin:8px 0 12px;">
@@ -356,11 +389,71 @@ async function renderMyReceiptsBody(visibleSchoolIds){
     receiptFilter.from = document.getElementById("rcFrom").value;
     receiptFilter.to = document.getElementById("rcTo").value;
     if(receiptFilter.from && receiptFilter.to && receiptFilter.from > receiptFilter.to){ toast("'From' date is after 'To' date.", "bad"); return; }
+    document.getElementById("rcHistCard")._cxSet?.(false);
     renderReceiptRows(visibleSchoolIds);               // uses the entries already loaded - no reload
+    renderHeadInv();
   });
   document.getElementById("rcDlShown").addEventListener("click", () => downloadReceiptHistory(false));
   document.getElementById("rcDlAll").addEventListener("click", () => downloadReceiptHistory(true));
+  // Add inventory: open for people with one or two markaz, minimized for three or more. The lists start minimized.
+  makeCollapsible(document.getElementById("addInvCard"), (cache.markaz || []).length >= 3);
+  makeCollapsible(document.getElementById("rcHistCard"), true);
+  makeCollapsible(document.getElementById("headInvCard"), true);
   await loadReceiptsTable(visibleSchoolIds);
+  loadHeadInv(visibleSchoolIds);
+}
+
+// ---- AEO-entered inventory that the head teacher has not reported on SMP ----
+let headInvAll = [], headInvRows = [];
+async function loadHeadInv(schoolIds){
+  const card = document.getElementById("headInvCard");
+  if(!card) return;
+  try{
+    const out = [];
+    for(let start = 0; ; start += 1000){
+      const { data, error } = await sb.from("v_three_way_comparison")
+        .select("school_id, product_id, delivery_date, invoice_date, aeo_qty, aeo_invoice_number, invoice_number, head_qty")
+        .is("head_qty", null).gt("aeo_qty", 0).order("delivery_date", { ascending: false }).range(start, start + 999);
+      if(error) throw error;
+      out.push(...(data || []));
+      if(!data || data.length < 1000) break;
+    }
+    const sById = Object.fromEntries(cache.schools.map(x => [x.id, x])), pById = Object.fromEntries(cache.products.map(x => [x.id, x]));
+    headInvAll = out.filter(r => sById[r.school_id]).map(r => ({ ...r, school: sById[r.school_id], product: pById[r.product_id] }));
+    card.style.display = "";
+    try{
+      const { data: ls } = await sb.rpc("fn_portal_last_sync");
+      if(ls) document.getElementById("headInvSync").textContent = "Head teacher data last refreshed: " + new Date(ls).toLocaleString("en-GB", { timeZone: "Asia/Karachi" }) + " (Pakistan time).";
+    }catch(_){}
+    renderHeadInv();
+  }catch(e){ card.style.display = "none"; }
+}
+function renderHeadInv(){
+  const card = document.getElementById("headInvCard");
+  if(!card || !card._cxSet) return;
+  const ids = new Set(lastVisibleSchoolIds);
+  const dOf = r => r.delivery_date || r.invoice_date || "";
+  headInvRows = headInvAll.filter(r => ids.has(r.school_id) && (!receiptFilter.product || r.product_id === receiptFilter.product)
+    && (!receiptFilter.from || dOf(r) >= receiptFilter.from) && (!receiptFilter.to || dOf(r) <= receiptFilter.to)
+    && (!receiptFilter.date || dOf(r) === receiptFilter.date));
+  const ask = "Head teacher needs to add this inventory (receipt) on the SMP app.";
+  document.getElementById("headInvCount").textContent = headInvRows.length + " entr" + (headInvRows.length === 1 ? "y" : "ies") + " not on SMP";
+  document.querySelector("#headInvTable tbody").innerHTML = headInvRows.length ? headInvRows.map(r => `<tr>
+    <td>${fmtDate(dOf(r))}</td><td>${esc(cache.markaz.find(m => m.id === r.school.markaz_id)?.name || "—")}</td><td>${esc(r.school.emis_code)}</td>
+    <td>${esc(r.school.school_name)}</td><td>${esc(r.product?.product_name || "")}</td><td>${Number(r.aeo_qty)}</td>
+    <td>${esc(r.aeo_invoice_number || r.invoice_number || "")}</td><td>${esc(ask)}</td></tr>`).join("")
+    : `<tr><td colspan="8" style="color:var(--ink-soft)">Nothing outstanding for this selection - the head teachers have reported every inventory entered here.</td></tr>`;
+  document.getElementById("headInvDl").onclick = () => {
+    if(!headInvRows.length){ toast("Nothing to download for this selection.", "bad"); return; }
+    const dmy = d => { const q = String(d || "").slice(0, 10).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : ""; };
+    const header = ["Date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Quantity (AEO)","Invoice #","Remarks"];
+    const body = headInvRows.map(r => { const mk = cache.markaz.find(m => m.id === r.school.markaz_id);
+      return [dmy(dOf(r)), r.school.wing || "", mk?.tehsil || "", mk?.name || "", r.school.emis_code, r.school.school_name, r.product?.product_name || "", Number(r.aeo_qty), r.aeo_invoice_number || r.invoice_number || "", ask]; });
+    const wb = XLSX.utils.book_new(), ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    ws["!cols"] = [12,8,14,20,12,34,12,12,20,60].map(w => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, ws, "Not on SMP");
+    XLSX.writeFile(wb, `inventory-not-reported-by-head-teacher_${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
 }
 
 // After a receipt is saved or edited, matching company data certifies it automatically and the database sets the
