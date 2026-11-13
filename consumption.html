@@ -405,11 +405,37 @@ function renderHeadIssues(){
   }catch(e){ card.style.display = "none"; }
 }
 
+
+// Minimize / maximize big button for a card: wraps the card's <h3> and adds the toggle.
+function makeCollapsible(card, startCollapsed){
+  if(!card || card.dataset.cxReady) return;
+  card.dataset.cxReady = "1";
+  const h = card.querySelector("h3");
+  const head = document.createElement("div"); head.className = "cx-head";
+  h.parentNode.insertBefore(head, h); head.appendChild(h);
+  const btn = document.createElement("button"); btn.type = "button"; btn.className = "cx-btn";
+  head.appendChild(btn);
+  const set = (c) => { card.classList.toggle("collapsed", c); btn.textContent = c ? "▼  Maximize  (show)" : "▲  Minimize  (hide)"; btn.setAttribute("aria-expanded", String(!c)); };
+  btn.onclick = () => set(!card.classList.contains("collapsed"));
+  card._cxSet = set;
+  set(!!startCollapsed);
+}
+
 async function renderConsumption(){
   const content = document.getElementById("content");
   histTo = todayStr();
   histFrom = selectedDate < daysAgoStr(29) ? selectedDate : daysAgoStr(29);
   content.innerHTML = `
+    <style>
+.cx-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.cx-head h3{margin:0;}
+.cx-btn{border:0;cursor:pointer;font-weight:800;font-size:15px;letter-spacing:.3px;color:#fff;padding:12px 26px;border-radius:999px;
+  background:linear-gradient(135deg,#2563eb 0%,#7c3aed 55%,#db2777 100%);box-shadow:0 4px 14px rgba(37,99,235,.45),inset 0 1px 0 rgba(255,255,255,.45);
+  text-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .12s,box-shadow .12s,filter .12s;}
+.cx-btn:hover{transform:translateY(-1px);filter:brightness(1.1);box-shadow:0 7px 20px rgba(124,58,237,.5),inset 0 1px 0 rgba(255,255,255,.5);}
+.cx-btn:active{transform:translateY(1px);}
+.cx.collapsed > :not(.cx-head){display:none !important;}
+</style>
     <div class="card">
       <h3>Date</h3>
       <p class="sub">Defaults to today. Pick a date and click Apply filter to see that day's entries.</p>
@@ -419,14 +445,14 @@ async function renderConsumption(){
       </div>
     </div>
     <div id="filterMount"></div>
-    <div class="card" id="summaryCard">
+    <div class="card cx" id="summaryCard">
       <h3>Schools — ${esc(selectedDate)}</h3>
       <p class="sub" id="consDaySub">Checking which product is scheduled…</p>
       <p class="sub" id="consLockNote" style="color:var(--bad-fg);"></p>
       <p class="sub">Enter the figure for a school, then click Submit to save the row. A row with data already saved for this date is locked - click Edit to change it. Use the filter above to look at one markaz.</p>
       <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
     </div>
-    <div class="card" id="headIssuesCard" style="display:none;">
+    <div class="card cx" id="headIssuesCard" style="display:none;">
       <h3>Head teacher (SMP) consumption needs rectification</h3>
       <p class="sub">Consumption reported by head teachers on the SMP portal that differs from, or is missing in, the figures recorded here. Matching entries are not listed. An entry leaves this list by itself once the two figures agree.</p>
       <div class="actions-row" style="margin-bottom:8px;">
@@ -438,7 +464,7 @@ async function renderConsumption(){
         <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th><th>Remarks</th><th></th>
       </tr></thead><tbody></tbody></table></div>
     </div>
-    <div class="card">
+    <div class="card cx" id="historyCard">
       <h3>Consumption history</h3>
       <p class="sub">Every consumption entry for the schools in your filter, newest first. Edit or delete any entry.</p>
       <div class="form-row">
@@ -492,9 +518,15 @@ async function renderConsumption(){
     if(!f || !t){ toast("Choose both dates for the history.", "bad"); return; }
     if(f > t){ toast("The From date must not be after the To date.", "bad"); return; }
     histFrom = f; histTo = t;
+    document.getElementById("historyCard")._cxSet?.(false);
     loadHistory(currentVisibleIds);
   });
 
+  // Adding consumption: open for people with one or two markaz, minimized when they have three or more.
+  // History and the head teacher list start minimized; the buttons open them (Show history also opens the history).
+  makeCollapsible(document.getElementById("summaryCard"), (cache.markaz || []).length >= 3);
+  makeCollapsible(document.getElementById("historyCard"), true);
+  makeCollapsible(document.getElementById("headIssuesCard"), true);
   loadHeadIssues();
   scheduledProductsFor(selectedDate).then(list => {
     const el = document.getElementById("consDaySub");

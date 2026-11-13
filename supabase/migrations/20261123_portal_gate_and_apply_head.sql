@@ -55,7 +55,7 @@ alter table public.consumption_issues
 create or replace function public.fn_consumption_issue_remark() returns trigger language plpgsql as $$
 begin
   new.remark := case new.issue
-    when 'head_missing' then 'Head teacher needs to update data on SMP app.'
+    when 'head_missing' then 'Head teacher needs to add this consumption on the SMP app.'
     when 'aeo_missing'  then 'Head teacher reported ' || trim_scale(new.head_qty)::text || ' on SMP; nothing is recorded here. Use "Update from head teacher" to record it.'
     else 'Head teacher reported ' || trim_scale(new.head_qty)::text || ' on SMP, recorded here ' || trim_scale(new.aeo_qty)::text || '. Use "Update from head teacher" to correct it.'
   end;
