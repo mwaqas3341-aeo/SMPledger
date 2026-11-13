@@ -354,7 +354,7 @@ async function renderMyReceiptsBody(visibleSchoolIds){
 .cx-stamp{margin-left:auto;font-size:13px;font-weight:600;color:var(--ink-soft,#64748b);}
 .cx.collapsed > :not(.cx-head){display:none !important;}
 </style>
-    <div class="card cx" id="addInvCard">
+    <div class="card" id="addInvCard">
       <h3>Inventory received</h3>
       <p class="sub" style="margin:4px 0 8px;">Add a delivery as per the challan. Every inventory you add is listed below, where you can edit or delete it.</p>
       <button class="btn-primary" id="addInventoryBtn" type="button">+ Add inventory</button>
@@ -403,7 +403,6 @@ async function renderMyReceiptsBody(visibleSchoolIds){
   document.getElementById("rcDlShown").addEventListener("click", () => downloadReceiptHistory(false));
   document.getElementById("rcDlAll").addEventListener("click", () => downloadReceiptHistory(true));
   // Add inventory: open for people with one or two markaz, minimized for three or more. The lists start minimized.
-  makeCollapsible(document.getElementById("addInvCard"), (cache.markaz || []).length >= 3);
   makeCollapsible(document.getElementById("rcHistCard"), true);
   makeCollapsible(document.getElementById("headInvCard"), true);
   await loadReceiptsTable(visibleSchoolIds);
