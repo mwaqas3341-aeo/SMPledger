@@ -432,7 +432,12 @@ async function loadHeadInv(schoolIds){
       if(ls){ document.getElementById("headInvSync").textContent = "Head teacher data is refreshed from the SMP app every 6 to 8 hours. If the head teacher has just updated SMP, please wait for the next refresh."; setHeadStamp(card, ls); }
     }catch(_){}
     renderHeadInv();
-  }catch(e){ card.style.display = "none"; }
+  }catch(e){
+    // Keep the card visible and say what went wrong instead of silently hiding the list.
+    card.style.display = "";
+    const el = document.getElementById("headInvSync");
+    if(el) el.textContent = "Could not load this list right now (" + ((e && e.message) || "unknown error") + "). Please reload the page; if it persists, tell the Admin.";
+  }
 }
 function renderHeadInv(){
   const card = document.getElementById("headInvCard");
