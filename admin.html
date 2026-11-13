@@ -481,7 +481,7 @@ async function renderLocksSection(){
   if(stRes.error){ content.innerHTML = `<div class="card"><h3>Inventory &amp; Consumption Period Lock</h3><div class="err">${esc(stRes.error.message)}</div></div>`; return; }
   const byKey = {};
   (stRes.data || []).forEach(r => { byKey[r.product_id + "|" + r.entry_type] = r; });
-  const fmtTime = t => t ? new Date(t).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  const fmtTime = t => t ? new Date(t).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour12: true, hour: "2-digit", minute: "2-digit" }) : "—";
   const activeLocks = (stRes.data || []).filter(r => r.status === "locked");
 
   const statusCell = (pid, t) => {
@@ -674,7 +674,7 @@ async function renderHealthSection(){
     toast("Meal program started"); renderHealthSection();
   };
 }
-function fmtDateTime(ts){ return new Date(ts).toLocaleString(undefined, { year:"numeric", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" }); }
+function fmtDateTime(ts){ return new Date(ts).toLocaleString(undefined, { year:"numeric", month:"short", day:"numeric", hour12: true, hour: "2-digit", minute:"2-digit" }); }
 
 /* ===================== WHATSAPP AUTOMATIONS (hub: two cards) ===================== */
 let waView = "hub";
@@ -698,7 +698,7 @@ async function waLoadWorkerStatus(){
   const { data: s, error } = await sb.rpc("fn_wa_worker_status");
   if(error){ el.innerHTML = `<span class="wa-dot off"></span> Worker status unavailable (${esc(error.message)}). The heartbeat database change may not be applied yet.`; return; }
   const ago = x => x == null ? "-" : x < 90 ? x + " s ago" : x < 5400 ? Math.round(x / 60) + " min ago" : Math.round(x / 3600) + " h ago";
-  const fmt = d => d ? new Date(d).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }) : "-";
+  const fmt = d => d ? new Date(d).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour12: true, hour: "2-digit", minute:"2-digit" }) : "-";
   let cls, head;
   if(!s.seen){ cls = "off"; head = "No heartbeat received yet - replace index.js on the server with the latest version and restart it."; }
   else if(!s.running){ cls = "off"; head = `OFFLINE - the worker has not reported since ${fmt(s.last_seen)} (${ago(s.seconds_ago)}). Start / restart the server on Wispbyte.`; }
@@ -1049,7 +1049,7 @@ async function wcLoadStudy(box){
   const lab = c => WC_CAT[c] || c || "-";
   const { data: fmt, error: fmtE } = await sb.rpc("fn_wa_collect_format_study", { p_days: sel.value ? Number(sel.value) : 3650 });
   const fmtErr = fmtE ? fmtE.message : "";
-  const t = v => v ? new Date(v).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" }) : "-";
+  const t = v => v ? new Date(v).toLocaleString("en-GB", { timeZone:"Asia/Karachi", day:"2-digit", month:"short", hour12: true, hour: "2-digit", minute:"2-digit" }) : "-";
   body.innerHTML = `
     <p class="sub"><b>Days logged: ${dl}</b> ${dl >= 8 ? "- enough data to start finding solutions." : `- keep collecting (${8 - dl} more day${8 - dl === 1 ? "" : "s"} for a fair picture).`}${d.first_logged ? " Log began " + esc(t(d.first_logged)) + "." : ""}</p>
     <div class="grid-4" style="margin:8px 0;">
@@ -1239,7 +1239,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     <div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Group</th><th>Status</th><th>Sent</th></tr></thead><tbody>
       ${msgs.map(m => `<tr><td>${esc(m.collect_date)}</td><td>${esc(m.products?.product_name || "-")}</td><td>${esc(grpName(m.group_jid))}</td>
         <td><span class="pill ${pill[m.status] || ""}">${esc(m.status)}</span>${m.last_error ? `<br><small>${esc(m.last_error)}</small>` : ""}</td>
-        <td>${m.sent_at ? esc(new Date(m.sent_at).toLocaleString("en-GB", { timeZone:"Asia/Karachi" })) : "-"}</td></tr>`).join("") || `<tr><td colspan="5" style="color:var(--ink-soft)">No messages yet.</td></tr>`}
+        <td>${m.sent_at ? esc(new Date(m.sent_at).toLocaleString("en-GB", { timeZone:"Asia/Karachi", hour12: true })) : "-"}</td></tr>`).join("") || `<tr><td colspan="5" style="color:var(--ink-soft)">No messages yet.</td></tr>`}
     </tbody></table></div>
   </div></details>`;
 

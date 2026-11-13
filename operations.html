@@ -367,7 +367,7 @@ async function checkMissingConsumption(fd){
     (a.tehsil||"").localeCompare(b.tehsil||"") || (a.markaz||"").localeCompare(b.markaz||""));
 
   document.getElementById("missTitle").textContent =
-    `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)} (checked ${generatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`;
+    `${flaggedSchoolIds.size} of ${schools.length} schools missing at least one entry, ${fmtDMY(from)} to ${fmtDMY(to)} (checked ${generatedAt.toLocaleTimeString([], { hour12: true, hour: "2-digit", minute: "2-digit" })})`;
   statusBox.innerHTML = pivotDates.length
     ? ""
     : `<p style="color:var(--ok-fg); font-size:12.5px; margin-top:10px;">No scheduled product is missing an entry in this period for this scope.</p>`;
@@ -437,7 +437,7 @@ function exportMissingCsv(missing){
   const { rows, pivotDates, from, to, markazSummary } = missing;
   const header = ["Sr#","Tehsil","Markaz","EMIS","School","Wing", ...(pivotDates || []).map(fmtDMY)];
   const gen = missing.generatedAt || new Date();
-  const csvRows = [[`Missing consumption report ${fmtDMY(from)} to ${fmtDMY(to)} - generated ${gen.toLocaleString()}`], [], header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, ...r.byDate])];
+  const csvRows = [[`Missing consumption report ${fmtDMY(from)} to ${fmtDMY(to)} - generated ${gen.toLocaleString(undefined, { hour12: true })}`], [], header, ...rows.map(r => [r.sr, r.tehsil, r.markaz, r.emis, r.school, r.wing, ...r.byDate])];
 
   // Markaz-wise summary as a second table in the same CSV, separated by a
   // blank row - opens fine in Excel/Sheets as one file with two blocks.

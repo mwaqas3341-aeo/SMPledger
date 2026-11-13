@@ -311,7 +311,7 @@ function renderJurisdictionFilter(container, onApply){
 // Minimize / maximize big button for a card: wraps the card's <h3> and adds the toggle.
 function setHeadStamp(card, ts){
   const el = card && card.querySelector(".cx-stamp");
-  if(el && ts) el.textContent = "🕒 Fetched from SMP: " + new Date(ts).toLocaleString("en-GB", { timeZone: "Asia/Karachi", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) + " PKT";
+  if(el && ts) el.textContent = "🕒 Fetched from SMP: " + new Date(ts).toLocaleString("en-GB", { timeZone: "Asia/Karachi", day: "2-digit", month: "short", year: "numeric", hour12: true, hour: "2-digit", minute: "2-digit" }) + " PKT";
 }
 function makeCollapsible(card, startCollapsed){
   if(!card || card.dataset.cxReady) return;
@@ -959,7 +959,7 @@ function downloadReceiptHistory(full){
   if(!rows.length){ toast("No receipts to download for this selection.", "bad"); return; }
   try{
     const dmy = d => { if(!d) return ""; const q = String(d).slice(0, 10).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : String(d); };
-    const stamp = d => d ? new Date(d).toLocaleString("en-GB", { timeZone: "Asia/Karachi", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    const stamp = d => d ? new Date(d).toLocaleString("en-GB", { timeZone: "Asia/Karachi", day: "2-digit", month: "short", year: "numeric", hour12: true, hour: "2-digit", minute: "2-digit" }) : "";
     const header = ["Receipt date","Date originally entered as","Wing","Tehsil","Markaz","EMIS Code","School","Product","Quantity","Unit","Invoice #","Flag","Flag note","Collected by","Remarks","Entered on","Last saved"];
     const body = rows.map(r => {
       const sc = r.schools, mk = cache.markaz.find(m => m.id === sc?.markaz_id), full_sc = cache.schools.find(x => x.id === r.school_id);

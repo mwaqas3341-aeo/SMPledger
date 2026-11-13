@@ -516,7 +516,7 @@ function renderUploadResult({ status, fileName, total, valid, skipped, invoices,
   mount.innerHTML = `
     <div class="card">
       <h3>Company upload result <span class="pill ${pill}">${esc(label)}</span></h3>
-      <p class="sub">Source: Company${fileName ? ` · File: ${esc(fileName)}` : ""} · Started ${esc(startedAt.toLocaleString())}${finishedAt ? ` · Finished ${esc(finishedAt.toLocaleString())}` : ""}${status === "uploading" ? "" : " · Saved counts below are re-read from Supabase."}</p>
+      <p class="sub">Source: Company${fileName ? ` · File: ${esc(fileName)}` : ""} · Started ${esc(startedAt.toLocaleString(undefined, { hour12: true }))}${finishedAt ? ` · Finished ${esc(finishedAt.toLocaleString(undefined, { hour12: true }))}` : ""}${status === "uploading" ? "" : " · Saved counts below are re-read from Supabase."}</p>
       <div class="grid-4">
         <div class="stat"><div class="n">${total}</div><div class="l">Records in file</div></div>
         <div class="stat"><div class="n">${valid}</div><div class="l">Sent to database</div></div>
