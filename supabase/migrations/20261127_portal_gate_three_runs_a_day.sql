@@ -1,0 +1,4 @@
+-- Applied live via MCP as "portal_gate_three_runs_a_day".
+-- portal_sync_plan gets a slot column (pk run_date, slot). fn_portal_gate(): slot 1 = random time 04:00-07:00 PKT,
+-- slot 2 = +8 h, slot 3 = +16 h. A slot starts once its planned time has passed (up to 3 h grace), retried up to 3 times
+-- (40+ min apart) only while nothing was stored. See pg_get_functiondef('public.fn_portal_gate()'::regprocedure).

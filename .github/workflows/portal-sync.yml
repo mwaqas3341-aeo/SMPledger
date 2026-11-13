@@ -1,8 +1,9 @@
 name: Portal sync to Supabase
 
-# Daily, at a random time between 04:00 and 05:15 Pakistan time (finishes before 07:00).
-# A cheap "gate" job runs every 15 minutes from 04:00 to 06:59 PKT and asks Supabase (fn_portal_gate) whether
-# today's random start time has passed and no run has started yet. Shards run one after another, slowly,
+# Three syncs a day: the first at a random time between 04:00 and 07:00 Pakistan time, the next two exactly
+# 8 and 16 hours after it (so roughly 12:00-15:00 and 20:00-23:00), to keep the data live.
+# A cheap "gate" job runs every 15 minutes around those windows and asks Supabase (fn_portal_gate) whether
+# a planned start time has passed and that slot has not started yet. Shards run one after another, slowly,
 # with random pauses between schools. Run manually from the Actions tab at any time (it skips the gate).
 on:
   workflow_dispatch:
@@ -18,8 +19,9 @@ on:
         default: ""
         type: string
   schedule:
-    - cron: "*/15 23 * * *"     # 04:00-04:59 PKT
-    - cron: "*/15 0,1 * * *"    # 05:00-06:59 PKT
+    - cron: "*/15 23,0-3 * * *"   # 04:00-08:59 PKT  (run 1 window + retries)
+    - cron: "*/15 7-11 * * *"     # 12:00-16:59 PKT  (run 2: run 1 + 8 h)
+    - cron: "*/15 15-19 * * *"    # 20:00-00:59 PKT  (run 3: run 1 + 16 h)
 
 permissions:
   contents: read

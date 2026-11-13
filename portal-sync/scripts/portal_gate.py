@@ -1,4 +1,4 @@
-"""Ask Supabase whether today's sync should start now (one run a day, at a random time 04:00-05:15 Pakistan time).
+"""Ask Supabase whether today's sync should start now (three runs a day: the first at a random time 04:00-07:00 Pakistan time, then +8 h and +16 h).
 
 Prints "run=true" or "run=false" (for GITHUB_OUTPUT). Any error means "run=false": the schedule asks again 15 minutes later.
 """
@@ -31,7 +31,7 @@ def main() -> int:
         print(f"::warning::Gate check failed ({type(exc).__name__}); will ask again at the next tick.", file=sys.stderr)
         print("run=false")
         return 0
-    print(f"Planned start: {answer.get('planned_at')}; start now: {answer.get('run')}", file=sys.stderr)
+    print(f"Next planned start: {answer.get('planned_at')}; slot {answer.get('slot')}; start now: {answer.get('run')}", file=sys.stderr)
     print("run=true" if answer.get("run") else "run=false")
     return 0
 
