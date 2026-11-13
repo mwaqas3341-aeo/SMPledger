@@ -1,0 +1,12 @@
+-- Invoice rules with the head teacher data (applied to the live project via the MCP; this file records the intent).
+-- 1) All three (company, AEO, head teacher) agree on invoice number (O/0, case, punctuation ignored) and quantity:
+--    OK, received and certified automatically (fn_auto_certify_pending); dates are not compared.
+-- 2) Head teacher typed the number differently (e.g. D04450INV14365 for D0445INV14365): v_three_way_comparison pairs the
+--    head receipt with the company/AEO row of the same school + product + quantity when dates are within 7 days, or the numbers
+--    are within 2 edits (fuzzystrmatch levenshtein, dates within 30 days). Counts as matching, with a remark.
+-- 3) fn_reconcile_with_head(): company and head teacher agree on invoice + quantity, the AEO entered the same quantity under a
+--    different invoice number (dates -5..+10 days, unique pairing) -> the AEO invoice number is corrected to the company's,
+--    reconciled_note records it, the company item is certified. Runs at the end of every portal sync. Periods locked by
+--    the Admin are skipped (left for a person). Undo: fn_undo_reconciliation (rows are in receipt_reconciliation_log).
+-- See pg_get_functiondef('public.fn_reconcile_with_head') and pg_get_viewdef('public.v_three_way_comparison') for the exact text.
+create extension if not exists fuzzystrmatch with schema extensions;
