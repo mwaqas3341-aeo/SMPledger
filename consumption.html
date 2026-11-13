@@ -358,7 +358,8 @@ async function loadHeadIssues(){
       const el = document.getElementById("headSyncInfo");
       if(ls){
         const hrs = (Date.now() - new Date(ls).getTime()) / 36e5;
-        el.textContent = "Head teacher data last refreshed: " + new Date(ls).toLocaleString("en-GB", { timeZone: "Asia/Karachi" }) + " (Pakistan time)." + (hrs > 36 ? " This is more than a day and a half old - the daily refresh may be failing." : "");
+        el.textContent = "Head teacher data is refreshed from the SMP app every 6 to 8 hours. If the head teacher has just updated SMP, please wait for the next refresh." + (hrs > 36 ? " The last refresh is more than a day and a half old - the automatic refresh may be failing." : "");
+        setHeadStamp(card, ls);
       }
     }catch(_){}
     renderHeadIssues();
@@ -407,6 +408,10 @@ function renderHeadIssues(){
 
 
 // Minimize / maximize big button for a card: wraps the card's <h3> and adds the toggle.
+function setHeadStamp(card, ts){
+  const el = card && card.querySelector(".cx-stamp");
+  if(el && ts) el.textContent = "🕒 Fetched from SMP: " + new Date(ts).toLocaleString("en-GB", { timeZone: "Asia/Karachi", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) + " PKT";
+}
 function makeCollapsible(card, startCollapsed){
   if(!card || card.dataset.cxReady) return;
   card.dataset.cxReady = "1";
@@ -414,6 +419,7 @@ function makeCollapsible(card, startCollapsed){
   const head = document.createElement("div"); head.className = "cx-head";
   h.parentNode.insertBefore(head, h); head.appendChild(h);
   const btn = document.createElement("button"); btn.type = "button"; btn.className = "cx-btn";
+  const stamp = document.createElement("span"); stamp.className = "cx-stamp"; head.appendChild(stamp);
   head.appendChild(btn);
   const set = (c) => { card.classList.toggle("collapsed", c); btn.textContent = c ? "▼  Maximize  (show)" : "▲  Minimize  (hide)"; btn.setAttribute("aria-expanded", String(!c)); };
   btn.onclick = () => set(!card.classList.contains("collapsed"));
@@ -434,6 +440,7 @@ async function renderConsumption(){
   text-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .12s,box-shadow .12s,filter .12s;}
 .cx-btn:hover{transform:translateY(-1px);filter:brightness(1.1);box-shadow:0 7px 20px rgba(124,58,237,.5),inset 0 1px 0 rgba(255,255,255,.5);}
 .cx-btn:active{transform:translateY(1px);}
+.cx-stamp{margin-left:auto;font-size:13px;font-weight:600;color:var(--ink-soft,#64748b);}
 .cx.collapsed > :not(.cx-head){display:none !important;}
 </style>
     <div class="card">
