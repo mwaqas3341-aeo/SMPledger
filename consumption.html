@@ -351,8 +351,7 @@ async function loadHeadIssues(){
     const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
     const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
     headIssueAll = out.filter(r => schoolById[r.school_id]).map(r => ({ ...r, school: schoolById[r.school_id], product: productById[r.product_id] }));
-    if(!headIssueAll.length){ card.style.display = "none"; return; }   // nothing to fix (or portal data not synced yet)
-    card.style.display = "";
+    card.style.display = "";   // always shown, even when nothing needs fixing
     try{
       const { data: ls } = await sb.rpc("fn_portal_last_sync");
       const el = document.getElementById("headSyncInfo");
@@ -363,13 +362,17 @@ async function loadHeadIssues(){
       }
     }catch(_){}
     renderHeadIssues();
-  }catch(e){ card.style.display = "none"; }
+  }catch(e){
+    card.style.display = "";
+    const el = document.getElementById("headSyncInfo");
+    if(el) el.textContent = "Could not load this list right now (" + ((e && e.message) || "unknown error") + "). Please reload the page.";
+  }
 }
 
 // Same filters as the consumption history: the area/school filter at the top and the history From/To dates.
 function renderHeadIssues(){
   const card = document.getElementById("headIssuesCard");
-  if(!card || !headIssueAll.length) return;
+  if(!card) return;
   const idSet = Array.isArray(currentVisibleIds) ? new Set(currentVisibleIds) : null;
   headIssueRows = headIssueAll.filter(r => (!idSet || idSet.has(r.school_id)) && (!histFrom || r.cons_date >= histFrom) && (!histTo || r.cons_date <= histTo));
   try{
@@ -403,7 +406,7 @@ function renderHeadIssues(){
       XLSX.utils.book_append_sheet(wb, ws, "Consumption issues");
       XLSX.writeFile(wb, `head-teacher-consumption-issues_${todayStr()}.xlsx`);
     };
-  }catch(e){ card.style.display = "none"; }
+  }catch(e){ card.style.display = ""; const el = document.getElementById("headSyncInfo"); if(el) el.textContent = "Could not show this list (" + ((e && e.message) || "error") + "). Please reload the page."; }
 }
 
 
@@ -459,7 +462,7 @@ async function renderConsumption(){
       <p class="sub">Enter the figure for a school, then click Submit to save the row. A row with data already saved for this date is locked - click Edit to change it. Use the filter above to look at one markaz.</p>
       <div class="table-wrap"><table id="summaryTable"><thead></thead><tbody><tr><td colspan="6" style="color:var(--ink-soft)">Loading…</td></tr></tbody><tfoot></tfoot></table></div>
     </div>
-    <div class="card cx" id="headIssuesCard" style="display:none;">
+    <div class="card cx" id="headIssuesCard">
       <h3>Head teacher (SMP) consumption needs rectification</h3>
       <p class="sub">Consumption reported by head teachers on the SMP portal that differs from, or is missing in, the figures recorded here. Matching entries are not listed. An entry leaves this list by itself once the two figures agree.</p>
       <div class="actions-row" style="margin-bottom:8px;">
@@ -469,7 +472,7 @@ async function renderConsumption(){
       <p class="sub">"Update from head teacher" records the quantity the head teacher reported on SMP, only where one was reported, and also corrects entries in a locked period. Where the head teacher has reported nothing, your figure is kept and is never changed to zero.</p>
       <div class="table-wrap" style="max-height:340px;overflow:auto;"><table id="headIssuesTable"><thead><tr>
         <th>Date</th><th>EMIS</th><th>School</th><th>Product</th><th>Head teacher (SMP)</th><th>Recorded here</th><th>Issue</th><th>Remarks</th><th></th>
-      </tr></thead><tbody></tbody></table></div>
+      </tr></thead><tbody><tr><td colspan="9" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
     <div class="card cx" id="historyCard">
       <h3>Consumption history</h3>

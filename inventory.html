@@ -360,7 +360,7 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       <button class="btn-primary" id="addInventoryBtn" type="button">+ Add inventory</button>
     </div>
 
-    <div class="card cx" id="headInvCard" style="display:none;">
+    <div class="card cx" id="headInvCard">
       <h3>Inventory entered by AEO but not reported by head teacher on SMP</h3>
       <p class="sub">Deliveries recorded here that the head teacher has not yet entered as received on the SMP app. Head teachers should be asked to add them. An entry leaves this list by itself once it appears on SMP.</p>
       <div class="actions-row" style="margin-bottom:8px;"><button class="btn-export" type="button" id="headInvDl">Download Excel</button> <span class="sub" id="headInvCount"></span></div>
@@ -368,7 +368,7 @@ async function renderMyReceiptsBody(visibleSchoolIds){
       <p class="sub" style="background:#eff6ff;border-radius:8px;padding:8px 12px;"><b>Note:</b> Biscuit inventory issues up to 16 October are not displayed because each school's overall totals (company, AEO and head teacher) were matched.</p>
       <div class="table-wrap" style="max-height:340px;overflow:auto;"><table id="headInvTable"><thead><tr>
         <th>Date</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Product</th><th>Qty (AEO)</th><th>Invoice #</th><th>Remarks</th>
-      </tr></thead><tbody></tbody></table></div>
+      </tr></thead><tbody><tr><td colspan="8" style="color:var(--ink-soft)">Loading…</td></tr></tbody></table></div>
     </div>
 
     <div class="card cx" id="rcHistCard">
