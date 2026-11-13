@@ -365,11 +365,13 @@ async function loadHeadIssues(){
     document.querySelector("#headIssuesTable tbody").innerHTML = headIssueRows.map(r => `<tr>
       <td>${esc(r.cons_date)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.school.school_name)}</td><td>${esc(r.product?.product_name)}</td>
       <td>${r.head_qty == null ? "—" : fmt(r.head_qty)}</td><td>${r.aeo_qty == null ? "—" : fmt(r.aeo_qty)}</td><td>${esc(HEAD_ISSUE_TEXT[r.issue] || r.issue)}</td><td>${esc(r.remark || "")}</td>
-      <td>${r.issue !== "head_missing" && Number(r.head_qty) > 0 ? `<button class="btn-primary" type="button" data-head-apply="${r.id}" style="white-space:nowrap;">Update</button>` : ""}</td></tr>`).join("");
+      <td>${currentProfile.role === "aeo" && r.issue !== "head_missing" && Number(r.head_qty) > 0 ? `<button class="btn-primary" type="button" data-head-apply="${r.id}" style="white-space:nowrap;">Update</button>` : ""}</td></tr>`).join("");
     document.querySelectorAll("[data-head-apply]").forEach(b => { b.onclick = () => applyHead([Number(b.dataset.headApply)]); });
     const applicable = headIssueRows.filter(r => r.issue !== "head_missing" && Number(r.head_qty) > 0).length;
     const noReport = headIssueRows.length - applicable;
     const btn = document.getElementById("headApplyBtn");
+    const isAeo = currentProfile.role === "aeo";           // only the AEO updates records from the head teacher report
+    btn.style.display = isAeo ? "" : "none";
     btn.disabled = !applicable;
     btn.textContent = applicable ? `Update from head teacher (${applicable})` : "Update from head teacher";
     btn.onclick = () => applyHead(null, applicable, noReport);
