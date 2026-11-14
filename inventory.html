@@ -414,6 +414,12 @@ let headInvAll = [], headInvRows = [];
 async function loadHeadInv(schoolIds){
   const card = document.getElementById("headInvCard");
   if(!card) return;
+  // The fetch time is looked up first and on its own, so it shows even if the list below fails to load.
+  try{
+    const { data: ls } = await sb.rpc("fn_portal_last_sync");
+    document.getElementById("headInvSync").textContent = "Head teacher data is refreshed from the SMP app every 6 to 8 hours. If the head teacher has just updated SMP, please wait for the next refresh.";
+    if(ls) setHeadStamp(card, ls); else card.querySelector(".cx-stamp").textContent = "🕒 No SMP data fetched yet";
+  }catch(_){}
   try{
     const out = [];
     for(let start = 0; ; start += 1000){
@@ -427,10 +433,6 @@ async function loadHeadInv(schoolIds){
     const sById = Object.fromEntries(cache.schools.map(x => [x.id, x])), pById = Object.fromEntries(cache.products.map(x => [x.id, x]));
     headInvAll = out.filter(r => sById[r.school_id]).map(r => ({ ...r, school: sById[r.school_id], product: pById[r.product_id] }));
     card.style.display = "";
-    try{
-      const { data: ls } = await sb.rpc("fn_portal_last_sync");
-      if(ls){ document.getElementById("headInvSync").textContent = "Head teacher data is refreshed from the SMP app every 6 to 8 hours. If the head teacher has just updated SMP, please wait for the next refresh."; setHeadStamp(card, ls); }
-    }catch(_){}
     renderHeadInv();
   }catch(e){
     // Keep the card visible and say what went wrong instead of silently hiding the list.
