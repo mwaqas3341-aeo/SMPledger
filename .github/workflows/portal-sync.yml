@@ -106,8 +106,8 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('portal-sync/requirements.txt') }}
       - run: python scripts/setup_workflow_env.py
-      - if: ${{ steps.browser-cache.outputs.cache-hit != 'true' }}
-        run: python -m playwright install --with-deps chromium
+      # Always run the (idempotent) install: a cached browser from an older Playwright version made every shard fail on 14-15 Nov.
+      - run: python -m playwright install --with-deps chromium
       - name: Get the school list from Supabase
         run: python scripts/fetch_scope.py "$RUNNER_TEMP/codes.txt"
       - name: Extract this shard

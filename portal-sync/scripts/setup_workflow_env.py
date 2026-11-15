@@ -185,9 +185,8 @@ def install_browser(plan: Plan) -> float:
     cache fails immediately instead of mid-extraction.
     """
     started = time.monotonic()
-    if plan.browser_cached:
-        print("Chromium build already present in the cache; skipping download.")
-        return time.monotonic() - started
+    # Always run the install: it is a quick no-op when the exact build this Playwright version needs is present, and it
+    # fetches the missing one when the cache came from an older version (the cause of the 14-15 Nov failures).
     status = _run([sys.executable, "-m", "playwright", "install", "chromium"], plan.dry_run)
     if status != 0:
         raise SystemExit(f"Chromium installation failed with exit code {status}")
