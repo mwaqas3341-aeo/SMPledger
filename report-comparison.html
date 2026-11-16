@@ -184,7 +184,7 @@ async function renderPage(){
         <div><label>Markaz</label><select id="jfMarkaz" disabled><option value="">All (pick a Wing to narrow)</option></select></div>
         <div><label>EMIS Code</label><input type="text" id="jfEmis" placeholder="Search one school"/></div>
         <div><label>Product</label><select name="product"><option value="">All products</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)}</option>`).join("")}</select></div>
-        <div><label>Show only</label><select name="filter"><option value="all">All rows</option><option value="mismatch">Mismatches only</option><option value="flagged">Flagged for rectification</option><option value="head">Head teacher differs from company/AEO</option><option value="nohead">Head teacher has not reported</option></select></div>
+        <div><label>Show only</label><select name="filter"><option value="all">All rows - three-way (includes head teacher columns)</option><option value="mismatch">Mismatches only</option><option value="flagged">Flagged for rectification</option><option value="head">Head teacher differs from company/AEO</option><option value="nohead">Head teacher has not reported</option></select></div>
         <div style="flex:1 1 260px;"><label>Search <span id="cmpSearchCount" class="sub"></span></label><input type="search" id="cmpSearch" placeholder="Type to search: school, markaz, invoice #, remarks…" autocomplete="off"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit">Apply filter</button></div>
       </form>
@@ -194,8 +194,8 @@ async function renderPage(){
         <span style="display:inline-flex;align-items:center;gap:6px;"><label for="dlKind" style="margin:0;font-size:13px;">Download</label>
           <select id="dlKind">
             <option value="aeo_company">AEO vs Company mismatches only</option>
-            <option value="issues">All issues (AEO, Company and Head teacher)</option>
-            <option value="all">All rows</option>
+            <option value="issues">All issues - three-way (includes head teacher columns)</option>
+            <option value="all">All rows - three-way (includes head teacher columns)</option>
             <option value="company">Company-provided list</option>
             <option value="aeo">AEO-entered list (inventory received)</option>
             <option value="head">Head teacher list (SMP)</option>
@@ -857,7 +857,7 @@ async function downloadCompanyList(){
     const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
     const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
     const markazById = Object.fromEntries(cache.markaz.map(x => [x.id, x]));
-    const dmy = d => d ? new Date(d).toLocaleDateString("en-GB") : "";
+    const dmy = d => { if(!d) return ""; const q = String(d).slice(0, 10).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : String(d); };
     const geo = readGeo();
     const rows = data.filter(r => geoMatch(schoolById[r.school_id], geo)).map(r => {
       const sc = schoolById[r.school_id];
