@@ -782,19 +782,33 @@ async function downloadComparison(issuesOnly){
   if(!rows.length){ toast(issuesOnly ? "No issues found for the current filters and period." : "Nothing to download - apply the filters first.", "bad"); return; }
   try{
     const markazName = id => cache.markaz.find(m => m.id === id);
-    const header = ["Delivery / receipt date","Wing","Tehsil","Markaz","EMIS Code","School","Product",
+    const dmy = d => { if(!d) return ""; const p = String(d).split("-"); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : String(d); };
+    // AEO vs Company only: no head teacher columns at all.
+    const header = aeoCo
+      ? ["Delivery / receipt date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Company Invoice #","AEO Invoice #","Company Invoice Date","Company Qty","AEO Qty","Difference (AEO-Company)","Status","AEO Certification","Remarks / Issue"]
+      : ["Delivery / receipt date","Wing","Tehsil","Markaz","EMIS Code","School","Product",
       "Company Invoice #","AEO Invoice #","Company Invoice Date","Company Qty","AEO Qty","Head Teacher Qty (SMP)","Head Teacher Challan #","Head Teacher Date","Difference (AEO-Company)",
       "Status","Three-way Result","AEO Certification","Remarks / Issue"];
-    const dmy = d => { if(!d) return ""; const p = String(d).split("-"); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : String(d); };
     const body = rows.map(r => {
       const m = markazName(r.school?.markaz_id);
-      return [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "",
-        r.product?.product_name || "", r.company_invoice_number || "", r.aeo_invoice_number || "", dmy(r.invoice_date),
-        Number(r.company_qty) || 0, Number(r.aeo_qty) || 0, r.head_qty == null ? "" : Number(r.head_qty), r.head_challan || "", dmy(r.head_date), Number(r.difference) || 0,
+      const base = [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "",
+        r.product?.product_name || "", r.company_invoice_number || "", r.aeo_invoice_number || "", dmy(r.invoice_date), Number(r.company_qty) || 0, Number(r.aeo_qty) || 0];
+      if(aeoCo) return [...base, Number(r.difference) || 0, r.status || "", r.aeo_verification_status || "", r.remarks || r.status || ""];
+      return [...base.slice(0, 12), r.head_qty == null ? "" : Number(r.head_qty), r.head_challan || "", dmy(r.head_date), Number(r.difference) || 0,
         r.status || "", r.three_way_status || "", r.aeo_verification_status || "", [r.remarks || (r.status === "Matched" ? "" : r.status), r.head_note, headAsk(r)].filter(Boolean).join(" ")];
     });
     const count = (f) => all.filter(f).length;
-    const summary = [
+    const summary = aeoCo ? [
+      ["Period", `${dmy(fd0.get("from"))} to ${dmy(fd0.get("to"))}`],
+      ["Product", dlProductId(fd0) ? dlProductLabel(dlProductId(fd0)) : "All products"],
+      ["Total rows compared (current filters)", all.length],
+      ["Mismatches (AEO vs Company)", rows.length],
+      ["Short received (AEO less than company)", count(r => r.status === "Short Received")],
+      ["Excess received (AEO more than company)", count(r => r.status === "Excess Received")],
+      ["Company provided, AEO did not enter", count(r => r.status === "Company provided, AEO did not enter")],
+      ["AEO entered, company did not provide", count(r => r.status === "AEO entered, company did not provide")],
+      ["Note", "Invoice numbers are compared ignoring capital/small letters, spaces and symbols."],
+    ] : [
       ["Period", `${dmy(fd0.get("from"))} to ${dmy(fd0.get("to"))}`],
       ["Product", dlProductId(fd0) ? dlProductLabel(dlProductId(fd0)) : "All products"],
       ["Total rows (current filters)", all.length],
@@ -811,10 +825,10 @@ async function downloadComparison(issuesOnly){
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-    ws["!cols"] = [14,8,14,20,12,34,12,18,18,14,11,9,14,16,14,11,34,34,18,80].map(w => ({ wch: w }));
+    ws["!cols"] = (aeoCo ? [14,8,14,20,12,34,12,18,18,14,11,9,11,34,18,80] : [14,8,14,20,12,34,12,18,18,14,11,9,14,16,14,11,34,34,18,80]).map(w => ({ wch: w }));
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:body.length,c:header.length-1} }) };
     XLSX.utils.book_append_sheet(wb, ws, aeoCo ? "AEO vs Company" : issuesOnly ? "Issues" : "Comparison");
-    const ss = XLSX.utils.aoa_to_sheet([["Company vs AEO vs Head Teacher - summary"], [], ...summary]);
+    const ss = XLSX.utils.aoa_to_sheet([[aeoCo ? "AEO vs Company mismatches - summary" : "Company vs AEO vs Head Teacher - summary"], [], ...summary]);
     ss["!cols"] = [{ wch: 52 }, { wch: 28 }];
     XLSX.utils.book_append_sheet(wb, ss, "Summary");
     const p = { from: fd0.get("from"), to: fd0.get("to") };
