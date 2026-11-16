@@ -191,13 +191,18 @@ async function renderPage(){
       <div class="actions-row" style="margin-top:12px;">
         <span style="display:inline-flex;align-items:center;gap:6px;"><label for="dlProduct" style="margin:0;font-size:13px;">Download for</label>
           <select id="dlProduct"><option value="">Product chosen above</option><option value="all">All products (Milk + Biscuits)</option>${cache.products.map(p => `<option value="${p.id}">${esc(p.product_name)} only</option>`).join("")}</select></span>
-        <button class="btn-export" type="button" id="dlCmpAllBtn">Download Excel - all rows</button>
-        <button class="btn-export" type="button" id="dlCmpIssuesBtn">Download Excel - issues only</button>
-        <button class="btn-export" type="button" id="dlCompanyListBtn">Download Excel - company-provided list</button>
-        <button class="btn-export" type="button" id="dlAeoListBtn">Download Excel - AEO-entered list (inventory received)</button>
-        <button class="btn-export" type="button" id="dlHeadListBtn">Download Excel - head teacher list (SMP)</button>
-        <button class="btn-export" type="button" id="dlAeoNoHeadBtn">Download Excel - AEO entered, head teacher not reported</button>
-        <button class="btn-export" type="button" id="dlHeadNoAeoBtn">Download Excel - head teacher reported, AEO not entered</button>
+        <span style="display:inline-flex;align-items:center;gap:6px;"><label for="dlKind" style="margin:0;font-size:13px;">Download</label>
+          <select id="dlKind">
+            <option value="aeo_company">AEO vs Company mismatches only</option>
+            <option value="issues">All issues (AEO, Company and Head teacher)</option>
+            <option value="all">All rows</option>
+            <option value="company">Company-provided list</option>
+            <option value="aeo">AEO-entered list (inventory received)</option>
+            <option value="head">Head teacher list (SMP)</option>
+            <option value="aeo_no_head">AEO entered, head teacher not reported</option>
+            <option value="head_no_aeo">Head teacher reported, AEO not entered</option>
+          </select></span>
+        <button class="btn-export" type="button" id="dlGoBtn">Download Excel</button>
         ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button>' : ""}
       </div>
     </div>
@@ -212,13 +217,14 @@ async function renderPage(){
 
   if(isAdmin) renderUploadWizard(document.getElementById("uploadMount"));
   smpLiveSearch(document.getElementById("cmpSearch"), document.getElementById("content"), "#compTable", document.getElementById("cmpSearchCount"));
-  document.getElementById("dlCmpAllBtn").addEventListener("click", () => downloadComparison(false));
-  document.getElementById("dlCmpIssuesBtn").addEventListener("click", () => downloadComparison(true));
-  document.getElementById("dlCompanyListBtn").addEventListener("click", downloadCompanyList);
-  document.getElementById("dlAeoListBtn").addEventListener("click", downloadAeoList);
-  document.getElementById("dlHeadListBtn").addEventListener("click", () => downloadHeadTeacher("list"));
-  document.getElementById("dlAeoNoHeadBtn").addEventListener("click", () => downloadHeadTeacher("aeo_no_head"));
-  document.getElementById("dlHeadNoAeoBtn").addEventListener("click", () => downloadHeadTeacher("head_no_aeo"));
+  document.getElementById("dlGoBtn").addEventListener("click", () => {
+    const k = document.getElementById("dlKind").value;
+    if(k === "company") return downloadCompanyList();
+    if(k === "aeo") return downloadAeoList();
+    if(k === "head") return downloadHeadTeacher("list");
+    if(k === "aeo_no_head" || k === "head_no_aeo") return downloadHeadTeacher(k);
+    return downloadComparison(k === "all" ? false : k === "issues" ? true : "aeo_company");
+  });
   const rb = document.getElementById("reconcileBtn");
   if(rb) rb.addEventListener("click", async () => {
     rb.disabled = true;
@@ -769,8 +775,10 @@ async function downloadComparison(issuesOnly){
     const sel = (document.getElementById("dlProduct") || {}).value || "";
     all = sel === "" ? (window.lastComparisonRows || []) : await fetchComparisonRows(fd0, dlProductId(fd0));
   }catch(err){ toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad"); return; }
+  const aeoCo = issuesOnly === "aeo_company";
+  // Invoice numbers are compared ignoring case/spaces/symbols in the database, so inv / Inv / INV already count as the same.
   const isIssue = r => r.status !== "Matched" || !!r.remarks || headDiffers(r);
-  const rows = issuesOnly ? all.filter(isIssue) : all;
+  const rows = aeoCo ? all.filter(r => r.status !== "Matched") : issuesOnly ? all.filter(isIssue) : all;
   if(!rows.length){ toast(issuesOnly ? "No issues found for the current filters and period." : "Nothing to download - apply the filters first.", "bad"); return; }
   try{
     const markazName = id => cache.markaz.find(m => m.id === id);
@@ -805,12 +813,12 @@ async function downloadComparison(issuesOnly){
     const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
     ws["!cols"] = [14,8,14,20,12,34,12,18,18,14,11,9,14,16,14,11,34,34,18,80].map(w => ({ wch: w }));
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:body.length,c:header.length-1} }) };
-    XLSX.utils.book_append_sheet(wb, ws, issuesOnly ? "Issues" : "Comparison");
+    XLSX.utils.book_append_sheet(wb, ws, aeoCo ? "AEO vs Company" : issuesOnly ? "Issues" : "Comparison");
     const ss = XLSX.utils.aoa_to_sheet([["Company vs AEO vs Head Teacher - summary"], [], ...summary]);
     ss["!cols"] = [{ wch: 52 }, { wch: 28 }];
     XLSX.utils.book_append_sheet(wb, ss, "Summary");
     const p = { from: fd0.get("from"), to: fd0.get("to") };
-    XLSX.writeFile(wb, `company-vs-aeo-vs-head-teacher_${issuesOnly ? "issues" : "all"}_${dlProductLabel(dlProductId(fd0))}_${p.from || "all"}_to_${p.to || "all"}.xlsx`);
+    XLSX.writeFile(wb, `company-vs-aeo-vs-head-teacher_${aeoCo ? "aeo-vs-company-mismatches" : issuesOnly ? "issues" : "all"}_${dlProductLabel(dlProductId(fd0))}_${p.from || "all"}_to_${p.to || "all"}.xlsx`);
     toast(`Downloaded ${rows.length} row(s).`);
   }catch(err){
     console.error("[SMP] comparison download failed:", err && err.message);
