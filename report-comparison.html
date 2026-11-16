@@ -198,6 +198,8 @@ async function renderPage(){
             <option value="all">All rows - three-way (includes head teacher columns)</option>
             <option value="company">Company-provided list</option>
             <option value="aeo">AEO-entered list (inventory received)</option>
+            <option value="inv_head_company">Invoice # mismatch: Head teacher vs Company</option>
+            <option value="inv_head_aeo">Invoice # mismatch: Head teacher vs AEO</option>
             <option value="head">Head teacher list (SMP)</option>
             <option value="aeo_no_head">AEO entered, head teacher not reported</option>
             <option value="head_no_aeo">Head teacher reported, AEO not entered</option>
@@ -222,6 +224,7 @@ async function renderPage(){
     if(k === "company") return downloadCompanyList();
     if(k === "aeo") return downloadAeoList();
     if(k === "head") return downloadHeadTeacher("list");
+    if(k === "inv_head_company" || k === "inv_head_aeo") return downloadInvoiceMismatch(k);
     if(k === "aeo_no_head" || k === "head_no_aeo") return downloadHeadTeacher(k);
     return downloadComparison(k === "all" ? false : k === "issues" ? true : "aeo_company");
   });
@@ -920,6 +923,48 @@ async function downloadAeoList(){
     toast(`Downloaded ${rows.length} AEO receipt(s).`);
   }catch(err){
     console.error("[SMP] AEO list download failed:", err && err.message);
+    toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
+  }
+}
+
+// Invoice-number corrections: rows where the head teacher's challan/invoice (SMP) is written differently from the
+// company's or the AEO's invoice number. Compared ignoring capital/small letters, spaces and symbols (O = 0), so
+// inv / Inv / INV are the same. Rows that are settled on the school total (biscuits till 16 Oct) are left out.
+const normInv = v => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/O/g, "0");
+async function downloadInvoiceMismatch(kind){
+  const fd = new FormData(document.getElementById("filterForm"));
+  fd.set("filter", "all");
+  const vsCompany = kind === "inv_head_company";
+  try{
+    const all = await fetchComparisonRows(fd, dlProductId(fd));
+    const other = r => vsCompany ? r.company_invoice_number : r.aeo_invoice_number;
+    const rows = all.filter(r => !r.settled_on_totals && r.head_challan && other(r) && normInv(r.head_challan) !== normInv(other(r)));
+    if(!rows.length){ toast("No invoice number mismatches for these filters.", "bad"); return; }
+    const dmy = d => { if(!d) return ""; const q = String(d).slice(0, 10).split("-"); return q.length === 3 ? `${q[2]}-${q[1]}-${q[0]}` : String(d); };
+    const mk = id => cache.markaz.find(m => m.id === id);
+    const who = vsCompany ? "Company" : "AEO";
+    const header = ["Date","Wing","Tehsil","Markaz","EMIS Code","School","Product","Head Teacher Invoice # (SMP)","Head Teacher Date","Head Teacher Qty",
+      `${who} Invoice #`, `${who} Qty`, "Correct invoice # (per " + who.toLowerCase() + ")", "Who should correct", "Remarks"];
+    const body = rows.map(r => {
+      const m = mk(r.school?.markaz_id);
+      return [dmy(r.delivery_date), r.school?.wing || "", m?.tehsil || "", m?.name || "", r.school?.emis_code || "", r.school?.school_name || "", r.product?.product_name || "",
+        r.head_challan || "", dmy(r.head_date), r.head_qty == null ? "" : Number(r.head_qty),
+        other(r) || "", Number(vsCompany ? r.company_qty : r.aeo_qty) || 0, other(r) || "",
+        vsCompany ? "Head teacher (update on SMP app) or AEO if the company number is wrong" : "Head teacher or AEO - verify against the company invoice",
+        `Head teacher wrote "${r.head_challan}" but ${who.toLowerCase()} has "${other(r)}".`];
+    });
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    ws["!cols"] = [12,8,14,20,12,34,12,24,14,12,20,11,24,50,70].map(w => ({ wch: w }));
+    ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:body.length,c:header.length-1} }) };
+    XLSX.utils.book_append_sheet(wb, ws, "Invoice mismatches");
+    const ss = XLSX.utils.aoa_to_sheet([[`Invoice number mismatches - Head teacher vs ${who}`], [], ["Period", `${dmy(fd.get("from"))} to ${dmy(fd.get("to"))}`], ["Rows", body.length], ["Note", "Invoice numbers are compared ignoring capital/small letters, spaces and symbols."]]);
+    ss["!cols"] = [{ wch: 30 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(wb, ss, "Summary");
+    XLSX.writeFile(wb, `invoice-mismatch_head-vs-${who.toLowerCase()}_${dlProductLabel(dlProductId(fd))}_${fd.get("from") || "all"}_to_${fd.get("to") || "all"}.xlsx`);
+    toast(`Downloaded ${body.length} row(s).`);
+  }catch(err){
+    console.error("[SMP] invoice mismatch download failed:", err && err.message);
     toast(`Download failed: ${(err && err.message) || "unknown error"}`, "bad");
   }
 }
