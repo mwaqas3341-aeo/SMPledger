@@ -1158,6 +1158,7 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
       <div id="wcContacts"></div>
     </details>
     <div class="form-grid" style="margin-top:8px;">
+      <label style="display:flex;align-items:center;gap:8px;grid-column:1/-1;"><input type="checkbox" id="wcCollectOn" ${eg.collect_enabled === false ? "" : "checked"}> <span><b>Data collection in this group</b> (daily prompt and reading the replies). Untick for a group that should receive only the missing-consumption reports.</span></label>
       <label>Daily message time<input type="time" id="wcPostTime" value="${esc(eg.send_time ? String(eg.send_time).slice(0,5) : "")}"></label>
       <label>Missing-EMIS list time (optional)<input type="time" id="wcMissTime" value="${esc(eg.missing_time ? String(eg.missing_time).slice(0,5) : "")}"></label>
       <label>SMP missing-consumption Excel time (optional)<input type="time" id="wcSmpTime" value="${esc(eg.smp_file_time ? String(eg.smp_file_time).slice(0,5) : "")}"></label>
@@ -1169,7 +1170,7 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
     <div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>Group</th><th>Jurisdiction</th><th>Daily message</th><th>Missing list</th><th>SMP Excel</th><th>Active</th><th></th></tr></thead><tbody>
       ${groups.map(g => `<tr><td>${esc(grpName(g.group_jid))}</td>
         <td>${esc([g.district, g.tehsil].filter(Boolean).join(" / ") || "-")}<br><small>${g.scope_type === "markaz" ? "Markaz: " + esc((g.markaz_ids || []).map(id => markazById[id]?.name).filter(Boolean).join(", ") || "-") : "Whole tehsil"}</small></td>
-        <td>${esc(g.send_time ? String(g.send_time).slice(0,5) : "default " + String(s.send_time).slice(0,5))}</td><td>${esc(g.missing_time ? String(g.missing_time).slice(0,5) : "off")}</td><td>${esc(g.smp_file_time ? String(g.smp_file_time).slice(0,5) + (g.smp_file_day === "same" ? " (same day)" : " (previous day)") : "off")}${g.smp_file_time ? `<br><button class="btn-secondary" data-gact="smpprev" data-id="${esc(g.group_jid)}">Preview</button> <button class="btn-secondary" data-gact="smpnow" data-id="${esc(g.group_jid)}">Send now</button>` : ""}</td><td>${g.active ? "Yes" : "No"}</td>
+        <td>${g.collect_enabled === false ? "<i>Collection off (reports only)</i>" : esc(g.send_time ? String(g.send_time).slice(0,5) : "default " + String(s.send_time).slice(0,5))}</td><td>${esc(g.missing_time ? String(g.missing_time).slice(0,5) : "off")}</td><td>${esc(g.smp_file_time ? String(g.smp_file_time).slice(0,5) + (g.smp_file_day === "same" ? " (same day)" : " (previous day)") : "off")}${g.smp_file_time ? `<br><button class="btn-secondary" data-gact="smpprev" data-id="${esc(g.group_jid)}">Preview</button> <button class="btn-secondary" data-gact="smpnow" data-id="${esc(g.group_jid)}">Send now</button>` : ""}</td><td>${g.active ? "Yes" : "No"}</td>
         <td><button class="btn-secondary" data-gact="edit" data-id="${esc(g.group_jid)}">Edit</button>
         <button class="btn-secondary" data-gact="toggle" data-id="${esc(g.group_jid)}" data-active="${g.active}">${g.active ? "Pause" : "Resume"}</button>
         <button class="btn-secondary" data-gact="del" data-id="${esc(g.group_jid)}">Remove</button></td></tr>`).join("") || `<tr><td colspan="7" style="color:var(--ink-soft)">No groups added.</td></tr>`}
@@ -1308,7 +1309,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     sel_jid: q("wcGroupSel").value,
     district: q("wcDist").value || null, tehsil: q("wcTeh").value || null, scope_type: q("wcScope").value,
     markaz_ids: [...box.querySelectorAll(".wcMk.on")].map(x => x.dataset.id),
-    send_time: q("wcPostTime").value || null, missing_time: q("wcMissTime").value || null, smp_file_time: q("wcSmpTime").value || null, smp_file_day: q("wcSmpDay").value || "previous" });
+    send_time: q("wcPostTime").value || null, missing_time: q("wcMissTime").value || null, smp_file_time: q("wcSmpTime").value || null, smp_file_day: q("wcSmpDay").value || "previous", collect_enabled: q("wcCollectOn").checked });
   const redraw = () => { wcDraft = readForm(); again(); };
   q("wcDist").onchange = () => { const d = readForm(); d.tehsil = null; d.markaz_ids = []; wcDraft = d; again(); };
   q("wcTeh").onchange = () => { const d = readForm(); d.markaz_ids = []; wcDraft = d; again(); };
