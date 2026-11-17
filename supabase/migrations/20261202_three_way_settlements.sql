@@ -8,3 +8,5 @@
 -- and fn_unsettle_three_way(id) (admin only). v_three_way_base applies settlements before its automatic exact/fuzzy matching.
 -- First settlement: EMIS 32220167, Biscuits, head D044INV14295 <-> company/AEO FTH-{10}-0011.
 -- Exact SQL: pg_get_viewdef('public.v_three_way_base'::regclass, true).
+-- Also applied live ("three_way_settlement_undo_by_match"): fn_unsettle_three_way_match(school_id, product_id, invoice, head) revokes the
+-- active settlement(s) matching that invoice or head number (admin only); used by the Undo button on the comparison page.

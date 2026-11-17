@@ -205,7 +205,7 @@ async function renderPage(){
             <option value="head_no_aeo">Head teacher reported, AEO not entered</option>
           </select></span>
         <button class="btn-export" type="button" id="dlGoBtn">Download Excel</button>
-        ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button>' : ""}
+        ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button><button class="btn-secondary" type="button" id="settleListBtn">Manual settlements</button>' : ""}
       </div>
     </div>
     <div class="grid-4" id="statCards"></div>
@@ -227,6 +227,12 @@ async function renderPage(){
     if(k === "inv_head_company" || k === "inv_head_aeo") return downloadInvoiceMismatch(k);
     if(k === "aeo_no_head" || k === "head_no_aeo") return downloadHeadTeacher(k);
     return downloadComparison(k === "all" ? false : k === "issues" ? true : "aeo_company");
+  });
+  const slb = document.getElementById("settleListBtn");
+  if(slb) slb.addEventListener("click", openSettlementsList);
+  document.getElementById("compTable").addEventListener("click", ev => {
+    const b = ev.target.closest("[data-settle]");
+    if(b) openSettleDialog(window.lastComparisonRows[Number(b.dataset.settle)], b.dataset.mode);
   });
   const rb = document.getElementById("reconcileBtn");
   if(rb) rb.addEventListener("click", async () => {
@@ -1108,7 +1114,7 @@ async function loadComparison(fd){
     return '<span class="pill pill-warn">Pending</span>';
   };
 
-  tbody.innerHTML = rows.map(r => {
+  tbody.innerHTML = rows.map((r, ri) => {
     const diff = Number(r.difference);
     return `<tr>
       <td>${fmtDate(r.delivery_date)}</td>
@@ -1124,9 +1130,108 @@ async function loadComparison(fd){
       <td>${pillFor(r.status)}</td>
       <td style="font-size:12px;">${threeWayPill(r.three_way_status)}</td>
       <td>${certPillFor(r.aeo_verification_status)}</td>
-      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("wrong_invoice") ? "invoice belongs to another school" : r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc([r.remarks, r.head_note, headAsk(r)].filter(Boolean).join(" ")) || "—"}</td>
+      <td style="min-width:220px; font-size:12px;">${r.aeo_flag ? '<span class="pill pill-warn">⚠ Flagged: ' + (r.aeo_flag.includes("wrong_invoice") ? "invoice belongs to another school" : r.aeo_flag.includes("other_school") ? "invoice also used at another school" : r.aeo_flag.includes("duplicate") ? "duplicate entry" : "different details on file") + '</span><br>' : ""}${esc([r.remarks, r.head_note, headAsk(r)].filter(Boolean).join(" ")) || "—"}${settleBtnHtml(r, ri)}</td>
     </tr>`;
   }).join("");
+}
+
+// ---- Manual settlement of three-way issues (admin only) ----
+// Stored in three_way_settlements (reason mandatory, who/when kept, undo = revoke). Types:
+//   pair_head: head challan # is the same delivery as a company/AEO invoice (head teacher typed a wrong number)
+//   ignore_head: the head teacher's entry is invalid - removed from the comparison
+//   accept_no_head: head teacher need not report this delivery
+const isAdminUser = () => ["admin","super_admin"].includes(currentProfile.role);
+const HEAD_ONLY = "Head teacher reported, no company or AEO record";
+const isSettled = r => /^Settled manually/.test(r.three_way_status || "") || /Settled manually/.test(r.head_note || "");
+const needsHead = r => r.head_qty == null && (Number(r.company_qty) > 0 || Number(r.aeo_qty) > 0) && !isSettled(r);
+const invOf = r => r.company_invoice_number || r.aeo_invoice_number || "";
+function settleBtnHtml(r, ri){
+  if(!isAdminUser()) return "";
+  const b = (mode, label) => `<br><button type="button" class="btn-secondary" style="padding:2px 8px;font-size:12px;margin-top:4px;" data-settle="${ri}" data-mode="${mode}">${label}</button>`;
+  if(isSettled(r)) return b("undo", "Undo settlement");
+  if(r.status === HEAD_ONLY || needsHead(r)) return b("settle", "Settle…");
+  return "";
+}
+function modalShell(inner){
+  const ov = document.createElement("div");
+  ov.setAttribute("role", "dialog"); ov.setAttribute("aria-modal", "true");
+  ov.style.cssText = "position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;";
+  ov.innerHTML = `<div class="card" style="width:min(640px,100%);max-height:88vh;overflow:auto;margin:0;">${inner}</div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener("click", e => { if(e.target === ov) ov.remove(); });
+  return ov;
+}
+async function refreshComparison(){ await loadComparison(new FormData(document.getElementById("filterForm"))); }
+async function openSettleDialog(r, mode){
+  if(!r) return;
+  const school = r.school || {};
+  if(mode === "undo"){
+    if(!confirm("Undo the manual settlement for this entry? It will go back to the automatic result.")) return;
+    const { data, error } = await sb.rpc("fn_unsettle_three_way_match", { p_school_id: r.school_id, p_product_id: r.product_id, p_invoice: invOf(r), p_head: r.head_challan || "" });
+    if(error){ toast("Undo failed: " + error.message, "bad"); return; }
+    toast(data ? "Settlement undone." : "No active settlement found for this entry.", data ? "ok" : "bad");
+    await refreshComparison(); return;
+  }
+  const all = window.lastComparisonRows || [];
+  const sameSP = x => x.school_id === r.school_id && x.product_id === r.product_id;
+  const isHeadOnly = r.status === HEAD_ONLY;
+  // What this entry can be paired with: the other side of the same school + product that is still unpaired.
+  const cands = all.filter(x => sameSP(x) && x !== r && (isHeadOnly ? needsHead(x) : x.status === HEAD_ONLY));
+  const dFmt = d => d ? fmtDate(d) : "—";
+  const describe = x => isHeadOnly
+    ? `Company/AEO invoice ${esc(invOf(x))} · qty ${fmt(x.company_qty || x.aeo_qty)} · delivered ${dFmt(x.delivery_date)}`
+    : `Head teacher challan ${esc(x.head_challan)} · qty ${fmt(x.head_qty)} · entered ${dFmt(x.head_date)}`;
+  const ov = modalShell(`
+    <h3 style="margin-bottom:4px;">Settle three-way issue</h3>
+    <p class="sub"><b>${esc(school.school_name || "")}</b> (EMIS ${esc(school.emis_code || "")}) · ${esc(r.product?.product_name || "")}<br>
+      ${isHeadOnly ? `Head teacher entered <b>${esc(r.head_challan)}</b> (qty ${fmt(r.head_qty)}, ${dFmt(r.head_date)}) - no company/AEO record has this number.`
+                    : `Company/AEO invoice <b>${esc(invOf(r))}</b> (qty ${fmt(r.company_qty || r.aeo_qty)}, ${dFmt(r.delivery_date)}) - the head teacher has not reported it under this number.`}</p>
+    <div style="margin:10px 0;">
+      ${cands.length ? `<label style="font-weight:600;">This is the same delivery as:</label>` + cands.map((x, i) => `<label style="display:block;margin:6px 0;"><input type="radio" name="stlPick" value="${i}"${i === 0 ? " checked" : ""}> ${describe(x)}</label>`).join("") : `<p class="sub">No unpaired ${isHeadOnly ? "company/AEO invoice" : "head teacher entry"} found for this school and product.</p>`}
+      <label style="display:block;margin:6px 0;"><input type="radio" name="stlPick" value="${isHeadOnly ? "ignore" : "waive"}"${cands.length ? "" : " checked"}> ${isHeadOnly ? "Ignore this head teacher entry (invalid / does not belong here)" : "Head teacher need not report this delivery"}</label>
+    </div>
+    <label style="font-weight:600;">Reason (required, shown in remarks)</label>
+    <textarea id="stlReason" rows="3" style="width:100%;" placeholder="e.g. Head teacher deliberately entered a wrong invoice number"></textarea>
+    <div class="actions-row" style="margin-top:10px;"><button class="btn-primary" type="button" id="stlSave">Settle</button><button class="btn-secondary" type="button" id="stlCancel">Cancel</button></div>`);
+  ov.querySelector("#stlCancel").addEventListener("click", () => ov.remove());
+  ov.querySelector("#stlSave").addEventListener("click", async () => {
+    const reason = ov.querySelector("#stlReason").value.trim();
+    const pick = (ov.querySelector('input[name="stlPick"]:checked') || {}).value;
+    if(reason.length < 5){ toast("Please write the reason (at least 5 characters).", "bad"); return; }
+    if(pick === undefined){ toast("Choose how to settle this entry.", "bad"); return; }
+    let args;
+    if(pick === "ignore") args = { p_action: "ignore_head", p_invoice: null, p_head: r.head_challan };
+    else if(pick === "waive") args = { p_action: "accept_no_head", p_invoice: invOf(r), p_head: null };
+    else { const x = cands[Number(pick)]; args = { p_action: "pair_head", p_invoice: isHeadOnly ? invOf(x) : invOf(r), p_head: isHeadOnly ? r.head_challan : x.head_challan }; }
+    const btn = ov.querySelector("#stlSave"); btn.disabled = true;
+    const { error } = await sb.rpc("fn_settle_three_way", { p_emis: school.emis_code, p_product_id: r.product_id, p_reason: reason, ...args });
+    if(error){ btn.disabled = false; toast("Could not settle: " + error.message, "bad"); return; }
+    ov.remove(); toast("Settled."); await refreshComparison();
+  });
+}
+async function openSettlementsList(){
+  const { data, error } = await sb.from("three_way_settlements").select("*").eq("active", true).order("settled_at", { ascending: false });
+  if(error){ toast("Could not load settlements: " + error.message, "bad"); return; }
+  const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
+  const productById = Object.fromEntries(cache.products.map(x => [x.id, x]));
+  const label = { pair_head: "Head # paired with invoice", ignore_head: "Head entry ignored", accept_no_head: "Head entry waived" };
+  const ov = modalShell(`<h3 style="margin-bottom:8px;">Manual settlements (${(data || []).length})</h3>
+    ${(data || []).length ? `<div class="table-wrap"><table><thead><tr><th>School</th><th>Product</th><th>Type</th><th>Reason</th><th>By / date</th><th></th></tr></thead><tbody>${(data || []).map(z => `<tr>
+      <td>${esc(schoolById[z.school_id]?.emis_code || "")}<br><span style="font-size:12px">${esc(schoolById[z.school_id]?.school_name || "")}</span></td>
+      <td>${esc(productById[z.product_id]?.product_name || "")}</td>
+      <td style="font-size:12px;">${esc(label[z.action] || z.action)}<br>${esc([z.invoice_key, z.head_key].filter(Boolean).join(" ↔ "))}</td>
+      <td style="font-size:12px;">${esc(z.reason)}</td>
+      <td style="font-size:12px;">${esc(z.settled_by_name || "")}<br>${fmtDate(z.settled_at)}</td>
+      <td><button type="button" class="btn-secondary" data-undo="${z.id}">Undo</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="sub">No manual settlements yet.</p>`}
+    <div class="actions-row" style="margin-top:10px;"><button class="btn-secondary" type="button" id="stlClose">Close</button></div>`);
+  ov.querySelector("#stlClose").addEventListener("click", () => ov.remove());
+  ov.addEventListener("click", async ev => {
+    const b = ev.target.closest("[data-undo]"); if(!b) return;
+    if(!confirm("Undo this settlement?")) return;
+    const { error: e2 } = await sb.rpc("fn_unsettle_three_way", { p_id: Number(b.dataset.undo) });
+    if(e2){ toast("Undo failed: " + e2.message, "bad"); return; }
+    ov.remove(); toast("Settlement undone."); await refreshComparison();
+  });
 }
 </script>
 </body>
