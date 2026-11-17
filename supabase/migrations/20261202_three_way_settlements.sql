@@ -1,0 +1,10 @@
+-- Applied live via MCP ("three_way_settlements_schema", "three_way_base_honours_settlements").
+-- Manual settlement of three-way entries the automatic matcher cannot resolve (e.g. head teacher deliberately entered a wrong invoice number).
+-- public.three_way_settlements (per school + product, soft-revoked via active=false, reason mandatory, who/when stored):
+--   pair_head      invoice_key + head_key : head challan X is the same delivery as company/AEO invoice Y -> rows paired, flagged "Settled manually: <reason>"
+--   ignore_head    head_key               : head entry is invalid/duplicate -> removed from the three-way comparison
+--   accept_no_head invoice_key            : head teacher need not report this delivery -> status "Settled manually, head teacher entry waived"
+-- Keys are public.fn_norm_invoice() values. Writes only through fn_settle_three_way(emis, product_id, action, invoice, head, reason)
+-- and fn_unsettle_three_way(id) (admin only). v_three_way_base applies settlements before its automatic exact/fuzzy matching.
+-- First settlement: EMIS 32220167, Biscuits, head D044INV14295 <-> company/AEO FTH-{10}-0011.
+-- Exact SQL: pg_get_viewdef('public.v_three_way_base'::regclass, true).
