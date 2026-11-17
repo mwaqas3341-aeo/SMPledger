@@ -1,0 +1,6 @@
+-- Applied live via MCP ("three_way_comparison_compute_once").
+-- v_three_way_comparison used to re-expand v_three_way_base inside a per-row subquery (once for every returned row,
+-- ~2 s for 1,200 rows as admin, far slower under RLS) which caused statement timeouts on the Report Comparison filters.
+-- The base is now computed once (MATERIALIZED CTE) and the "settled on school total" flag is a plain join.
+-- Output verified identical to the old view (1653 rows, 349 settled, EXCEPT both ways = 0); ~0.4 s.
+-- Exact SQL: pg_get_viewdef('public.v_three_way_comparison'::regclass, true).
