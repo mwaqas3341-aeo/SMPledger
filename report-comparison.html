@@ -1149,7 +1149,8 @@ function settleBtnHtml(r, ri){
   if(!isAdminUser()) return "";
   const b = (mode, label) => `<br><button type="button" class="btn-secondary" style="padding:2px 8px;font-size:12px;margin-top:4px;" data-settle="${ri}" data-mode="${mode}">${label}</button>`;
   if(isSettled(r)) return b("undo", "Undo settlement");
-  if(r.status === HEAD_ONLY || needsHead(r)) return b("settle", "Settle…");
+  // Only head-teacher entries can be settled here. A delivery the head teacher has not entered yet is settled when they add it on the SMP app.
+  if(r.status === HEAD_ONLY) return b("settle", "Settle…");
   return "";
 }
 function modalShell(inner){
@@ -1175,6 +1176,7 @@ async function openSettleDialog(r, mode){
   const all = window.lastComparisonRows || [];
   const sameSP = x => x.school_id === r.school_id && x.product_id === r.product_id;
   const isHeadOnly = r.status === HEAD_ONLY;
+  if(!isHeadOnly){ toast("A delivery the head teacher has not entered is settled when they add it on the SMP app.", "bad"); return; }
   // What this entry can be paired with: the other side of the same school + product that is still unpaired.
   const cands = all.filter(x => sameSP(x) && x !== r && (isHeadOnly ? needsHead(x) : x.status === HEAD_ONLY));
   const dFmt = d => d ? fmtDate(d) : "—";
