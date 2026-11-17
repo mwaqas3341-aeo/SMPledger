@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Daily SMP Update — School Meal Program</title>
+<script src="assets/safety.js?v=20261015a"></script>
+<script src="assets/layout.js?v=20261015a"></script>
+<script src="assets/sync-me.js?v=20261015a"></script>
+<script src="assets/email-prompt.js?v=20261018a"></script>
+<script src="assets/session-policy.js?v=20261031c"></script>
+<script src="assets/config.js?v=20261015a"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="assets/styles.css?v=20261103a" />
+<style>
+  #duTable{ font-size:11.5px; }
+  #duTable th, #duTable td{ padding:5px 6px; white-space:nowrap; }
+  #duTable .milk{ background:#f6fbff; }
+  #duTable .bis{ background:#fef9f1; }
+  #duTable .alert{ color:#b42318; font-weight:700; }
+  #duTable .total-row td{ font-weight:700; background:var(--paper); border-top:2px solid var(--navy); }
+  .du-controls{ display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+  .du-controls label{ display:block; font-size:12px; margin-bottom:3px; }
+  .du-cards{ display:flex; flex-wrap:wrap; gap:10px; margin:14px 0; }
+  .du-card{ border:1px solid var(--line, #d9dde3); border-radius:8px; padding:8px 12px; min-width:150px; background:#fff; }
+  .du-card b{ display:block; font-size:17px; }
+  .du-warn{ background:#fff7e6; border:1px solid #f0c36d; border-radius:8px; padding:10px 12px; margin:10px 0; font-size:13px; }
+  .tablewrap{ overflow:auto; max-height:70vh; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <div class="brand">
+      <div>
+        <div class="eyebrow">SMP · Punjab SED</div>
+        <h2>Daily SMP Update</h2>
+      </div>
+      <a class="home-link" href="dashboard.html">&larr; Dashboard</a>
+    </div>
+    <div class="right">
+      <div class="who" id="whoBox">&mdash;</div>
+      <button class="btn-secondary" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </div>
+  <div id="content"></div>
+</div>
+<div class="toast-area" id="toastArea"></div>
+
+<script>
+const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
+let currentUser = null, currentProfile = null;
+let cache = { markaz: [] };
+let rows = [];          // rows from fn_daily_update
+let meta = null;        // {date, scopeLabel, district}
+
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "bad" ? "bad" : "ok");
+  el.textContent = msg;
+  document.getElementById("toastArea").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+function esc(s){ return (s === null || s === undefined) ? "" : String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmt(n){ return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+function pkToday(){ return new Date(Date.now() + 5 * 3600 * 1000).toISOString().slice(0, 10); }
+function dmy(d){ const q = String(d).slice(0, 10).split("-"); return `${q[2]}-${q[1]}-${q[0]}`; }
+
+document.getElementById("signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); window.location.href = "index.html"; });
+
+async function boot(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){ window.location.href = "index.html"; return; }
+  currentUser = session.user;
+  const { data: profile, error } = await sb.from("profiles").select("*").eq("id", currentUser.id).single();
+  if(error || !profile || !profile.active){ await sb.auth.signOut(); window.location.href = "index.html"; return; }
+  currentProfile = profile;
+  const { data: mk } = await sb.from("markaz").select("id,name,district,tehsil").eq("active", true).order("name");
+  cache.markaz = mk || [];
+  document.getElementById("whoBox").innerHTML = `<b>${esc(currentProfile.full_name || currentUser.email)}</b><br>${esc(currentProfile.role)}`;
+  renderSidebarNav();
+  renderPage();
+}
+boot();
+
+const isAdmin = () => ["admin", "super_admin"].includes(currentProfile.role);
+
+function renderPage(){
+  const tehsils = [...new Set(cache.markaz.map(m => m.tehsil))].sort();
+  document.getElementById("content").innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0">Daily SMP update (stock position of schools)</h3>
+      <p class="muted" style="margin-top:0">Same performa as the daily update sheet: milk and biscuit packets received, consumed, remaining stock, days of stock left and demand alerts. Figures come from the receipts and consumption recorded in the system up to the chosen date.</p>
+      <div class="du-controls">
+        <div><label for="duDate">Date</label><input type="date" id="duDate" value="${pkToday()}" max="${pkToday()}" /></div>
+        <div><label for="duTehsil">Tehsil</label><select id="duTehsil">${tehsils.map(t => `<option>${esc(t)}</option>`).join("")}</select></div>
+        <div><label for="duMarkaz">Markaz</label><select id="duMarkaz"></select></div>
+        <div><label for="duThr">Demand alert when days left is below</label><input type="number" id="duThr" value="1" min="0.5" step="0.5" style="width:90px" /></div>
+        <div><button class="btn-primary" id="duGo" type="button">Show</button></div>
+        <div><button class="btn-export" id="duDl" type="button" disabled>Download Excel</button></div>
+      </div>
+    </div>
+    <div id="duOut"></div>`;
+  const fillMarkaz = () => {
+    const t = document.getElementById("duTehsil").value;
+    const list = cache.markaz.filter(m => m.tehsil === t);
+    document.getElementById("duMarkaz").innerHTML = `<option value="">All markaz of this tehsil</option>` + list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  };
+  document.getElementById("duTehsil").addEventListener("change", fillMarkaz);
+  fillMarkaz();
+  document.getElementById("duGo").addEventListener("click", load);
+  document.getElementById("duDl").addEventListener("click", download);
+}
+
+async function load(){
+  const date = document.getElementById("duDate").value || pkToday();
+  const tehsil = document.getElementById("duTehsil").value;
+  const markazId = document.getElementById("duMarkaz").value;
+  const btn = document.getElementById("duGo"); btn.disabled = true; btn.textContent = "Loading…";
+  const { data, error } = await sb.rpc("fn_daily_update", { p_markaz: markazId ? [markazId] : null, p_tehsil: markazId ? null : tehsil, p_date: date });
+  btn.disabled = false; btn.textContent = "Show";
+  if(error){ toast(error.message, "bad"); return; }
+  rows = (data || []).map(r => ({
+    ...r, enrollment: r.enrollment === null ? null : Number(r.enrollment),
+    milk_prev: +r.milk_prev, milk_today: +r.milk_today, biscuit_prev: +r.biscuit_prev, biscuit_today: +r.biscuit_today,
+    milk_consumed: +r.milk_consumed, biscuit_consumed: +r.biscuit_consumed }));
+  const mk = cache.markaz.find(m => m.id === markazId);
+  meta = { date, tehsil, markaz: mk ? mk.name : "", scopeLabel: mk ? mk.name : `Tehsil ${tehsil}`, district: (mk || cache.markaz.find(m => m.tehsil === tehsil) || {}).district || "" };
+  render();
+}
+
+// shared calculations (same formulas as the performa)
+function calc(r, thr){
+  const milkRcv = r.milk_prev + r.milk_today, bisRcv = r.biscuit_prev + r.biscuit_today;
+  const milkRem = milkRcv - r.milk_consumed, bisRem = bisRcv - r.biscuit_consumed;
+  const e = r.enrollment > 0 ? r.enrollment : null;
+  const qm = e ? milkRem / e : null, qb = e ? bisRem / e : null;
+  return { milkRcv, bisRcv, milkRem, bisRem, qm, qb,
+    dm: qm === null ? "No enrollment" : (qm < thr ? "Alert-Demand" : "NO"),
+    db: qb === null ? "No enrollment" : (qb < thr ? "Alert-Demand" : "NO") };
+}
+const thrNow = () => Math.max(0.1, Number(document.getElementById("duThr").value) || 1);
+
+function render(){
+  const thr = thrNow();
+  const c = rows.map(r => calc(r, thr));
+  const out = document.getElementById("duOut");
+  if(!rows.length){ out.innerHTML = `<div class="card"><p>No schools found for this selection.</p></div>`; document.getElementById("duDl").disabled = true; return; }
+  const sum = f => c.reduce((a, x, i) => a + f(x, rows[i]), 0);
+  const noEnr = rows.filter(r => !(r.enrollment > 0));
+  const alertsM = c.filter(x => x.dm === "Alert-Demand").length, alertsB = c.filter(x => x.db === "Alert-Demand").length;
+  const zeroM = c.filter(x => x.qm !== null && x.qm < 0.9).length, zeroB = c.filter(x => x.qb !== null && x.qb < 0.9).length;
+  out.innerHTML = `
+    <div class="du-cards">
+      <div class="du-card">Schools<b>${rows.length}</b></div>
+      <div class="du-card">Milk received<b>${fmt(sum(x => x.milkRcv))}</b></div>
+      <div class="du-card">Milk remaining<b>${fmt(sum(x => x.milkRem))}</b></div>
+      <div class="du-card">Biscuit received<b>${fmt(sum(x => x.bisRcv))}</b></div>
+      <div class="du-card">Biscuit remaining<b>${fmt(sum(x => x.bisRem))}</b></div>
+      <div class="du-card">Milk demand alerts<b>${alertsM}</b></div>
+      <div class="du-card">Biscuit demand alerts<b>${alertsB}</b></div>
+      <div class="du-card">Schools with 0 milk / 0 biscuit<b>${zeroM} / ${zeroB}</b></div>
+    </div>
+    ${noEnr.length ? `<div class="du-warn"><b>${noEnr.length} school(s) have no enrollment on record</b>, so days of stock left and demand alert cannot be worked out for them${isAdmin() ? ". Enter the enrollment in the table below (the grey boxes) and press Save." : ". Please ask the Admin to enter it."}</div>` : ""}
+    <div class="card"><div class="tablewrap"><table id="duTable"><thead><tr>
+      <th>Sr</th><th>Tehsil &amp; Wing</th><th>Markaz</th><th>EMIS</th><th>School</th><th>Enrol-<br>ment</th>
+      <th class="milk">Milk received<br>(previously)</th><th class="milk">Milk received<br>TODAY</th><th class="bis">Biscuit received<br>(previously)</th><th class="bis">Biscuit received<br>TODAY</th>
+      <th class="milk">Milk<br>consumed</th><th class="bis">Biscuit<br>consumed</th><th class="milk">Total milk<br>received</th><th class="bis">Total biscuit<br>received</th>
+      <th class="milk">Remaining<br>milk</th><th class="bis">Remaining<br>biscuit</th><th class="milk">Days left<br>(milk)</th><th class="bis">Days left<br>(biscuit)</th><th class="milk">Demand<br>milk</th><th class="bis">Demand<br>biscuit</th></tr></thead><tbody>
+      ${rows.map((r, i) => { const x = c[i]; return `<tr>
+        <td>${i + 1}</td><td>${esc(r.tehsil_wing)}</td><td>${esc(r.markaz)}</td><td>${esc(r.emis_code)}</td><td>${esc(r.school_name)}</td>
+        <td>${r.enrollment > 0 ? r.enrollment : (isAdmin() ? `<input type="number" min="1" class="enr" data-id="${r.school_id}" style="width:64px;background:#eee" /> <button class="btn-secondary enr-save" data-id="${r.school_id}" type="button">Save</button>` : "—")}</td>
+        <td class="milk">${fmt(r.milk_prev)}</td><td class="milk">${fmt(r.milk_today)}</td><td class="bis">${fmt(r.biscuit_prev)}</td><td class="bis">${fmt(r.biscuit_today)}</td>
+        <td class="milk">${fmt(r.milk_consumed)}</td><td class="bis">${fmt(r.biscuit_consumed)}</td><td class="milk">${fmt(x.milkRcv)}</td><td class="bis">${fmt(x.bisRcv)}</td>
+        <td class="milk">${fmt(x.milkRem)}</td><td class="bis">${fmt(x.bisRem)}</td>
+        <td class="milk">${x.qm === null ? "—" : x.qm.toFixed(2)}</td><td class="bis">${x.qb === null ? "—" : x.qb.toFixed(2)}</td>
+        <td class="milk ${x.dm === "Alert-Demand" ? "alert" : ""}">${x.dm}</td><td class="bis ${x.db === "Alert-Demand" ? "alert" : ""}">${x.db}</td></tr>`; }).join("")}
+      <tr class="total-row"><td colspan="5" style="text-align:right">Total</td><td>${fmt(rows.reduce((a, r) => a + (r.enrollment > 0 ? r.enrollment : 0), 0))}</td>
+        <td>${fmt(rows.reduce((a, r) => a + r.milk_prev, 0))}</td><td>${fmt(rows.reduce((a, r) => a + r.milk_today, 0))}</td><td>${fmt(rows.reduce((a, r) => a + r.biscuit_prev, 0))}</td><td>${fmt(rows.reduce((a, r) => a + r.biscuit_today, 0))}</td>
+        <td>${fmt(rows.reduce((a, r) => a + r.milk_consumed, 0))}</td><td>${fmt(rows.reduce((a, r) => a + r.biscuit_consumed, 0))}</td><td>${fmt(sum(x => x.milkRcv))}</td><td>${fmt(sum(x => x.bisRcv))}</td>
+        <td>${fmt(sum(x => x.milkRem))}</td><td>${fmt(sum(x => x.bisRem))}</td><td colspan="4"></td></tr>
+      </tbody></table></div></div>`;
+  document.getElementById("duDl").disabled = false;
+  out.querySelectorAll(".enr-save").forEach(b => b.addEventListener("click", async () => {
+    const inp = out.querySelector(`.enr[data-id="${b.dataset.id}"]`); const n = parseInt(inp.value, 10);
+    if(!(n > 0)){ toast("Enter the number of enrolled students.", "bad"); return; }
+    const { error } = await sb.rpc("fn_set_school_enrollment", { p_school: b.dataset.id, p_enrollment: n });
+    if(error){ toast(error.message, "bad"); return; }
+    const r = rows.find(x => x.school_id === b.dataset.id); if(r) r.enrollment = n;
+    toast("Enrollment saved."); render();
+  }));
+}
+
+function download(){
+  if(!rows.length){ toast("Press Show first.", "bad"); return; }
+  const thr = thrNow(), n = rows.length, first = 3, last = first + n - 1, tot = last + 1;
+  const c = rows.map(r => calc(r, thr));
+  const A = [];
+  const title = `CM Meal Program, District ${meta.district}   |   Daily SMP update dated ${dmy(meta.date)}   |   ${meta.scopeLabel}   |   Prepared by: ${currentProfile.full_name || ""}`;
+  A.push([title]);
+  A.push(["SrNo", "Tehsil & Wing", "Markaz", "EMIS", "School", "School Enrollment", "Total Milk Packets received (previously)", "Milk Packets received TODAY", "Total Biscuit Packets received (previously)", "Biscuit Packets received TODAY",
+    "Total Milk Packets Consumed", "Total Biscuit Packets Consumed", "Total Milk Packets received", "Total Biscuit Packets received", "Remaining Stock Milk", "Remaining Stock Biscuit", "No of Days Remaining (Milk)", "No of Days Remaining (Biscuit)",
+    "Demand Milk", "Demand Biscuit", "Total no of empty packs (Biscuits)", "Empty packs lifted by vendors (Biscuits)", "Remaining empty packs in school (Biscuits)", "Total no of empty packs (Milk)", "Empty packs lifted by vendors (Milk)", "Remaining empty packs in school (Milk)"]);
+  const ws = XLSX.utils.aoa_to_sheet(A);
+  const set = (addr, v, f) => { ws[addr] = f ? { t: typeof v === "number" ? "n" : "s", v, f } : { t: typeof v === "number" ? "n" : "s", v }; };
+  const num = v => (typeof v === "number" ? v : Number(v) || 0);
+  rows.forEach((r, i) => {
+    const R = first + i, x = c[i];
+    set(`A${R}`, i + 1); set(`B${R}`, r.tehsil_wing); set(`C${R}`, r.markaz); set(`D${R}`, r.emis_code); set(`E${R}`, r.school_name);
+    if(r.enrollment > 0) set(`F${R}`, r.enrollment);
+    set(`G${R}`, r.milk_prev); set(`H${R}`, r.milk_today); set(`I${R}`, r.biscuit_prev); set(`J${R}`, r.biscuit_today); set(`K${R}`, r.milk_consumed); set(`L${R}`, r.biscuit_consumed);
+    set(`M${R}`, x.milkRcv, `G${R}+H${R}`); set(`N${R}`, x.bisRcv, `I${R}+J${R}`); set(`O${R}`, x.milkRem, `M${R}-K${R}`); set(`P${R}`, x.bisRem, `N${R}-L${R}`);
+    set(`Q${R}`, x.qm === null ? "" : x.qm, `IF(F${R}>0,O${R}/F${R},"")`); set(`R${R}`, x.qb === null ? "" : x.qb, `IF(F${R}>0,P${R}/F${R},"")`);
+    set(`S${R}`, x.dm, `IF(Q${R}="","No enrollment",IF(Q${R}<${thr},"Alert-Demand","NO"))`); set(`T${R}`, x.db, `IF(R${R}="","No enrollment",IF(R${R}<${thr},"Alert-Demand","NO"))`);
+    set(`W${R}`, 0, `U${R}-V${R}`); set(`Z${R}`, 0, `X${R}-Y${R}`);
+  });
+  const colSum = (col, f) => set(`${col}${tot}`, f(), `SUM(${col}${first}:${col}${last})`);
+  set(`E${tot}`, "Total");
+  const S = { F: () => rows.reduce((a, r) => a + (r.enrollment > 0 ? r.enrollment : 0), 0), G: () => rows.reduce((a, r) => a + r.milk_prev, 0), H: () => rows.reduce((a, r) => a + r.milk_today, 0),
+    I: () => rows.reduce((a, r) => a + r.biscuit_prev, 0), J: () => rows.reduce((a, r) => a + r.biscuit_today, 0), K: () => rows.reduce((a, r) => a + r.milk_consumed, 0), L: () => rows.reduce((a, r) => a + r.biscuit_consumed, 0),
+    M: () => c.reduce((a, x) => a + x.milkRcv, 0), N: () => c.reduce((a, x) => a + x.bisRcv, 0), O: () => c.reduce((a, x) => a + x.milkRem, 0), P: () => c.reduce((a, x) => a + x.bisRem, 0), W: () => 0, Z: () => 0 };
+  Object.keys(S).forEach(k => colSum(k, S[k]));
+  ["U", "V", "X", "Y"].forEach(k => set(`${k}${tot}`, 0, `SUM(${k}${first}:${k}${last})`));
+  let r0 = tot + 2;
+  set(`L${r0}`, `Milk and Biscuit "Demand Alert" is generated when the stock remaining is less than ${thr} day(s) of enrollment.`);
+  r0 += 1;
+  set(`B${r0}`, `Summary dated ${dmy(meta.date)}`);
+  r0 += 1;
+  ["No of schools", "Tehsil Wing", "T. Milk Rcvd", "Remaining Stock of Milk", "Total Biskt Rcvd", "R. Stock Biskt", "No. Schl 0 Milk", "No. Schl 0 Biskt", "Enrolment"].forEach((h, j) => set(`${String.fromCharCode(66 + j)}${r0}`, h));
+  const groups = []; rows.forEach((r, i) => { const g = groups[groups.length - 1]; if(g && g.name === r.tehsil_wing) g.end = first + i; else groups.push({ name: r.tehsil_wing, start: first + i, end: first + i }); });
+  let sr = r0 + 1; const sFirst = sr;
+  groups.forEach(g => {
+    const ix = rows.map((r, i) => i).filter(i => first + i >= g.start && first + i <= g.end);
+    const rg = col => `${col}${g.start}:${col}${g.end}`;
+    set(`B${sr}`, ix.length, `COUNTA(${rg("E")})`); set(`C${sr}`, g.name);
+    set(`D${sr}`, ix.reduce((a, i) => a + c[i].milkRcv, 0), `SUM(${rg("M")})`); set(`E${sr}`, ix.reduce((a, i) => a + c[i].milkRem, 0), `SUM(${rg("O")})`);
+    set(`F${sr}`, ix.reduce((a, i) => a + c[i].bisRcv, 0), `SUM(${rg("N")})`); set(`G${sr}`, ix.reduce((a, i) => a + c[i].bisRem, 0), `SUM(${rg("P")})`);
+    set(`H${sr}`, ix.filter(i => c[i].qm !== null && c[i].qm < 0.9).length, `COUNTIF(${rg("Q")},"<0.9")`); set(`I${sr}`, ix.filter(i => c[i].qb !== null && c[i].qb < 0.9).length, `COUNTIF(${rg("R")},"<0.9")`);
+    set(`J${sr}`, ix.reduce((a, i) => a + (rows[i].enrollment > 0 ? rows[i].enrollment : 0), 0), `SUM(${rg("F")})`);
+    sr++;
+  });
+  const sLast = sr - 1;
+  set(`C${sr}`, "Total");
+  ["B", "D", "E", "F", "G", "H", "I", "J"].forEach(col => { const v = Array.from({ length: sLast - sFirst + 1 }, (_, k) => ws[`${col}${sFirst + k}`].v).reduce((a, b) => a + num(b), 0); set(`${col}${sr}`, v, `SUM(${col}${sFirst}:${col}${sLast})`); });
+  let lr = r0 + 1;
+  [["Total Milk Packets received", S.M(), `M${tot}`], ["Remaining Stock Milk", S.O(), `O${tot}`], ["Total Biscuit Packets received", S.N(), `N${tot}`], ["Remaining Stock Biscuit", S.P(), `P${tot}`], ["Current Enrollment", S.F(), `F${tot}`]]
+    .forEach(([lab, v, f]) => { set(`L${lr}`, lab); set(`N${lr}`, v, f); lr++; });
+  ws["!ref"] = `A1:Z${Math.max(sr, lr)}`;
+  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 19 } }];
+  ws["!cols"] = [6, 18, 26, 11, 34, 11, 14, 12, 14, 12, 13, 13, 13, 13, 12, 12, 12, 12, 14, 14, 16, 16, 16, 16, 16, 16].map(w => ({ wch: w }));
+  ws["!freeze"] = { xSplit: 5, ySplit: 2 };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Daily Update");
+  // lists of schools with no stock left (the sheets that were kept by hand before)
+  const zeroSheet = (name, pick) => {
+    const hdr = ["SrNo", "Tehsil & Wing", "Markaz", "EMIS", "School", "School Enrollment", "Total received", "Consumed", "Remaining stock", "Days remaining"];
+    const list = rows.map((r, i) => ({ r, x: c[i], i })).filter(o => pick(o.x));
+    const aoa = [hdr, ...list.map((o, k) => [k + 1, o.r.tehsil_wing, o.r.markaz, o.r.emis_code, o.r.school_name, o.r.enrollment || "", ...(name === "Zero Milk Stock" ? [o.x.milkRcv, o.r.milk_consumed, o.x.milkRem, o.x.qm === null ? "" : +o.x.qm.toFixed(2)] : [o.x.bisRcv, o.r.biscuit_consumed, o.x.bisRem, o.x.qb === null ? "" : +o.x.qb.toFixed(2)])])];
+    const z = XLSX.utils.aoa_to_sheet(aoa); z["!cols"] = [6, 18, 26, 11, 34, 11, 13, 12, 13, 13].map(w => ({ wch: w })); XLSX.utils.book_append_sheet(wb, z, name);
+  };
+  zeroSheet("Zero Milk Stock", x => x.qm !== null && x.qm < 0.9);
+  zeroSheet("Zero Biscuit Stock", x => x.qb !== null && x.qb < 0.9);
+  const safe = s => String(s).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  XLSX.writeFile(wb, `SMP-daily-update_${safe(meta.scopeLabel)}_${meta.date}.xlsx`);
+  toast("Excel downloaded.");
+}
+</script>
+</body>
+</html>

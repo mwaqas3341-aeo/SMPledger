@@ -1,0 +1,4 @@
+-- Daily SMP update performa (applied live; live DB is authoritative).
+-- schools.enrollment, schools.enrollment_source (enrollment imported from company file; gaps entered by admin)
+-- fn_daily_update(p_markaz uuid[], p_tehsil text, p_date date): per-school milk/biscuit prev, today, consumed
+-- fn_set_school_enrollment(p_school uuid, p_enrollment int): admin only
