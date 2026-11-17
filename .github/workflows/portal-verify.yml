@@ -1,0 +1,85 @@
+name: Portal verify before sending reports
+
+# Before a WhatsApp missing-consumption report is sent, only the schools listed in it are read again from the SMP
+# dashboard, so schools that were updated since the last sync are not named. A cheap gate runs every 5 minutes and asks
+# Supabase (fn_wa_smp_verify_gate) whether a re-check is waiting; if not, nothing else starts.
+# It shares the "smp-portal-login" lock with the main sync, so only one portal login is open at a time.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+      id: ${{ steps.g.outputs.id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: portal-sync/scripts
+      - id: g
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python3 portal-sync/scripts/verify_job.py gate >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: smp-portal-login
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: portal-sync
+    env:
+      SMP_USERNAME: ${{ secrets.SMP_USERNAME }}
+      SMP_PASSWORD: ${{ secrets.SMP_PASSWORD }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      REQUEST_ID: ${{ needs.gate.outputs.id }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check secrets
+        run: |
+          for v in SMP_USERNAME SMP_PASSWORD SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::Repository secret $v is missing."; exit 1; fi
+          done
+      - run: echo "STAGING_DIR=$RUNNER_TEMP/smp-exports" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('portal-sync/requirements.txt', 'portal-sync/scripts/setup_workflow_env.py') }}
+      - run: python scripts/setup_workflow_env.py
+      - run: python -m playwright install --with-deps chromium
+      - name: Schools to re-check
+        run: python scripts/verify_job.py codes "$REQUEST_ID" "$RUNNER_TEMP/codes.txt"
+      - name: Read them from the SMP dashboard
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            python -m smp_extractor --non-interactive --headless --codes-file "$RUNNER_TEMP/codes.txt" \
+              --output-dir "${STAGING_DIR}" --delay 3 --jitter 5 --max-minutes 20
+            STATUS=$?
+            set -e
+            if [ "${STATUS}" -eq 0 ] || [ "${STATUS}" -eq 1 ]; then break; fi
+            echo "::warning::Attempt ${attempt} stopped with exit code ${STATUS}."
+            [ "${attempt}" -lt 3 ] && sleep $((60 + RANDOM % 60))
+          done
+          if [ "${STATUS}" -ne 0 ] && [ "${STATUS}" -ne 1 ]; then exit "${STATUS}"; fi
+      - name: Push to Supabase
+        run: python scripts/push_supabase.py --bundle "${STAGING_DIR}" --shard verify
+      - name: Close the request and release the reports
+        if: ${{ always() }}
+        run: python scripts/verify_job.py finish "$REQUEST_ID" "${{ job.status == 'success' && 'ok' || 'fail' }}"

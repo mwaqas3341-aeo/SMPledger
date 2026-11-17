@@ -1355,8 +1355,8 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
       sb.rpc("fn_wa_smp_preview", { p_group: b.dataset.id }).then(r => { if(r.error){ toast(r.error.message, "bad"); } else alert("Preview of the SMP missing-consumption message (the Excel file is attached when anything is missing):\n\n" + r.data); });
     }
     else if(b.dataset.gact === "smpnow"){
-      if(!confirm("Queue the SMP missing-consumption message and Excel file for this group now? It is sent by the WhatsApp worker within the daily limit (replaces a message already queued for that day).")) return;
-      sb.rpc("fn_wa_smp_queue_now", { p_group: b.dataset.id }).then(r => toast(r.error ? r.error.message : "Queued - the worker will send it shortly", r.error ? "bad" : undefined));
+      if(!confirm("Send the SMP missing-consumption message and Excel file to this group now? The listed schools are first re-checked on the SMP dashboard (usually 15-30 minutes), then the WhatsApp worker sends it within the daily limit (replaces a message already queued for that day).")) return;
+      sb.rpc("fn_wa_smp_queue_now", { p_group: b.dataset.id }).then(r => toast(r.error ? r.error.message : (r.data || "Queued - the worker will send it shortly."), r.error ? "bad" : undefined));
     }
     else if(b.dataset.gact === "del"){ run(sb.from("wa_collect_groups").delete().eq("group_jid", b.dataset.id)); }
     else run(sb.from("wa_collect_groups").update({ active:b.dataset.active !== "true" }).eq("group_jid", b.dataset.id));

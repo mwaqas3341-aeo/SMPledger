@@ -72,6 +72,9 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    concurrency:
+      group: smp-portal-login   # shared with the pre-send re-check workflow: one portal login at a time
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       max-parallel: 1     # one portal login at a time
