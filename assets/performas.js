@@ -153,18 +153,19 @@ function perfAssembleDaily(rows, opts){
   aoa.push([`"Demand Alert" is generated when Milk stock remaining is less than ${alertM} days and Biscuit stock remaining is less than ${alertB} days.`]);
   aoa.push([]);
 
-  /* ---- summary block ---- */
+  /* ---- summary: its own sheet in the same workbook ---- */
   const groups = [];
   model.forEach((x, i) => {
     const key = opts.groupBy === "tehsilwing" ? `${x.tehsil} ${x.wing || ""}`.trim() : x.markaz;
     const g = groups[groups.length - 1];
     if(g && g.key === key){ g.to = i; } else { groups.push({ key, from: i, to: i }); }
   });
-  const sumTitleRow = aoa.length + 1;
-  aoa.push([null, `Summary Dated ${perfDMY(opts.date)}`]);
-  merges.push({ s: { r: sumTitleRow - 1, c: 1 }, e: { r: sumTitleRow - 1, c: 9 } });
-  aoa.push([null, "No", opts.groupBy === "tehsilwing" ? "Tehsil Wing" : "Markaz", "T. Milk Rcvd", "Remaining Stock of Milk", "Total Biskt Rcv", "R. Stock Biskt", "No. Schl 0 Milk", "No. Schl 0 Biskt", "Enrolment"]);
-  const sFirst = aoa.length + 1;
+  const P = "Performa!";
+  const sa = [];
+  const smerges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
+  sa.push([`Summary Dated ${perfDMY(opts.date)} | ${opts.scopeLabel || ""}`]);
+  sa.push(["No", opts.groupBy === "tehsilwing" ? "Tehsil Wing" : "Markaz", "T. Milk Rcvd", "Remaining Stock of Milk", "Total Biskt Rcv", "R. Stock Biskt", "No. Schl 0 Milk", "No. Schl 0 Biskt", "Enrolment"]);
+  const sFirst = 3;
   const sumRows = groups.map((g, gi) => {
     const a = first + g.from, b = first + g.to, sl = model.slice(g.from, g.to + 1);
     const v = {
@@ -174,50 +175,39 @@ function perfAssembleDaily(rows, opts){
       b0: sl.filter(x => x.bDays != null && x.bDays < PERF_ZERO_DAYS).length,
       enrol: sl.reduce((s, x) => s + (x.e || 0), 0),
     };
-    aoa.push([null, gi + 1, g.key,
-      num(`SUM(${L.mRecv}${a}:${L.mRecv}${b})`, v.mRecv), num(`SUM(${L.mRem}${a}:${L.mRem}${b})`, v.mRem),
-      num(`SUM(${L.bRecv}${a}:${L.bRecv}${b})`, v.bRecv), num(`SUM(${L.bRem}${a}:${L.bRem}${b})`, v.bRem),
-      num(`COUNTIF(${L.mDays}${a}:${L.mDays}${b},"<${PERF_ZERO_DAYS}")`, v.m0),
-      num(`COUNTIF(${L.bDays}${a}:${L.bDays}${b},"<${PERF_ZERO_DAYS}")`, v.b0),
-      num(`SUM(${L.enrol}${a}:${L.enrol}${b})`, v.enrol)]);
+    sa.push([gi + 1, g.key,
+      num(`SUM(${P}${L.mRecv}${a}:${L.mRecv}${b})`, v.mRecv), num(`SUM(${P}${L.mRem}${a}:${L.mRem}${b})`, v.mRem),
+      num(`SUM(${P}${L.bRecv}${a}:${L.bRecv}${b})`, v.bRecv), num(`SUM(${P}${L.bRem}${a}:${L.bRem}${b})`, v.bRem),
+      num(`COUNTIF(${P}${L.mDays}${a}:${L.mDays}${b},"<${PERF_ZERO_DAYS}")`, v.m0),
+      num(`COUNTIF(${P}${L.bDays}${a}:${L.bDays}${b},"<${PERF_ZERO_DAYS}")`, v.b0),
+      num(`SUM(${P}${L.enrol}${a}:${L.enrol}${b})`, v.enrol)]);
     return v;
   });
-  const sLast = aoa.length;
+  const sLast = sa.length;
   const T = k => sumRows.reduce((s, v) => s + v[k], 0);
   const colSum = c => `SUM(${c}${sFirst}:${c}${sLast})`;
-  aoa.push([null, null, "Total", num(colSum("D"), T("mRecv")), num(colSum("E"), T("mRem")), num(colSum("F"), T("bRecv")), num(colSum("G"), T("bRem")),
-    num(colSum("H"), T("m0")), num(colSum("I"), T("b0")), num(colSum("J"), T("enrol"))]);
-  aoa.push([]);
-  // side block (same figures as the official sheet's right-hand block)
+  sa.push([null, "Total", num(colSum("C"), T("mRecv")), num(colSum("D"), T("mRem")), num(colSum("E"), T("bRecv")), num(colSum("F"), T("bRem")),
+    num(colSum("G"), T("m0")), num(colSum("H"), T("b0")), num(colSum("I"), T("enrol"))]);
+  sa.push([]);
   const side = [
-    ["Total Milk Packets received", totVal.mRecv, `${L.mRecv}${totXl}`],
-    ["Remaining Stock Milk", totVal.mRem, `${L.mRem}${totXl}`],
-    ["Total Biscuit Packets received", totVal.bRecv, `${L.bRecv}${totXl}`],
-    ["Remaining Stock Biscuit", totVal.bRem, `${L.bRem}${totXl}`],
-    ["Current Enrollment", totVal.enrol, `${L.enrol}${totXl}`],
-    ["total no of empty packs (Biscuits)", 0, `${L.bEmpTot}${totXl}`],
-    ["Empty packs lifted by vendors (Biscuits)", 0, `${L.bEmpLift}${totXl}`],
-    ["Remaining empty packs in school (Biscuits)", 0, `${L.bEmpRem}${totXl}`],
-    ["total no of empty packs (Milk)", 0, `${L.mEmpTot}${totXl}`],
-    ["Empty packs lifted by vendors (Milk)", 0, `${L.mEmpLift}${totXl}`],
-    ["Remaining empty packs in school (Milk)", 0, `${L.mEmpRem}${totXl}`],
+    ["Total Milk Packets received", totVal.mRecv, "mRecv"],
+    ["Remaining Stock Milk", totVal.mRem, "mRem"],
+    ["Total Biscuit Packets received", totVal.bRecv, "bRecv"],
+    ["Remaining Stock Biscuit", totVal.bRem, "bRem"],
+    ["Current Enrollment", totVal.enrol, "enrol"],
+    ["total no of empty packs (Biscuits)", 0, "bEmpTot"],
+    ["Empty packs lifted by vendors (Biscuits)", 0, "bEmpLift"],
+    ["Remaining empty packs in school (Biscuits)", 0, "bEmpRem"],
+    ["total no of empty packs (Milk)", 0, "mEmpTot"],
+    ["Empty packs lifted by vendors (Milk)", 0, "mEmpLift"],
+    ["Remaining empty packs in school (Milk)", 0, "mEmpRem"],
   ];
-  side.forEach(([label, v, ref]) => aoa.push([null, null, label, num(ref, v)]));
+  side.forEach(([label, v, k]) => sa.push([null, label, num(`${P}${L[k]}${totXl}`, v)]));
 
-  const sheets = [{ name: "Performa", aoa, merges, cols: colsW, headerRow: 2 }];
-
-  /* ---- zero-stock lists (hidden sheets in the official file; shown here) ---- */
-  const zeroSheet = (name, label, test) => {
-    const sel = model.filter(test);
-    const a2 = [[`${String(sel.length).padStart(2, "0")} Schools list having 0 ${label} Stock`], headers.slice(0, 20)];
-    sel.forEach((x, i) => {
-      const cells = dataRowCells({ ...x, sr: i + 1 }, 3 + i, false).slice(0, 20);
-      a2.push(cells);
-    });
-    return { name, aoa: a2, merges: [{ s: { r: 0, c: 0 }, e: { r: 0, c: 19 } }], cols: colsW.slice(0, 20), headerRow: 2 };
-  };
-  sheets.push(zeroSheet("0 Milk stock", "Milk", x => x.mDays != null && x.mDays < PERF_ZERO_DAYS));
-  sheets.push(zeroSheet("0 Biscuit stock", "Biscuit", x => x.bDays != null && x.bDays < PERF_ZERO_DAYS));
+  const sheets = [
+    { name: "Performa", aoa, merges, cols: colsW, headerRow: 2 },
+    { name: "Summary", aoa: sa, merges: smerges, cols: [6, 40, 14, 18, 14, 14, 14, 14, 12].map(w => ({ wch: w })), headerRow: 2 },
+  ];
 
   return { sheets, model, summary: groups.map((g, i) => ({ key: g.key, ...sumRows[i] })), totals: totVal, title };
 }
