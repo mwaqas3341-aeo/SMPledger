@@ -1409,7 +1409,7 @@ async function openSettleIssues(){
       <div><label>Product</label><select id="siProduct">${cache.products.map(p => `<option value="${p.id}" ${p.id === biscuits.id ? "selected" : ""}>${esc(p.product_name)}</option>`).join("")}</select></div>
       <div><label>From</label><input type="date" id="siFrom" value="${fFrom}"></div>
       <div><label>To</label><input type="date" id="siTo" value="${fTo}"></div>
-      <label style="white-space:nowrap;"><input type="checkbox" id="siPending"> Also show deliveries not yet entered by AEO / head teacher</label>
+      <label style="max-width:300px;line-height:1.3;"><input type="checkbox" id="siPending"> <span>Also show deliveries where the company delivered but the AEO and head teacher have <b>not entered anything yet</b> (nothing to compare, usually not a mismatch)</span></label>
       <button class="btn-secondary" type="button" id="siLoad">Load</button>
       <button class="btn-primary" type="button" id="siSaveAll">Settle all filled-in</button>
       <button class="btn-secondary" type="button" id="siClose">Close</button></div>
