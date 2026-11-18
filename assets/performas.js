@@ -52,6 +52,26 @@ const SMP_PERFORMAS = {
       { key: "remarks",  header: "Remarks",                                   src: "Added automatically, e.g. enrolment not found", kind: "auto" },
     ],
   },
+  invoice_corrections: {
+    id: "invoice_corrections",
+    title: "Correction Request - Invoice / Challan numbers",
+    desc: "Head-teacher entries whose challan number differs from the company/AEO invoice (typing mistakes), with old value, new value and an automatic reason.",
+    builder: "invoice_corrections",
+    scopes: ["markaz", "tehsil", "district"],
+    columns: [
+      { key: "emis",    header: "Emis Code",       src: "schools.emis_code", kind: "data" },
+      { key: "school",  header: "School Name",     src: "schools.school_name", kind: "data" },
+      { key: "cat",     header: "Category (inventory received, pack lifted, consumption or other)", src: "Fixed: \"Inventory Received\" (only category held in the system for this performa)", kind: "auto" },
+      { key: "tw",      header: "tehsil and wing", src: "markaz.tehsil + schools.wing", kind: "data" },
+      { key: "type",    header: "Type (milk, biscuit)", src: "products.product_name of the receipt", kind: "data" },
+      { key: "challan", header: "Challan Number",  src: "Correct invoice number (company invoice, confirmed by the AEO entry)", kind: "data" },
+      { key: "old",     header: "Old Value",       src: "Challan number as entered by the head teacher on the SMP portal", kind: "data" },
+      { key: "new",     header: "New Value",       src: "Correct invoice number (same as Challan Number)", kind: "data" },
+      { key: "reason",  header: "Reason",          src: "Worked out automatically by comparing old and new (letter O for 0, missing or extra character, wrong digit)", kind: "auto" },
+      { key: "remarks", header: "Remarks if any",  src: "Blank - fill in", kind: "manual" },
+      { key: "comments",header: "Comments",        src: "Blank - fill in", kind: "manual" },
+    ],
+  },
 };
 
 /* ---------- small pure helpers ---------- */
@@ -212,8 +232,61 @@ function perfAssembleDaily(rows, opts){
   return { sheets, model, summary: groups.map((g, i) => ({ key: g.key, ...sumRows[i] })), totals: totVal, title };
 }
 
+/* ---- Correction request performa ---- */
+// Explains how the head teacher's value differs from the right one, e.g.
+// "Head teacher entered letter O instead of 0; missed '5'".
+function perfInvoiceReason(oldV, newV){
+  const o = String(oldV || "").replace(/\s+/g, ""), n = String(newV || "").replace(/\s+/g, "");
+  if(!o) return "Head teacher did not enter the challan number";
+  if(o === n) return "";
+  if(o.toUpperCase() === n.toUpperCase()) return "Head teacher entered the number in different letter case";
+  if(o.length > n.length && o.startsWith(n)) return `Head teacher entered an extra '${o.slice(n.length)}' at the end`;
+  if(n.length > o.length && n.startsWith(o)) return `Head teacher missed '${n.slice(o.length)}' at the end`;
+  // edit script by dynamic programming; letter O typed for zero costs less than a plain substitution
+  const m = o.length, k = n.length, INF = 1e9;
+  const D = Array.from({ length: m + 1 }, () => new Array(k + 1).fill(INF)); D[0][0] = 0;
+  for(let i = 0; i <= m; i++) for(let j = 0; j <= k; j++){
+    if(i > 0) D[i][j] = Math.min(D[i][j], D[i - 1][j] + 1);
+    if(j > 0) D[i][j] = Math.min(D[i][j], D[i][j - 1] + 1);
+    if(i > 0 && j > 0){
+      const a = o[i - 1], b = n[j - 1];
+      const c = a === b ? 0 : (a.toUpperCase() === "O" && b === "0" ? 0.5 : 1);
+      D[i][j] = Math.min(D[i][j], D[i - 1][j - 1] + c);
+    }
+  }
+  const ops = []; let i = m, j = k;
+  while(i > 0 || j > 0){
+    const a = o[i - 1], b = n[j - 1];
+    if(i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + (a === b ? 0 : (a.toUpperCase() === "O" && b === "0" ? 0.5 : 1))){
+      if(a !== b) ops.push(a.toUpperCase() === "O" && b === "0" ? { t: "O0" } : { t: "sub", a, b });
+      i--; j--;
+    } else if(i > 0 && D[i][j] === D[i - 1][j] + 1){ ops.push({ t: "extra", c: a, end: j === k }); i--; }
+    else { ops.push({ t: "miss", c: b }); j--; }
+  }
+  ops.reverse();
+  const parts = [];
+  const nO = ops.filter(x => x.t === "O0").length;
+  if(nO) parts.push(nO > 1 ? "entered letter O instead of 0 (" + nO + " places)" : "entered letter O instead of 0");
+  ops.filter(x => x.t === "sub").forEach(x => parts.push(`entered '${x.a}' instead of '${x.b}'`));
+  ops.filter(x => x.t === "extra").forEach(x => parts.push(`entered an extra '${x.c}'${x.end ? " at the end" : ""}`));
+  ops.filter(x => x.t === "miss").forEach(x => parts.push(`missed '${x.c}'`));
+  return parts.length ? "Head teacher " + parts.join("; ") : "Head teacher entered a different number";
+}
+
+function perfAssembleCorrections(rows, opts){
+  const def = SMP_PERFORMAS.invoice_corrections;
+  const headers = def.columns.map(c => c.header);
+  const model = rows.map(r => ({ ...r, reason: perfInvoiceReason(r.old, r.new) }));
+  const aoa = [headers];
+  model.forEach(x => aoa.push([x.emis ? String(x.emis) : "", x.school, "Inventory Received", `${x.tehsil || ""} ${x.wing || ""}`.trim(),
+    x.type, x.new, x.old, x.new, x.reason, "", ""]));
+  const cols = [11, 34, 20, 22, 10, 18, 18, 18, 50, 18, 18].map(w => ({ wch: w }));
+  return { sheets: [{ name: "Corrections", aoa, merges: [], cols, headerRow: 1 }], model, title: `Correction Request | ${opts.scopeLabel || ""} | up to ${perfDMY(opts.date)}` };
+}
+
 const SMP_PERFORMA_BUILDERS = {
   daily_updates: perfAssembleDaily,
+  invoice_corrections: perfAssembleCorrections,
 };
 
 /* ---------- Excel writer (SheetJS) ---------- */
@@ -229,11 +302,7 @@ function perfToWorkbook(sheets){
 }
 
 /* ---------- data collection (browser only) ---------- */
-async function perfCollect(ctx){
-  // ctx: { scope: "markaz"|"tehsil"|"district", markazId, tehsil, wing, date }
-  const [milk, biscuit] = cache.products;
-  if(!milk || !biscuit) throw new Error("Products are not loaded");
-
+async function perfSchools(ctx){
   const mkQuery = () => {
     let q = sb.from("schools").select("id,school_name,emis_code,markaz_id,wing,enrollment,markaz!inner(name,tehsil)").eq("active", true);
     q = scopeSchoolsQuery(q);
@@ -248,6 +317,16 @@ async function perfCollect(ctx){
   schools.sort((a, b) => (a.markaz?.tehsil || "").localeCompare(b.markaz?.tehsil || "") || (a.wing || "").localeCompare(b.wing || "")
     || (a.markaz?.name || "").localeCompare(b.markaz?.name || "") || (a.emis_code || "").localeCompare(b.emis_code || ""));
   const ids = schools.map(s => s.id);
+
+  return { schools, ids };
+}
+
+async function perfCollect(ctx){
+  // ctx: { scope: "markaz"|"tehsil"|"district", markazId, tehsil, wing, date }
+  const [milk, biscuit] = cache.products;
+  if(!milk || !biscuit) throw new Error("Products are not loaded");
+
+  const { schools, ids } = await perfSchools(ctx);
 
   // Enrolment: live file first (same rule as Demand), system record as fallback.
   const EXCL = new Set(["6", "7", "8", "9", "10", "11", "12"]);
@@ -292,6 +371,179 @@ async function perfCollect(ctx){
   return { rows, liveOk, liveDate };
 }
 
+async function perfCollectCorrections(ctx){
+  const { schools, ids } = await perfSchools(ctx);
+  const byId = {}; schools.forEach(x => { byId[x.id] = x; });
+  const prodById = {}; cache.products.forEach(p => { prodById[p.id] = p; });
+  const wantIds = ctx.product ? cache.products.filter(p => p.product_name.toLowerCase().includes(ctx.product)).map(p => p.id) : null;
+  const out = [];
+  for(let i = 0; i < ids.length; i += 80){
+    const chunk = ids.slice(i, i + 80);
+    const { data, error } = await smpFetchAll(() => {
+      let q = sb.from("v_three_way_comparison")
+        .select("school_id,product_id,delivery_date,invoice_number,company_invoice_number,aeo_invoice_number,head_challan,head_invoice_differs,settled_on_totals")
+        .in("school_id", chunk).eq("head_invoice_differs", true).not("settled_on_totals", "is", true).lte("delivery_date", ctx.date);
+      if(wantIds) q = q.in("product_id", wantIds);
+      return q.order("school_id").order("product_id").order("delivery_date").order("company_invoice_number");
+    });
+    if(error) throw new Error(error.message);
+    (data || []).forEach(r => {
+      const sc = byId[r.school_id]; if(!sc) return;
+      const right = r.company_invoice_number || r.aeo_invoice_number || r.invoice_number;
+      const old = (r.head_challan || "").trim();
+      if(!right || !old || old === right) return;
+      out.push({ tehsil: sc.markaz?.tehsil, wing: sc.wing, markaz: sc.markaz?.name, emis: sc.emis_code, school: sc.school_name,
+        type: prodById[r.product_id]?.product_name || "", old, new: right, date: r.delivery_date });
+    });
+  }
+  const order = {}; schools.forEach((x, i) => { order[x.emis_code] = i; });
+  out.sort((a, b) => (order[a.emis] - order[b.emis]) || a.type.localeCompare(b.type) || String(a.date).localeCompare(String(b.date)));
+  return { rows: out };
+}
+
+/* ---------- custom performas (made in the admin Performa designer) ---------- */
+// A saved design is { name, title_text, total_row, columns:[{header, kind, field|text|expr}] }.
+//   kind "field"   - a school-level figure from the system (PERF_FIELDS)
+//   kind "formula" - arithmetic over the sheet's own columns by letter, e.g. G+H or O/F
+//   kind "fixed"   - the same text on every row
+//   kind "blank"   - left empty to fill in
+const PERF_FIELDS = [
+  { key: "sr",     label: "Serial number",                 num: true },
+  { key: "tw",     label: "Tehsil & wing" },
+  { key: "tehsil", label: "Tehsil" },
+  { key: "wing",   label: "Wing" },
+  { key: "markaz", label: "Markaz" },
+  { key: "emis",   label: "EMIS code" },
+  { key: "school", label: "School name" },
+  { key: "enrol",  label: "Enrolment", num: true },
+  { key: "mPrev",  label: "Milk received (previously)", num: true },
+  { key: "mToday", label: "Milk received on report date", num: true },
+  { key: "mRecv",  label: "Milk received (total)", num: true },
+  { key: "mCons",  label: "Milk consumed (total)", num: true },
+  { key: "mRem",   label: "Milk remaining stock", num: true },
+  { key: "mDays",  label: "Milk days remaining", num: true },
+  { key: "mAlert", label: "Milk demand alert (Alert-Demand / NO)" },
+  { key: "bPrev",  label: "Biscuit received (previously)", num: true },
+  { key: "bToday", label: "Biscuit received on report date", num: true },
+  { key: "bRecv",  label: "Biscuit received (total)", num: true },
+  { key: "bCons",  label: "Biscuit consumed (total)", num: true },
+  { key: "bRem",   label: "Biscuit remaining stock", num: true },
+  { key: "bDays",  label: "Biscuit days remaining", num: true },
+  { key: "bAlert", label: "Biscuit demand alert (Alert-Demand / NO)" },
+  { key: "remarks", label: "Automatic remarks (e.g. enrolment not found)" },
+];
+
+// Best-guess mapping from an uploaded header, so the admin mostly just confirms.
+function perfGuessField(header){
+  const h = String(header || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ");
+  const has = (...w) => w.every(x => h.includes(x));
+  const milk = h.includes("milk"), bisc = h.includes("biscuit") || h.includes("biskt");
+  if(/\b(sr|s no|serial)\b/.test(h) || h.trim() === "sr no" || h.trim() === "srno") return { kind: "field", field: "sr" };
+  if(has("tehsil", "wing") || has("tehsil", "&")) return { kind: "field", field: "tw" };
+  if(h.includes("emis")) return { kind: "field", field: "emis" };
+  if(h.includes("markaz")) return { kind: "field", field: "markaz" };
+  if(h.includes("school") && h.includes("enrol")) return { kind: "field", field: "enrol" };
+  if(h.includes("enrol")) return { kind: "field", field: "enrol" };
+  if(h.includes("school") && (h.includes("name") || h.trim() === "school")) return { kind: "field", field: "school" };
+  if(h.trim() === "school") return { kind: "field", field: "school" };
+  if(h.includes("tehsil")) return { kind: "field", field: "tehsil" };
+  if(h.includes("wing")) return { kind: "field", field: "wing" };
+  if((milk || bisc) && h.includes("alert")) return { kind: "field", field: milk ? "mAlert" : "bAlert" };
+  if((milk || bisc) && h.includes("demand")) return { kind: "field", field: milk ? "mAlert" : "bAlert" };
+  if((milk || bisc) && (h.includes("days"))) return { kind: "field", field: milk ? "mDays" : "bDays" };
+  if((milk || bisc) && (h.includes("consum"))) return { kind: "field", field: milk ? "mCons" : "bCons" };
+  if((milk || bisc) && (h.includes("remain") || h.includes("stock"))) return { kind: "field", field: milk ? "mRem" : "bRem" };
+  if((milk || bisc) && (h.includes("today"))) return { kind: "field", field: milk ? "mToday" : "bToday" };
+  if((milk || bisc) && ((h.includes("previous") || h.includes("prev ") || h.endsWith("prev")))) return { kind: "field", field: milk ? "mPrev" : "bPrev" };
+  if((milk || bisc) && (h.includes("receiv"))) return { kind: "field", field: milk ? "mRecv" : "bRecv" };
+  if(h.includes("remark")) return { kind: "field", field: "remarks" };
+  return { kind: "blank" };
+}
+
+// Tiny safe arithmetic evaluator (+ - * / parentheses, numbers, column letters). No eval.
+function perfEvalExpr(expr, getVar){
+  const t = String(expr).replace(/\s+/g, "").toUpperCase();
+  if(!/^[A-Z0-9+\-*\/().]+$/.test(t)) throw new Error("Only numbers, column letters, + - * / and brackets are allowed");
+  let i = 0;
+  const peek = () => t[i];
+  function num(){
+    if(peek() === "("){ i++; const v = add(); if(peek() !== ")") throw new Error("Missing )"); i++; return v; }
+    if(peek() === "-"){ i++; const v = num(); return v == null ? null : -v; }
+    let m = /^[0-9]+(\.[0-9]+)?/.exec(t.slice(i));
+    if(m){ i += m[0].length; return Number(m[0]); }
+    m = /^[A-Z]{1,2}/.exec(t.slice(i));
+    if(m){ i += m[0].length; return getVar(m[0]); }
+    throw new Error("Unexpected '" + (peek() || "end") + "'");
+  }
+  function mul(){ let v = num(); while(peek() === "*" || peek() === "/"){ const op = t[i++]; const r = num(); v = (v == null || r == null) ? null : (op === "*" ? v * r : (r === 0 ? null : v / r)); } return v; }
+  function add(){ let v = mul(); while(peek() === "+" || peek() === "-"){ const op = t[i++]; const r = mul(); v = (v == null || r == null) ? null : (op === "+" ? v + r : v - r); } return v; }
+  const v = add(); if(i < t.length) throw new Error("Unexpected '" + t[i] + "'");
+  return v;
+}
+function perfExprToExcel(expr, row){ return String(expr).toUpperCase().replace(/\s+/g, "").replace(/\b([A-Z]{1,2})\b/g, `$1${row}`); }
+
+function perfFieldValues(x, i){
+  return {
+    sr: i + 1, tw: `${x.tehsil || ""} ${x.wing || ""}`.trim(), tehsil: x.tehsil, wing: x.wing, markaz: x.markaz,
+    emis: x.emis ? (Number(x.emis) || x.emis) : "", school: x.school, enrol: x.e ?? "",
+    mPrev: x.m.prev, mToday: x.m.today, mRecv: x.mRecv, mCons: x.m.cons, mRem: x.mRem, mDays: x.mDays ?? "",
+    bPrev: x.b.prev, bToday: x.b.today, bRecv: x.bRecv, bCons: x.b.cons, bRem: x.bRem, bDays: x.bDays ?? "",
+    remarks: x.remarks,
+  };
+}
+
+function perfAssembleCustom(rows, opts, tpl){
+  // reuse the daily model for the figures (it already does received/remaining/days/remarks)
+  const base = perfAssembleDaily(rows, opts).model;
+  const cols = tpl.columns || [];
+  const alertM = opts.alertMilk ?? 4, alertB = opts.alertBiscuit ?? 4;
+  const isNum = c => c.kind === "formula" || (c.kind === "field" && (PERF_FIELDS.find(f => f.key === c.field) || {}).num);
+  const hasTitle = !!(tpl.title_text || "").trim();
+  const first = (hasTitle ? 3 : 2);                         // Excel row of first data row
+  const aoa = [];
+  if(hasTitle) aoa.push([String(tpl.title_text).replace("{date}", perfDMY(opts.date)).replace("{area}", opts.scopeLabel || "").replace("{by}", opts.preparedBy || "")]);
+  aoa.push(cols.map(c => c.header));
+  const sums = cols.map(() => 0);
+  base.forEach((x, i) => {
+    const f = perfFieldValues(x, i);
+    f.mAlert = x.mDays == null ? "Enrolment?" : (x.mDays < alertM ? "Alert-Demand" : "NO");
+    f.bAlert = x.bDays == null ? "Enrolment?" : (x.bDays < alertB ? "Alert-Demand" : "NO");
+    const xlRow = first + i;
+    const vals = cols.map(c => c.kind === "field" ? f[c.field] : c.kind === "fixed" ? (c.text || "") : "");
+    const cell = cols.map((c, ci) => {
+      if(c.kind === "formula"){
+        let v = null;
+        try{ v = perfEvalExpr(c.expr, L => { const k = L.length === 1 ? L.charCodeAt(0) - 65 : (L.charCodeAt(0) - 64) * 26 + L.charCodeAt(1) - 65; const q = vals[k]; return typeof q === "number" ? q : (q === "" || q == null ? 0 : (Number(q) || 0)); }); }catch(e){ v = null; }
+        vals[ci] = v == null ? "" : v;
+        return { t: v == null ? "s" : "n", f: `IFERROR(${perfExprToExcel(c.expr, xlRow)},"")`, v: v == null ? "" : v };
+      }
+      return vals[ci];
+    });
+    cell.forEach((v, ci) => { if(isNum(cols[ci]) && typeof vals[ci] === "number") sums[ci] += vals[ci]; });
+    aoa.push(cell);
+  });
+  if(tpl.total_row !== false && base.length){
+    const last = first + base.length - 1;
+    const tot = cols.map((c, ci) => {
+      if(isNum(c) && c.kind === "field" && c.field !== "sr" && c.field !== "mDays" && c.field !== "bDays") return { t: "n", f: `SUM(${perfColLetter(ci)}${first}:${perfColLetter(ci)}${last})`, v: sums[ci] };
+      return null;
+    });
+    const labelAt = cols.findIndex((c, ci) => tot[ci] == null && c.kind === "field" && ["school", "markaz", "tw"].includes(c.field));
+    if(labelAt >= 0) tot[labelAt] = "Total";
+    aoa.push(tot);
+  }
+  const widths = cols.map(c => ({ wch: Math.min(40, Math.max(10, String(c.header).length * 0.7)) }));
+  return { sheets: [{ name: (tpl.name || "Performa").slice(0, 28).replace(/[\\\/?*\[\]:]/g, " "), aoa, merges: hasTitle && cols.length ? [{ s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } }] : [], cols: widths, headerRow: hasTitle ? 2 : 1 }], model: base, title: tpl.name };
+}
+
+let PERF_CUSTOM = [];
+async function perfLoadCustom(){
+  try{
+    const { data } = await sb.from("performa_templates").select("*").eq("active", true).order("name");
+    PERF_CUSTOM = data || [];
+  }catch(e){ PERF_CUSTOM = []; }
+}
+
 /* ---------- page section ---------- */
 function perfScopeOptions(){
   // Never wider than the access the person already has.
@@ -304,25 +556,40 @@ function perfScopeOptions(){
   return { isAdmin, markaz: ms, tehsils, canTehsil: role !== "aeo" || tehsils.length > 0 };
 }
 
-function renderPerformasSection(){
+// What the page knows about the performa currently chosen (built-in or custom).
+function perfCurrent(id){
+  if(id.startsWith("custom:")){
+    const t = PERF_CUSTOM.find(x => x.id === id.slice(7));
+    return t ? { kind: "custom", tpl: t, title: t.name, columns: (t.columns || []).map(c => ({ header: c.header, kind: c.kind === "field" ? "data" : c.kind === "formula" ? "formula" : c.kind === "fixed" ? "auto" : "manual",
+      src: c.kind === "field" ? ((PERF_FIELDS.find(f => f.key === c.field) || {}).label || c.field) : c.kind === "formula" ? "Formula: " + c.expr : c.kind === "fixed" ? "Fixed text: " + (c.text || "") : "Left blank to fill in" })) } : null;
+  }
+  const d = SMP_PERFORMAS[id];
+  return { kind: id, title: d.title, columns: d.columns };
+}
+
+async function renderPerformasSection(){
   const content = document.getElementById("repSectionContent");
   if(currentProfile.role === "school_user"){
     content.innerHTML = `<div class="card"><h3>Performas</h3><p class="sub">Performas are prepared at markaz level or above. Please ask your AEO.</p></div>`;
     return;
   }
+  await perfLoadCustom();
   const opt = perfScopeOptions();
-  const def = SMP_PERFORMAS.daily_updates;
-  const markazOpts = opt.markaz.map(m => `<option value="${esc(m.id)}">${esc(m.name)} (${esc(m.tehsil)})</option>`).join("");
   const tehsilOpts = opt.tehsils.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
   const canWide = opt.isAdmin || currentProfile.role === "tr";
+  const perfOptions = () => `<option value="daily_updates">${esc(SMP_PERFORMAS.daily_updates.title)}</option>
+    <option value="invoice_corrections">${esc(SMP_PERFORMAS.invoice_corrections.title)}</option>
+    ${PERF_CUSTOM.map(t => `<option value="custom:${esc(t.id)}">${esc(t.name)}</option>`).join("")}`;
 
   content.innerHTML = `
     <div class="card">
-      <h3>Performas</h3>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <h3 style="margin:0;">Performas</h3>
+        ${opt.isAdmin ? `<button class="btn-secondary" id="perfDesignBtn" type="button">Performa designer</button>` : ""}
+      </div>
       <p class="sub">Official reporting sheets prepared from the ledger. Choose the performa, the area and the date, preview it, then download the Excel file. Performas are prepared and downloaded only from here.</p>
       <form id="perfForm" class="form-row">
-        <div><label>Performa</label>
-          <select name="performa" id="perfId"><option value="daily_updates">${esc(def.title)}</option></select></div>
+        <div><label>Performa</label><select name="performa" id="perfId">${perfOptions()}</select></div>
         <div><label>Level</label>
           <select name="scope" id="perfScope">
             <option value="markaz">Markaz</option>
@@ -334,12 +601,15 @@ function renderPerformasSection(){
           <select name="wing" id="perfWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div id="perfMarkazBox"><label>Markaz</label><select name="markaz" id="perfMarkaz"></select></div>
         <div><label>Report date</label><input type="date" name="date" value="${todayStr()}" max="${todayStr()}" required/></div>
-        <div><label>Milk alert: days left below</label><input type="number" name="alertMilk" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
-        <div><label>Biscuit alert: days left below</label><input type="number" name="alertBiscuit" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
+        <div class="perf-stock"><label>Milk alert: days left below</label><input type="number" name="alertMilk" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
+        <div class="perf-stock"><label>Biscuit alert: days left below</label><input type="number" name="alertBiscuit" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
+        <div class="perf-corr" style="display:none;"><label>Product</label>
+          <select name="product"><option value="">Milk and biscuit</option><option value="milk">Milk only</option><option value="biscuit">Biscuit only</option></select></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit" id="perfGo">Prepare performa</button></div>
       </form>
       <div id="perfStatus"></div>
     </div>
+    <div id="perfDesigner"></div>
     <div class="card" id="perfResult" style="display:none;">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
         <h3 style="margin:0;" id="perfResultTitle">Preview</h3>
@@ -347,20 +617,36 @@ function renderPerformasSection(){
       </div>
       <div id="perfNotes"></div>
       <div class="table-wrap"><table id="perfTable" style="font-size:11.5px;"><thead></thead><tbody></tbody></table></div>
-      <h4 style="margin:16px 0 6px;">Summary</h4>
-      <div class="table-wrap"><table id="perfSummary" style="font-size:12px;"><thead></thead><tbody></tbody></table></div>
+      <div id="perfSummaryWrap">
+        <h4 style="margin:16px 0 6px;">Summary</h4>
+        <div class="table-wrap"><table id="perfSummary" style="font-size:12px;"><thead></thead><tbody></tbody></table></div>
+      </div>
     </div>
-    <div class="card">
-      <h3>Data mapping - ${esc(def.title)}</h3>
-      <p class="sub">Where each column comes from. This list is what the download is built from.</p>
-      <div class="table-wrap"><table style="font-size:12px;">
-        <thead><tr><th>Column</th><th>Type</th><th>Source in the system</th></tr></thead>
-        <tbody>${def.columns.map(c => `<tr><td>${esc(c.header)}</td><td>${c.kind === "data" ? "From system" : c.kind === "formula" ? "Formula" : c.kind === "manual" ? "Fill in" : "Automatic"}</td><td style="white-space:normal;">${esc(c.src)}</td></tr>`).join("")}</tbody>
-      </table></div>
-    </div>`;
+    <div class="card" id="perfMapCard"></div>`;
 
   const form = document.getElementById("perfForm");
   const scopeSel = document.getElementById("perfScope");
+  const idSel = document.getElementById("perfId");
+
+  const renderMapping = () => {
+    const cur = perfCurrent(idSel.value);
+    document.getElementById("perfMapCard").innerHTML = cur ? `
+      <h3>Data mapping - ${esc(cur.title)}</h3>
+      <p class="sub">Where each column comes from. This list is what the download is built from.</p>
+      <div class="table-wrap"><table style="font-size:12px;">
+        <thead><tr><th>Column</th><th>Type</th><th>Source in the system</th></tr></thead>
+        <tbody>${cur.columns.map(c => `<tr><td>${esc(c.header)}</td><td>${c.kind === "data" ? "From system" : c.kind === "formula" ? "Formula" : c.kind === "manual" ? "Fill in" : "Automatic"}</td><td style="white-space:normal;">${esc(c.src)}</td></tr>`).join("")}</tbody>
+      </table></div>` : "";
+  };
+  const syncPerforma = () => {
+    const cur = perfCurrent(idSel.value) || { kind: "daily_updates" };
+    form.querySelectorAll(".perf-stock").forEach(el => { el.style.display = cur.kind === "invoice_corrections" ? "none" : ""; });
+    form.querySelectorAll(".perf-corr").forEach(el => { el.style.display = cur.kind === "invoice_corrections" ? "" : "none"; });
+    document.getElementById("perfResult").style.display = "none";
+    renderMapping();
+  };
+  idSel.addEventListener("change", syncPerforma);
+
   // Which wings each markaz actually has (markaz itself carries no wing), read once.
   const wingsByMarkaz = {};
   const fillMarkaz = () => {
@@ -371,19 +657,19 @@ function renderPerformasSection(){
     if(list.some(m => m.id === keep)) sel.value = keep;
   };
   const syncScope = () => {
-    const s = scopeSel.value, ts = document.getElementById("perfTehsil");
-    document.getElementById("perfMarkazBox").style.display = s === "markaz" ? "" : "none";
-    document.getElementById("perfTehsilBox").style.display = s === "district" ? "none" : "";
+    const sc = scopeSel.value, ts = document.getElementById("perfTehsil");
+    document.getElementById("perfMarkazBox").style.display = sc === "markaz" ? "" : "none";
+    document.getElementById("perfTehsilBox").style.display = sc === "district" ? "none" : "";
     // Markaz level: tehsil is optional (just narrows the list). Tehsil level: one must be chosen.
     const keep = ts.value;
-    ts.innerHTML = (s === "markaz" && opt.tehsils.length > 1 ? `<option value="">All</option>` : "") + tehsilOpts;
+    ts.innerHTML = (sc === "markaz" && opt.tehsils.length > 1 ? `<option value="">All</option>` : "") + tehsilOpts;
     if([...ts.options].some(o => o.value === keep)) ts.value = keep;
     fillMarkaz();
   };
   scopeSel.addEventListener("change", syncScope);
   document.getElementById("perfTehsil").addEventListener("change", fillMarkaz);
   document.getElementById("perfWing").addEventListener("change", fillMarkaz);
-  syncScope();
+  syncScope(); syncPerforma();
   (async () => {
     try{
       const { data } = await smpFetchAll(() => scopeSchoolsQuery(sb.from("schools").select("id,markaz_id,wing,markaz!inner(tehsil)").eq("active", true)).order("id"));
@@ -393,32 +679,46 @@ function renderPerformasSection(){
   })();
   if(!opt.markaz.length) document.getElementById("perfStatus").innerHTML = `<p class="err">No markaz is assigned to your account.</p>`;
 
+  if(opt.isAdmin){
+    document.getElementById("perfDesignBtn").addEventListener("click", () => {
+      renderPerfDesigner(async () => {                         // after a save/delete: refresh the dropdown
+        const keep = idSel.value;
+        await perfLoadCustom();
+        idSel.innerHTML = perfOptions();
+        if([...idSel.options].some(o => o.value === keep)) idSel.value = keep;
+        syncPerforma();
+      });
+    });
+  }
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
-    const scope = fd.get("scope");
-    const ctx = { scope, markazId: fd.get("markaz"), tehsil: scope === "tehsil" ? fd.get("tehsil") : null, wing: fd.get("wing"), date: fd.get("date") };
+    const scope = fd.get("scope"), pid = fd.get("performa"), cur = perfCurrent(pid);
+    const st = document.getElementById("perfStatus"), btn = document.getElementById("perfGo");
+    const ctx = { scope, markazId: fd.get("markaz"), tehsil: scope === "tehsil" ? fd.get("tehsil") : null, wing: fd.get("wing"), date: fd.get("date"), product: fd.get("product") || "" };
     const alerts = { milk: Number(fd.get("alertMilk")) || 4, biscuit: Number(fd.get("alertBiscuit")) || 4 };
-    if(scope === "markaz" && !ctx.markazId){ st0(); return; }
-    function st0(){ document.getElementById("perfStatus").innerHTML = `<p class="err">Select a markaz first.</p>`; }
-    const btn = document.getElementById("perfGo"), st = document.getElementById("perfStatus");
+    if(!cur){ st.innerHTML = `<p class="err">This performa is no longer available.</p>`; return; }
+    if(scope === "markaz" && !ctx.markazId){ st.innerHTML = `<p class="err">Select a markaz first.</p>`; return; }
     btn.disabled = true; btn.textContent = "Preparing…";
     st.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">Reading the ledger…</p>`;
     try{
-      const data = await perfCollect(ctx);
       const mk = opt.markaz.find(m => m.id === ctx.markazId);
       const scopeLabel = scope === "markaz" ? `Markaz ${mk?.name || ""}${ctx.wing ? " " + ctx.wing : ""}` : scope === "tehsil" ? `Tehsil ${ctx.tehsil}${ctx.wing ? " " + ctx.wing : ""}` : `All tehsils${ctx.wing ? " " + ctx.wing : ""}`;
-      const district = (opt.markaz[0]?.district || "Layyah");
-      const out = SMP_PERFORMA_BUILDERS[def.builder](data.rows, {
-        district, scopeLabel, date: ctx.date, alertMilk: alerts.milk, alertBiscuit: alerts.biscuit,
-        preparedBy: currentProfile.full_name || currentUser.email,
-        groupBy: scope === "district" ? "tehsilwing" : "markaz",
-      });
-      renderPerfPreview(out, data, ctx, alerts);
+      const o = { district: (opt.markaz[0]?.district || "Layyah"), scopeLabel, date: ctx.date, alertMilk: alerts.milk, alertBiscuit: alerts.biscuit,
+        preparedBy: currentProfile.full_name || currentUser.email, groupBy: scope === "district" ? "tehsilwing" : "markaz" };
+      let out, data;
+      if(cur.kind === "invoice_corrections"){
+        data = await perfCollectCorrections(ctx);
+        out = perfAssembleCorrections(data.rows, o);
+      } else {
+        data = await perfCollect(ctx);
+        out = cur.kind === "custom" ? perfAssembleCustom(data.rows, o, cur.tpl) : perfAssembleDaily(data.rows, o);
+      }
+      renderPerfPreview(cur.kind, out, data, ctx, alerts);
+      const slug = scope === "markaz" ? perfSafeName(mk?.name) : scope === "tehsil" ? perfSafeName(ctx.tehsil) : "district";
       document.getElementById("perfDownload").onclick = () => {
-        const wb = perfToWorkbook(out.sheets);
-        const slug = scope === "markaz" ? perfSafeName(mk?.name) : scope === "tehsil" ? perfSafeName(ctx.tehsil) : "district";
-        XLSX.writeFile(wb, `SMP_Daily_Updates_${slug}_${ctx.date}.xlsx`);
+        XLSX.writeFile(perfToWorkbook(out.sheets), `${perfSafeName(cur.title).slice(0, 40)}_${slug}_${ctx.date}.xlsx`);
       };
       st.innerHTML = "";
     }catch(err){
@@ -429,10 +729,28 @@ function renderPerformasSection(){
   });
 }
 
-function renderPerfPreview(out, data, ctx, alerts){
-  const def = SMP_PERFORMAS.daily_updates;
+function perfCellText(c){ return c && typeof c === "object" ? c.v : c; }
+
+function renderPerfPreview(kind, out, data, ctx, alerts){
   document.getElementById("perfResult").style.display = "";
   document.getElementById("perfResultTitle").textContent = out.title;
+  const notes = document.getElementById("perfNotes");
+  const wrap = document.getElementById("perfSummaryWrap");
+  if(kind === "daily_updates") return renderDailyPreview(out, data, ctx, alerts);
+  wrap.style.display = "none";
+  const sh = out.sheets[0], head = sh.aoa[sh.headerRow - 1], body = sh.aoa.slice(sh.headerRow);
+  if(kind === "invoice_corrections"){
+    notes.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px;">${out.model.length ? out.model.length + " head-teacher entr" + (out.model.length === 1 ? "y differs" : "ies differ") + " from the company/AEO invoice number (delivered up to " + esc(perfDMY(ctx.date)) + "). Entries already settled on school totals are left out. Reasons are worked out automatically; edit them in Excel if needed." : "No head-teacher invoice typing mistakes found for this selection."}</p>`;
+  } else {
+    notes.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px;">${out.model.length} schools. Figures are counted up to and including ${esc(perfDMY(ctx.date))}. ${data.liveOk ? "Enrolment read live just now." : "<b>Live enrolment file could not be read</b> - system records were used."}</p>`;
+  }
+  document.querySelector("#perfTable thead").innerHTML = `<tr>${head.map(h => `<th style="white-space:normal;">${esc(h)}</th>`).join("")}</tr>`;
+  document.querySelector("#perfTable tbody").innerHTML = body.map(r => `<tr>${head.map((_, i) => { const v = perfCellText(r[i]); return `<td style="white-space:normal;">${typeof v === "number" ? (Math.round(v * 100) / 100).toLocaleString() : esc(v)}</td>`; }).join("")}</tr>`).join("");
+}
+
+function renderDailyPreview(out, data, ctx, alerts){
+  const def = SMP_PERFORMAS.daily_updates;
+  const wrap = document.getElementById("perfSummaryWrap"); wrap.style.display = "";
   const missing = out.model.filter(x => x.e == null).length;
   const fromSystem = out.model.filter(x => x.enrolSrc === "system").length;
   document.getElementById("perfNotes").innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px;">
@@ -463,4 +781,123 @@ function renderPerfPreview(out, data, ctx, alerts){
     + `<tr class="total-row"><td>Total</td><td>${tot("mRecv").toLocaleString()}</td><td>${tot("mRem").toLocaleString()}</td><td>${tot("bRecv").toLocaleString()}</td><td>${tot("bRem").toLocaleString()}</td><td>${tot("m0")}</td><td>${tot("b0")}</td><td>${tot("enrol").toLocaleString()}</td></tr>`;
 }
 
-if(typeof module !== "undefined") module.exports = { perfAssembleDaily, perfColLetter, SMP_PERFORMAS };
+/* ---------- Performa designer (admins only; the database enforces this too) ---------- */
+function renderPerfDesigner(onChanged){
+  if(!["admin", "super_admin"].includes(currentProfile.role)) return;
+  const box = document.getElementById("perfDesigner");
+  let cols = [], editingId = null;
+  const kinds = [["field", "System data"], ["formula", "Formula"], ["fixed", "Fixed text"], ["blank", "Leave blank"]];
+
+  const draw = () => {
+    box.innerHTML = `
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <h3 style="margin:0;">Performa designer <span class="pill">Admin</span></h3>
+        <button class="btn-secondary" id="pdClose" type="button">Close</button>
+      </div>
+      <p class="sub">Upload a blank Excel performa. Its column headings become the columns; pick where each one gets its data. Works for school-wise tables (one row per school). Formulas use the sheet's own column letters, for example <b>G+H</b> or <b>O/F</b>.</p>
+      <div class="form-row">
+        <div><label>Blank performa (.xlsx, .xls, .csv)</label><input type="file" id="pdFile" accept=".xlsx,.xls,.csv"/></div>
+        <div><label>Performa name</label><input type="text" id="pdName" placeholder="e.g. Weekly stock report"/></div>
+        <div><label>Title line (optional)</label><input type="text" id="pdTitle" placeholder="e.g. CM Meal Program, District Layyah - {area} - {date}"/></div>
+        <div><label style="display:flex;gap:6px;align-items:center;margin-top:22px;"><input type="checkbox" id="pdTotal" checked style="width:auto;"/> Add a total row</label></div>
+      </div>
+      <div id="pdMsg"></div>
+      <div class="table-wrap" id="pdTableWrap" style="${cols.length ? "" : "display:none;"}">
+        <table style="font-size:12px;"><thead><tr><th>Col</th><th>Heading</th><th>Data source</th><th>Detail</th></tr></thead>
+        <tbody>${cols.map((c, i) => `<tr data-i="${i}">
+          <td>${perfColLetter(i)}</td>
+          <td><input type="text" class="pd-h" value="${esc(c.header)}"/></td>
+          <td><select class="pd-k">${kinds.map(([v, l]) => `<option value="${v}"${c.kind === v ? " selected" : ""}>${l}</option>`).join("")}</select></td>
+          <td>${c.kind === "field" ? `<select class="pd-f">${PERF_FIELDS.map(f => `<option value="${f.key}"${c.field === f.key ? " selected" : ""}>${esc(f.label)}</option>`).join("")}</select>`
+            : c.kind === "formula" ? `<input type="text" class="pd-e" value="${esc(c.expr || "")}" placeholder="e.g. G+H"/>`
+            : c.kind === "fixed" ? `<input type="text" class="pd-t" value="${esc(c.text || "")}"/>` : `<span style="color:var(--ink-soft)">Empty cells</span>`}</td>
+        </tr>`).join("")}</tbody></table>
+      </div>
+      <div class="actions-row" style="margin-top:10px; ${cols.length ? "" : "display:none;"}">
+        <button class="btn-primary" id="pdSave" type="button">${editingId ? "Save changes" : "Save performa"}</button>
+      </div>
+      <h4 style="margin:16px 0 6px;">Saved performas</h4>
+      <div id="pdSaved">${PERF_CUSTOM.length ? PERF_CUSTOM.map(t => `<div style="display:flex;gap:8px;align-items:center;margin:4px 0;"><span style="flex:1;">${esc(t.name)} <span style="color:var(--ink-soft);font-size:12px;">(${(t.columns || []).length} columns)</span></span>
+        <button class="btn-secondary pd-edit" data-id="${esc(t.id)}" type="button">Edit</button><button class="btn-secondary pd-del" data-id="${esc(t.id)}" type="button">Delete</button></div>`).join("") : `<p class="sub">None yet.</p>`}</div>
+    </div>`;
+    wire();
+  };
+
+  const readInputs = () => {
+    box.querySelectorAll("#pdTableWrap tbody tr").forEach(tr => {
+      const i = Number(tr.dataset.i), c = cols[i];
+      c.header = tr.querySelector(".pd-h").value;
+      c.kind = tr.querySelector(".pd-k").value;
+      c.field = tr.querySelector(".pd-f")?.value ?? c.field;
+      c.expr = tr.querySelector(".pd-e")?.value ?? c.expr;
+      c.text = tr.querySelector(".pd-t")?.value ?? c.text;
+    });
+  };
+  const keepTop = () => ({ name: box.querySelector("#pdName").value, title: box.querySelector("#pdTitle").value, total: box.querySelector("#pdTotal").checked });
+  let top = { name: "", title: "", total: true };
+  const restoreTop = () => { box.querySelector("#pdName").value = top.name; box.querySelector("#pdTitle").value = top.title; box.querySelector("#pdTotal").checked = top.total; };
+  const msg = (h, bad) => { box.querySelector("#pdMsg").innerHTML = `<p class="${bad ? "err" : ""}" style="${bad ? "" : "color:var(--ink-soft);font-size:12.5px;"}">${h}</p>`; };
+
+  function wire(){
+    restoreTop();
+    box.querySelector("#pdClose").onclick = () => { box.innerHTML = ""; };
+    box.querySelector("#pdFile").onchange = async (e) => {
+      const f = e.target.files[0]; if(!f) return;
+      try{
+        const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        // headings = first row (within the first 10) that has at least 3 filled cells
+        let hr = grid.slice(0, 10).findIndex(r => r.filter(v => String(v).trim() !== "").length >= 3);
+        if(hr < 0) throw new Error("Could not find a heading row (at least 3 filled cells) in the first 10 rows");
+        const heads = grid[hr].map(v => String(v).replace(/\s+/g, " ").trim()).filter(v => v !== "");
+        top = keepTop(); if(!top.name) top.name = f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+        cols = heads.map(h => ({ header: h, ...perfGuessField(h) }));
+        editingId = null; draw();
+        msg(`${cols.length} columns read from "${esc(f.name)}" (row ${hr + 1}). Check each guess below, then save. Formulas in the uploaded file are not copied - add them here as "Formula" columns.`);
+      }catch(err){ msg(esc(err.message), true); }
+    };
+    box.querySelectorAll("#pdTableWrap .pd-k").forEach(sel => sel.addEventListener("change", () => {
+      readInputs(); top = keepTop();
+      const c = cols[Number(sel.closest("tr").dataset.i)];
+      if(c.kind === "field" && !c.field) c.field = "school";
+      draw();
+    }));
+    box.querySelector("#pdSave") && (box.querySelector("#pdSave").onclick = async () => {
+      readInputs(); top = keepTop();
+      if(!top.name.trim()) return msg("Give the performa a name.", true);
+      if(cols.some(c => !String(c.header).trim())) return msg("Every column needs a heading.", true);
+      for(const c of cols){
+        if(c.kind === "formula"){
+          try{ perfEvalExpr(c.expr || "", () => 1); }catch(e){ return msg(`Formula for "${esc(c.header)}": ${esc(e.message)}`, true); }
+          const bad = (String(c.expr).toUpperCase().match(/\b[A-Z]{1,2}\b/g) || []).find(L => (L.length === 1 ? L.charCodeAt(0) - 65 : (L.charCodeAt(0) - 64) * 26 + L.charCodeAt(1) - 65) >= cols.length);
+          if(bad) return msg(`Formula for "${esc(c.header)}" uses column ${bad}, which does not exist.`, true);
+        }
+      }
+      const rec = { name: top.name.trim(), title_text: top.title.trim() || null, total_row: top.total, active: true, updated_at: new Date().toISOString(),
+        columns: cols.map(c => ({ header: String(c.header).trim(), kind: c.kind, ...(c.kind === "field" ? { field: c.field } : {}), ...(c.kind === "formula" ? { expr: c.expr } : {}), ...(c.kind === "fixed" ? { text: c.text || "" } : {}) })) };
+      const q = editingId ? sb.from("performa_templates").update(rec).eq("id", editingId) : sb.from("performa_templates").insert(rec);
+      const { error } = await q;
+      if(error) return msg(esc(error.message.includes("duplicate") ? "A performa with this name already exists." : error.message), true);
+      toast("Performa saved");
+      cols = []; editingId = null; top = { name: "", title: "", total: true };
+      await onChanged(); await perfLoadCustom(); draw();
+    });
+    box.querySelectorAll(".pd-edit").forEach(b => b.onclick = () => {
+      const t = PERF_CUSTOM.find(x => x.id === b.dataset.id); if(!t) return;
+      cols = (t.columns || []).map(c => ({ ...c })); editingId = t.id;
+      top = { name: t.name, title: t.title_text || "", total: t.total_row !== false }; draw();
+      msg(`Editing "${esc(t.name)}".`);
+    });
+    box.querySelectorAll(".pd-del").forEach(b => b.onclick = async () => {
+      const t = PERF_CUSTOM.find(x => x.id === b.dataset.id); if(!t || !confirm(`Delete "${t.name}"? Users will no longer see it.`)) return;
+      const { error } = await sb.from("performa_templates").update({ active: false, updated_at: new Date().toISOString() }).eq("id", t.id);
+      if(error) return toast(error.message, "bad");
+      toast("Performa deleted"); await onChanged(); await perfLoadCustom(); draw();
+    });
+  }
+  draw();
+}
+
+if(typeof module !== "undefined") module.exports = { perfAssembleDaily, perfAssembleCorrections, perfInvoiceReason, perfAssembleCustom, perfEvalExpr, perfGuessField, perfColLetter, SMP_PERFORMAS };
