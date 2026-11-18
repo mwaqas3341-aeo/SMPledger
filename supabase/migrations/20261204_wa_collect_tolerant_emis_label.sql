@@ -1,0 +1,6 @@
+-- Applied live (patch of fn_wa_collect_ingest via a DO block doing replace() on pg_get_functiondef; the live function is authoritative).
+-- Trigger: 18 Nov, Test group, AEO Tariq Bashir sent "EMIS Codec:32220141 / Packs Consumed:112" (typo "Codec") and it was rejected
+-- with the generic "EMIS code and packs could not be read".
+--  1. The EMIS label is now "emis" + any short word (up to 8 letters) or none, optional : = - . So Code / Codec / Cod / Id / Number / no word all read.
+--     Still needs exactly 8 digits for the EMIS code and the Packs Consumed figure; 5-7 digit codes keep the "must have 8 digits" reply.
+--  2. When a report-like message still cannot be read, the reply says which part failed (packs / EMIS code / both) and shows the correct line.
