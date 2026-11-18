@@ -339,10 +339,10 @@ function renderPerformasSection(){
             ${canWide ? `<option value="tehsil">Whole tehsil</option>` : ""}
             ${opt.isAdmin ? `<option value="district">Whole district</option>` : ""}
           </select></div>
-        <div id="perfMarkazBox"><label>Markaz</label><select name="markaz" id="perfMarkaz">${markazOpts}</select></div>
-        <div id="perfTehsilBox" style="display:none;"><label>Tehsil</label><select name="tehsil" id="perfTehsil">${tehsilOpts}</select></div>
-        <div id="perfWingBox" style="display:none;"><label>Wing</label>
-          <select name="wing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div id="perfTehsilBox"><label>Tehsil</label><select name="tehsil" id="perfTehsil"></select></div>
+        <div id="perfWingBox"><label>Wing</label>
+          <select name="wing" id="perfWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
+        <div id="perfMarkazBox"><label>Markaz</label><select name="markaz" id="perfMarkaz"></select></div>
         <div><label>Report date</label><input type="date" name="date" value="${todayStr()}" max="${todayStr()}" required/></div>
         <div><label>Alert when days left below</label><input type="number" name="alert" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit" id="perfGo">Prepare performa</button></div>
@@ -370,28 +370,53 @@ function renderPerformasSection(){
 
   const form = document.getElementById("perfForm");
   const scopeSel = document.getElementById("perfScope");
-  const syncScope = () => {
-    const s = scopeSel.value;
-    document.getElementById("perfMarkazBox").style.display = s === "markaz" ? "" : "none";
-    document.getElementById("perfTehsilBox").style.display = s === "tehsil" ? "" : "none";
-    document.getElementById("perfWingBox").style.display = s === "markaz" ? "none" : "";
+  // Which wings each markaz actually has (markaz itself carries no wing), read once.
+  const wingsByMarkaz = {};
+  const fillMarkaz = () => {
+    const t = document.getElementById("perfTehsil").value, w = document.getElementById("perfWing").value;
+    const list = opt.markaz.filter(m => (!t || m.tehsil === t) && (!w || (wingsByMarkaz[m.id] || new Set([w])).has(w)));
+    const sel = document.getElementById("perfMarkaz"), keep = sel.value;
+    sel.innerHTML = list.length ? list.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("") : `<option value="">No markaz for this filter</option>`;
+    if(list.some(m => m.id === keep)) sel.value = keep;
   };
-  scopeSel.addEventListener("change", syncScope); syncScope();
+  const syncScope = () => {
+    const s = scopeSel.value, ts = document.getElementById("perfTehsil");
+    document.getElementById("perfMarkazBox").style.display = s === "markaz" ? "" : "none";
+    document.getElementById("perfTehsilBox").style.display = s === "district" ? "none" : "";
+    // Markaz level: tehsil is optional (just narrows the list). Tehsil level: one must be chosen.
+    const keep = ts.value;
+    ts.innerHTML = (s === "markaz" && opt.tehsils.length > 1 ? `<option value="">All</option>` : "") + tehsilOpts;
+    if([...ts.options].some(o => o.value === keep)) ts.value = keep;
+    fillMarkaz();
+  };
+  scopeSel.addEventListener("change", syncScope);
+  document.getElementById("perfTehsil").addEventListener("change", fillMarkaz);
+  document.getElementById("perfWing").addEventListener("change", fillMarkaz);
+  syncScope();
+  (async () => {
+    try{
+      const { data } = await smpFetchAll(() => scopeSchoolsQuery(sb.from("schools").select("id,markaz_id,wing,markaz!inner(tehsil)").eq("active", true)).order("id"));
+      (data || []).forEach(r => { if(r.wing) (wingsByMarkaz[r.markaz_id] = wingsByMarkaz[r.markaz_id] || new Set()).add(r.wing); });
+      fillMarkaz();
+    }catch(e){ /* filter simply shows every markaz */ }
+  })();
   if(!opt.markaz.length) document.getElementById("perfStatus").innerHTML = `<p class="err">No markaz is assigned to your account.</p>`;
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
     const scope = fd.get("scope");
-    const ctx = { scope, markazId: fd.get("markaz"), tehsil: scope === "tehsil" ? fd.get("tehsil") : null, wing: scope === "markaz" ? "" : fd.get("wing"), date: fd.get("date") };
+    const ctx = { scope, markazId: fd.get("markaz"), tehsil: scope === "tehsil" ? fd.get("tehsil") : null, wing: fd.get("wing"), date: fd.get("date") };
     const alertDays = Number(fd.get("alert")) || 4;
+    if(scope === "markaz" && !ctx.markazId){ st0(); return; }
+    function st0(){ document.getElementById("perfStatus").innerHTML = `<p class="err">Select a markaz first.</p>`; }
     const btn = document.getElementById("perfGo"), st = document.getElementById("perfStatus");
     btn.disabled = true; btn.textContent = "Preparing…";
     st.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px; margin-top:10px;">Reading the ledger…</p>`;
     try{
       const data = await perfCollect(ctx);
       const mk = opt.markaz.find(m => m.id === ctx.markazId);
-      const scopeLabel = scope === "markaz" ? `Markaz ${mk?.name || ""}` : scope === "tehsil" ? `Tehsil ${ctx.tehsil}${ctx.wing ? " " + ctx.wing : ""}` : `All tehsils${ctx.wing ? " " + ctx.wing : ""}`;
+      const scopeLabel = scope === "markaz" ? `Markaz ${mk?.name || ""}${ctx.wing ? " " + ctx.wing : ""}` : scope === "tehsil" ? `Tehsil ${ctx.tehsil}${ctx.wing ? " " + ctx.wing : ""}` : `All tehsils${ctx.wing ? " " + ctx.wing : ""}`;
       const district = (opt.markaz[0]?.district || "Layyah");
       const out = SMP_PERFORMA_BUILDERS[def.builder](data.rows, {
         district, scopeLabel, date: ctx.date, alertDays,
