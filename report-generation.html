@@ -10,6 +10,7 @@
 <script src="assets/email-prompt.js?v=20261018a"></script>
 <script src="assets/session-policy.js?v=20261031c"></script>
 <script src="assets/config.js?v=20261015a"></script>
+<script src="assets/performas.js?v=20261118a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css?v=20261103a" />
@@ -152,6 +153,7 @@ let currentSection = "proforma";
 const SECTIONS = [
   { id:"proforma", label:"Proforma Report", desc:"Period-based inventory & consumption" },
   { id:"demand", label:"Demand", desc:"Enrollment-based requirement, school & tehsil wise" },
+  { id:"performas", label:"Performas", desc:"Daily SMP update and other official sheets" },
 ];
 
 async function renderPage(){
@@ -167,6 +169,7 @@ async function renderPage(){
     nav.appendChild(a);
   });
   if(currentSection === "proforma") renderProformaSection();
+  else if(currentSection === "performas") renderPerformasSection();
   else renderDemandSection();
 }
 
