@@ -1433,9 +1433,12 @@ async function openSettleIssues(){
     const body = $("#siBody"); body.innerHTML = '<p class="sub">Loading…</p>';
     const pid = $("#siProduct").value, from = $("#siFrom").value, to = $("#siTo").value, showPending = $("#siPending").checked;
     try{
-      const rows = await fetchAll(() => sb.from("v_three_way_comparison").select("*").eq("product_id", pid)
-        .or(`and(delivery_date.gte.${from},delivery_date.lte.${to}),and(delivery_date.is.null,head_date.gte.${from},head_date.lte.${to})`)
-        .order("delivery_date", { ascending: true }).order("school_id").order("invoice_number").order("head_challan"));
+      // One fetch of this product's rows (the view is heavy, so avoid repeating it); the date window and the pairing lists are cut from it here.
+      const all = await fetchAll(() => sb.from("v_three_way_comparison").select("*").eq("product_id", pid)
+        .order("school_id").order("delivery_date", { ascending: true }).order("invoice_number").order("head_challan"));
+      const inWin = d => d && d >= from && d <= to;
+      const rows = all.filter(r => r.delivery_date ? inWin(r.delivery_date) : inWin(r.head_date))
+        .sort((a, b) => String(a.delivery_date || "").localeCompare(String(b.delivery_date || "")) || String(a.school_id).localeCompare(String(b.school_id)) || String(a.invoice_number || "").localeCompare(String(b.invoice_number || "")));
       const settled = r => r.decision_id != null || isSettled(r) || r.settled_on_totals || r.three_way_status === "All three match";
       const pending = r => !settled(r) && r.three_way_status === "No head teacher report" && Number(r.aeo_qty) === 0 && Number(r.company_qty) > 0;
       const issues = rows.filter(r => !settled(r) && !pending(r) && (!geoOn || geoMatch(schoolById[r.school_id], geo)));
@@ -1443,11 +1446,8 @@ async function openSettleIssues(){
       state.rows = showPending ? issues.concat(pend) : issues;
       const ids = [...new Set(state.rows.map(r => r.school_id))];
       state.pair = {};
-      for(let k = 0; k < ids.length; k += 40){
-        const part = await fetchAll(() => sb.from("v_three_way_comparison").select("*").eq("product_id", pid).in("school_id", ids.slice(k, k + 40))
-          .order("school_id").order("delivery_date").order("invoice_number").order("head_challan"));
-        part.forEach(x => (state.pair[x.school_id] ||= []).push(x));
-      }
+      const want = new Set(ids);
+      all.forEach(x => { if(want.has(x.school_id)) (state.pair[x.school_id] ||= []).push(x); });
       $("#siSummary").innerHTML = `<b>${issues.length}</b> need settling · ${done.length} already settled by decision · ${pend.length} company deliveries not yet entered by AEO/head teacher${showPending ? " (shown below)" : " (hidden — tick the box to show)"}`;
       body.innerHTML = state.rows.length ? state.rows.map((r, i) => siCardHtml(r, i, pairFor(r))).join("") : '<p class="sub">Nothing left to settle for these dates. 🎉</p>';
       body.querySelectorAll(".si-card").forEach(card => { const rr = state.rows[Number(card.dataset.i)]; siRefresh(card, rr, pairFor(rr)); });
