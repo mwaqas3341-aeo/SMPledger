@@ -1,0 +1,8 @@
+-- Applied live via MCP ("company_aeo_nearest_date_pairing").
+-- Phase 1 biscuits (26 Sep - 15 Oct 2026): company and AEO entries of the same school that do not match on invoice number are paired
+-- one-to-one by nearest date (previous or future; mutual-best, ties -> earlier AEO date) inside v_company_vs_aeo_comparison.
+-- Rules live in public.company_aeo_date_pairing_rules (product_name prefix, from_date, to_date, active) - set active=false to switch off.
+-- Non-destructive: stored receipts/invoices are untouched; paired rows carry the remark "Paired by nearest date ...".
+-- Verified: company 118,888 and AEO 71,694 biscuits in the window equal the raw table totals before and after;
+-- AEO-only rows 96 -> 0, Matched 166 -> 261 (+95), Short 0 -> 1 (EMIS 32220512, 364 vs 363); 197 company deliveries (47,194) still have no AEO receipt.
+-- Exact SQL: pg_get_viewdef('public.v_company_vs_aeo_comparison'::regclass, true).
