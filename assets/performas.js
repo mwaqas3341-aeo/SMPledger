@@ -67,11 +67,11 @@ function perfSafeName(s){ return String(s || "").replace(/[^A-Za-z0-9]+/g, "_").
 /* ---------- pure assembly ----------
    rows:  [{ tehsil, wing, markaz, emis, school, enrol (number|null), enrolSrc,
              m:{prev,today,cons}, b:{prev,today,cons} }]  - already sorted
-   opts:  { district, scopeLabel, date, preparedBy, alertDays, groupBy: "markaz"|"tehsilwing" }
+   opts:  { district, scopeLabel, date, preparedBy, alertMilk, alertBiscuit, groupBy: "markaz"|"tehsilwing" }
    returns { sheets:[{name, aoa, merges, cols}], model } - cell values are plain, or
    {t,f,v} objects when they are live Excel formulas with a cached result. */
 function perfAssembleDaily(rows, opts){
-  const alertDays = opts.alertDays ?? 4;
+  const alertM = opts.alertMilk ?? opts.alertDays ?? 4, alertB = opts.alertBiscuit ?? opts.alertDays ?? 4;
   const def = SMP_PERFORMAS.daily_updates;
   const headers = def.columns.map(c => c.header);
   const NC = headers.length;
@@ -111,9 +111,9 @@ function perfAssembleDaily(rows, opts){
                                  : num(`IFERROR(${L.mRem}${xlRow}/${L.enrol}${xlRow},"")`, x.mDays));
     set("bDays", x.bDays == null ? str(`IFERROR(${L.bRem}${xlRow}/${L.enrol}${xlRow},"")`, "")
                                  : num(`IFERROR(${L.bRem}${xlRow}/${L.enrol}${xlRow},"")`, x.bDays));
-    const alertV = d => d == null ? "Enrolment?" : (d < alertDays ? "Alert-Demand" : "NO");
-    set("mAlert", str(`IF(${q}${xlRow}="","Enrolment?",IF(${q}${xlRow}<${alertDays},"Alert-Demand","NO"))`, alertV(x.mDays)));
-    set("bAlert", str(`IF(${r_}${xlRow}="","Enrolment?",IF(${r_}${xlRow}<${alertDays},"Alert-Demand","NO"))`, alertV(x.bDays)));
+    const alertV = (d, lim) => d == null ? "Enrolment?" : (d < lim ? "Alert-Demand" : "NO");
+    set("mAlert", str(`IF(${q}${xlRow}="","Enrolment?",IF(${q}${xlRow}<${alertM},"Alert-Demand","NO"))`, alertV(x.mDays, alertM)));
+    set("bAlert", str(`IF(${r_}${xlRow}="","Enrolment?",IF(${r_}${xlRow}<${alertB},"Alert-Demand","NO"))`, alertV(x.bDays, alertB)));
     if(withEmpty){
       set("bEmpRem", num(`N(${L.bEmpTot}${xlRow})-N(${L.bEmpLift}${xlRow})`, 0));
       set("mEmpRem", num(`N(${L.mEmpTot}${xlRow})-N(${L.mEmpLift}${xlRow})`, 0));
@@ -150,7 +150,7 @@ function perfAssembleDaily(rows, opts){
   sumCols.forEach(k => { tot[def.columns.findIndex(c => c.key === k)] = num(`SUM(${L[k]}${first}:${L[k]}${last})`, totVal[k]); });
   aoa.push(tot);
   aoa.push([]);
-  aoa.push([`Milk and Biscuit "Demand Alert" is generated when stock remaining is less than ${alertDays} days.`]);
+  aoa.push([`"Demand Alert" is generated when Milk stock remaining is less than ${alertM} days and Biscuit stock remaining is less than ${alertB} days.`]);
   aoa.push([]);
 
   /* ---- summary block ---- */
@@ -344,7 +344,8 @@ function renderPerformasSection(){
           <select name="wing" id="perfWing"><option value="">All</option>${WING_OPTIONS.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join("")}</select></div>
         <div id="perfMarkazBox"><label>Markaz</label><select name="markaz" id="perfMarkaz"></select></div>
         <div><label>Report date</label><input type="date" name="date" value="${todayStr()}" max="${todayStr()}" required/></div>
-        <div><label>Alert when days left below</label><input type="number" name="alert" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
+        <div><label>Milk alert: days left below</label><input type="number" name="alertMilk" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
+        <div><label>Biscuit alert: days left below</label><input type="number" name="alertBiscuit" value="4" min="0.5" step="0.5" style="width:90px;"/></div>
         <div style="align-self:end;"><button class="btn-primary" type="submit" id="perfGo">Prepare performa</button></div>
       </form>
       <div id="perfStatus"></div>
@@ -407,7 +408,7 @@ function renderPerformasSection(){
     const fd = new FormData(form);
     const scope = fd.get("scope");
     const ctx = { scope, markazId: fd.get("markaz"), tehsil: scope === "tehsil" ? fd.get("tehsil") : null, wing: fd.get("wing"), date: fd.get("date") };
-    const alertDays = Number(fd.get("alert")) || 4;
+    const alerts = { milk: Number(fd.get("alertMilk")) || 4, biscuit: Number(fd.get("alertBiscuit")) || 4 };
     if(scope === "markaz" && !ctx.markazId){ st0(); return; }
     function st0(){ document.getElementById("perfStatus").innerHTML = `<p class="err">Select a markaz first.</p>`; }
     const btn = document.getElementById("perfGo"), st = document.getElementById("perfStatus");
@@ -419,11 +420,11 @@ function renderPerformasSection(){
       const scopeLabel = scope === "markaz" ? `Markaz ${mk?.name || ""}${ctx.wing ? " " + ctx.wing : ""}` : scope === "tehsil" ? `Tehsil ${ctx.tehsil}${ctx.wing ? " " + ctx.wing : ""}` : `All tehsils${ctx.wing ? " " + ctx.wing : ""}`;
       const district = (opt.markaz[0]?.district || "Layyah");
       const out = SMP_PERFORMA_BUILDERS[def.builder](data.rows, {
-        district, scopeLabel, date: ctx.date, alertDays,
+        district, scopeLabel, date: ctx.date, alertMilk: alerts.milk, alertBiscuit: alerts.biscuit,
         preparedBy: currentProfile.full_name || currentUser.email,
         groupBy: scope === "district" ? "tehsilwing" : "markaz",
       });
-      renderPerfPreview(out, data, ctx, alertDays);
+      renderPerfPreview(out, data, ctx, alerts);
       document.getElementById("perfDownload").onclick = () => {
         const wb = perfToWorkbook(out.sheets);
         const slug = scope === "markaz" ? perfSafeName(mk?.name) : scope === "tehsil" ? perfSafeName(ctx.tehsil) : "district";
@@ -438,7 +439,7 @@ function renderPerformasSection(){
   });
 }
 
-function renderPerfPreview(out, data, ctx, alertDays){
+function renderPerfPreview(out, data, ctx, alerts){
   const def = SMP_PERFORMAS.daily_updates;
   document.getElementById("perfResult").style.display = "";
   document.getElementById("perfResultTitle").textContent = out.title;
@@ -457,8 +458,8 @@ function renderPerfPreview(out, data, ctx, alertDays){
     const v = { sr: x.sr, tw: `${x.tehsil || ""} ${x.wing || ""}`.trim(), markaz: x.markaz, emis: x.emis, school: x.school, enrol: x.e ?? "—",
       mPrev: x.m.prev, mToday: x.m.today, bPrev: x.b.prev, bToday: x.b.today, mCons: x.m.cons, bCons: x.b.cons,
       mRecv: x.mRecv, bRecv: x.bRecv, mRem: x.mRem, bRem: x.bRem, mDays: d1(x.mDays), bDays: d1(x.bDays),
-      mAlert: x.mDays == null ? "Enrolment?" : (x.mDays < alertDays ? "Alert-Demand" : "NO"),
-      bAlert: x.bDays == null ? "Enrolment?" : (x.bDays < alertDays ? "Alert-Demand" : "NO"), remarks: x.remarks };
+      mAlert: x.mDays == null ? "Enrolment?" : (x.mDays < alerts.milk ? "Alert-Demand" : "NO"),
+      bAlert: x.bDays == null ? "Enrolment?" : (x.bDays < alerts.biscuit ? "Alert-Demand" : "NO"), remarks: x.remarks };
     return `<tr>${cols.map(c => {
       const val = v[c.key];
       const alert = (c.key === "mAlert" || c.key === "bAlert") && val === "Alert-Demand";
