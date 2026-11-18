@@ -54,8 +54,8 @@ const SMP_PERFORMAS = {
   },
   invoice_corrections: {
     id: "invoice_corrections",
-    title: "Correction Request - Invoice / Challan numbers",
-    desc: "Head-teacher entries whose challan number differs from the company/AEO invoice (typing mistakes), with old value, new value and an automatic reason.",
+    title: "Correction Request - Head teacher inventory entries",
+    desc: "Head-teacher inventory entries on SMP whose challan number or quantity differs from the company invoice, with old value, new value and an automatic reason.",
     builder: "invoice_corrections",
     scopes: ["markaz", "tehsil", "district"],
     columns: [
@@ -64,10 +64,10 @@ const SMP_PERFORMAS = {
       { key: "cat",     header: "Category (inventory received, pack lifted, consumption or other)", src: "Fixed: \"Inventory Received\" (only category held in the system for this performa)", kind: "auto" },
       { key: "tw",      header: "tehsil and wing", src: "markaz.tehsil + schools.wing", kind: "data" },
       { key: "type",    header: "Type (milk, biscuit)", src: "products.product_name of the receipt", kind: "data" },
-      { key: "challan", header: "Challan Number",  src: "Correct invoice number (company invoice, confirmed by the AEO entry)", kind: "data" },
-      { key: "old",     header: "Old Value",       src: "Challan number as entered by the head teacher on the SMP portal", kind: "data" },
-      { key: "new",     header: "New Value",       src: "Correct invoice number (same as Challan Number)", kind: "data" },
-      { key: "reason",  header: "Reason",          src: "Worked out automatically by comparing old and new (letter O for 0, missing or extra character, wrong digit)", kind: "auto" },
+      { key: "challan", header: "Challan Number",  src: "Correct invoice number (the company invoice)", kind: "data" },
+      { key: "old",     header: "Old Value",       src: "What the head teacher entered on SMP - the challan number, or the quantity on a separate line when the quantity is wrong", kind: "data" },
+      { key: "new",     header: "New Value",       src: "What the company invoice says (invoice number, or quantity)", kind: "data" },
+      { key: "reason",  header: "Reason",          src: "Worked out automatically: for a challan number - letter O for 0, missing/extra character, wrong digit; for a quantity - the amount entered vs the invoice and the shortfall or excess", kind: "auto" },
       { key: "remarks", header: "Remarks if any",  src: "Blank - fill in", kind: "manual" },
       { key: "comments",header: "Comments",        src: "Blank - fill in", kind: "manual" },
     ],
@@ -273,13 +273,19 @@ function perfInvoiceReason(oldV, newV){
   return parts.length ? "Head teacher " + parts.join("; ") : "Head teacher entered a different number";
 }
 
+function perfQtyReason(oldQ, newQ){
+  const o = Number(oldQ), n = Number(newQ), d = o - n;
+  if(!Number.isFinite(o) || !Number.isFinite(n)) return "Quantity differs from the company invoice";
+  return `Quantity: head teacher entered ${o.toLocaleString("en-US")} instead of ${n.toLocaleString("en-US")} (${d > 0 ? "excess" : "short"} by ${Math.abs(d).toLocaleString("en-US")})`;
+}
+
 function perfAssembleCorrections(rows, opts){
   const def = SMP_PERFORMAS.invoice_corrections;
   const headers = def.columns.map(c => c.header);
-  const model = rows.map(r => ({ ...r, reason: perfInvoiceReason(r.old, r.new) }));
+  const model = rows.map(r => ({ ...r, reason: r.kind === "qty" ? perfQtyReason(r.old, r.new) : perfInvoiceReason(r.old, r.new) }));
   const aoa = [headers];
   model.forEach(x => aoa.push([x.emis ? String(x.emis) : "", x.school, "Inventory Received", `${x.tehsil || ""} ${x.wing || ""}`.trim(),
-    x.type, x.new, x.old, x.new, x.reason, "", ""]));
+    x.type, x.kind === "qty" ? x.challan : x.new, x.old, x.new, x.reason, "", ""]));
   const cols = [11, 34, 20, 22, 10, 18, 18, 18, 50, 18, 18].map(w => ({ wch: w }));
   return { sheets: [{ name: "Corrections", aoa, merges: [], cols, headerRow: 1 }], model, title: `Correction Request | ${opts.scopeLabel || ""} | up to ${perfDMY(opts.date)}` };
 }
@@ -372,6 +378,9 @@ async function perfCollect(ctx){
 }
 
 async function perfCollectCorrections(ctx){
+  // A correction is a head-teacher inventory entry that disagrees with the company invoice:
+  // a mistyped challan number, or a different quantity. Rows with no company record are left out
+  // (there is nothing to correct them to), and so are rows already settled on school totals.
   const { schools, ids } = await perfSchools(ctx);
   const byId = {}; schools.forEach(x => { byId[x.id] = x; });
   const prodById = {}; cache.products.forEach(p => { prodById[p.id] = p; });
@@ -381,23 +390,26 @@ async function perfCollectCorrections(ctx){
     const chunk = ids.slice(i, i + 80);
     const { data, error } = await smpFetchAll(() => {
       let q = sb.from("v_three_way_comparison")
-        .select("school_id,product_id,delivery_date,invoice_number,company_invoice_number,aeo_invoice_number,head_challan,head_invoice_differs,settled_on_totals")
-        .in("school_id", chunk).eq("head_invoice_differs", true).not("settled_on_totals", "is", true).lte("delivery_date", ctx.date);
+        .select("school_id,product_id,delivery_date,invoice_number,company_invoice_number,company_qty,head_challan,head_qty,head_invoice_differs,settled_on_totals")
+        .in("school_id", chunk).not("head_challan", "is", null).not("company_qty", "is", null)
+        .not("settled_on_totals", "is", true).lte("delivery_date", ctx.date);
       if(wantIds) q = q.in("product_id", wantIds);
       return q.order("school_id").order("product_id").order("delivery_date").order("company_invoice_number");
     });
     if(error) throw new Error(error.message);
     (data || []).forEach(r => {
       const sc = byId[r.school_id]; if(!sc) return;
-      const right = r.company_invoice_number || r.aeo_invoice_number || r.invoice_number;
+      const right = r.company_invoice_number || r.invoice_number;
       const old = (r.head_challan || "").trim();
-      if(!right || !old || old === right) return;
-      out.push({ tehsil: sc.markaz?.tehsil, wing: sc.wing, markaz: sc.markaz?.name, emis: sc.emis_code, school: sc.school_name,
-        type: prodById[r.product_id]?.product_name || "", old, new: right, date: r.delivery_date });
+      const base = { tehsil: sc.markaz?.tehsil, wing: sc.wing, markaz: sc.markaz?.name, emis: sc.emis_code, school: sc.school_name,
+        type: prodById[r.product_id]?.product_name || "", date: r.delivery_date, challan: right };
+      if(right && old && r.head_invoice_differs && old !== right) out.push({ ...base, kind: "invoice", old, new: right });
+      const hq = Number(r.head_qty), cq = Number(r.company_qty);
+      if(r.head_qty != null && r.head_qty !== "" && Number.isFinite(hq) && Number.isFinite(cq) && hq !== cq) out.push({ ...base, kind: "qty", old: String(hq), new: String(cq) });
     });
   }
   const order = {}; schools.forEach((x, i) => { order[x.emis_code] = i; });
-  out.sort((a, b) => (order[a.emis] - order[b.emis]) || a.type.localeCompare(b.type) || String(a.date).localeCompare(String(b.date)));
+  out.sort((a, b) => (order[a.emis] - order[b.emis]) || a.type.localeCompare(b.type) || String(a.date).localeCompare(String(b.date)) || (a.kind === "invoice" ? -1 : 1));
   return { rows: out };
 }
 
@@ -740,7 +752,7 @@ function renderPerfPreview(kind, out, data, ctx, alerts){
   wrap.style.display = "none";
   const sh = out.sheets[0], head = sh.aoa[sh.headerRow - 1], body = sh.aoa.slice(sh.headerRow);
   if(kind === "invoice_corrections"){
-    notes.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px;">${out.model.length ? out.model.length + " head-teacher entr" + (out.model.length === 1 ? "y differs" : "ies differ") + " from the company/AEO invoice number (delivered up to " + esc(perfDMY(ctx.date)) + "). Entries already settled on school totals are left out. Reasons are worked out automatically; edit them in Excel if needed." : "No head-teacher invoice typing mistakes found for this selection."}</p>`;
+    notes.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px;">${out.model.length ? out.model.length + " correction line(s): " + out.model.filter(x => x.kind !== "qty").length + " challan number, " + out.model.filter(x => x.kind === "qty").length + " quantity (deliveries up to " + esc(perfDMY(ctx.date)) + "). Compared with the company invoice. Entries with no company record, and entries already settled on school totals, are left out. Reasons are worked out automatically; edit them in Excel if needed." : "No head-teacher challan or quantity mistakes found for this selection."}</p>`;
   } else {
     notes.innerHTML = `<p style="color:var(--ink-soft); font-size:12.5px;">${out.model.length} schools. Figures are counted up to and including ${esc(perfDMY(ctx.date))}. ${data.liveOk ? "Enrolment read live just now." : "<b>Live enrolment file could not be read</b> - system records were used."}</p>`;
   }
@@ -900,4 +912,4 @@ function renderPerfDesigner(onChanged){
   draw();
 }
 
-if(typeof module !== "undefined") module.exports = { perfAssembleDaily, perfAssembleCorrections, perfInvoiceReason, perfAssembleCustom, perfEvalExpr, perfGuessField, perfColLetter, SMP_PERFORMAS };
+if(typeof module !== "undefined") module.exports = { perfAssembleDaily, perfAssembleCorrections, perfInvoiceReason, perfQtyReason, perfAssembleCustom, perfEvalExpr, perfGuessField, perfColLetter, SMP_PERFORMAS };
