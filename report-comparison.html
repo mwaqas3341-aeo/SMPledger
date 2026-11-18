@@ -205,7 +205,7 @@ async function renderPage(){
             <option value="head_no_aeo">Head teacher reported, AEO not entered</option>
           </select></span>
         <button class="btn-export" type="button" id="dlGoBtn">Download Excel</button>
-        ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button><button class="btn-secondary" type="button" id="settleListBtn">Manual settlements</button><button class="btn-primary" type="button" id="settleIssuesBtn">Settle issues (checklist)</button>' : ""}
+        ${["admin","super_admin"].includes(currentProfile.role) ? '<button class="btn-secondary" type="button" id="reconcileBtn">Fix invoice numbers from company data</button><button class="btn-secondary" type="button" id="settleListBtn">Manual settlements</button>' : ""}
       </div>
     </div>
     <div class="grid-4" id="statCards"></div>
@@ -228,13 +228,13 @@ async function renderPage(){
     if(k === "aeo_no_head" || k === "head_no_aeo") return downloadHeadTeacher(k);
     return downloadComparison(k === "all" ? false : k === "issues" ? true : "aeo_company");
   });
-  const sib = document.getElementById("settleIssuesBtn");
-  if(sib) sib.addEventListener("click", openSettleIssues);
   const slb = document.getElementById("settleListBtn");
   if(slb) slb.addEventListener("click", openSettlementsList);
   document.getElementById("compTable").addEventListener("click", ev => {
     const b = ev.target.closest("[data-settle]");
-    if(b) openSettleDialog(window.lastComparisonRows[Number(b.dataset.settle)], b.dataset.mode);
+    if(!b) return;
+    const row = window.lastComparisonRows[Number(b.dataset.settle)];
+    if(b.dataset.mode === "settle_one") openSettleOne(row); else openSettleDialog(row, b.dataset.mode);
   });
   const rb = document.getElementById("reconcileBtn");
   if(rb) rb.addEventListener("click", async () => {
@@ -1152,8 +1152,7 @@ function settleBtnHtml(r, ri){
   const b = (mode, label) => `<br><button type="button" class="btn-secondary" style="padding:2px 8px;font-size:12px;margin-top:4px;" data-settle="${ri}" data-mode="${mode}">${label}</button>`;
   if(isSettled(r)) return b(r.decision_id ? "undo_decision" : "undo", "Undo settlement");
   // Only head-teacher entries can be settled here. A delivery the head teacher has not entered yet is settled when they add it on the SMP app.
-  if(r.status === HEAD_ONLY) return b("settle", "Settle…");
-  return "";
+  return siIsOpenIssue(r) ? b("settle_one", "Settle…") : "";
 }
 function modalShell(inner){
   const ov = document.createElement("div");
@@ -1382,17 +1381,13 @@ function siCollect(card, r, pairRows){
     p_wrong: wrong, p_qty_issue: qtyOn, p_right_qty: rightQty, p_qty_source: qSrc, p_invoice_issue: invOn, p_right_invoice: rightInv, p_invoice_source: iSrc,
     p_pair: pair, p_reason: reason } };
 }
-async function openSettleIssues(){
+// Settle one mismatch straight from its row in the table (admin only).
+const siIsPending = r => r.three_way_status === "No head teacher report" && Number(r.aeo_qty) === 0 && Number(r.company_qty) > 0;
+const siIsOpenIssue = r => !(r.decision_id != null || isSettled(r) || r.settled_on_totals || r.three_way_status === "All three match" || siIsPending(r));
+async function openSettleOne(r){
   if(!isAdminUser()) return;
-  const fForm = document.getElementById("filterForm");
-  const fd = fForm ? new FormData(fForm) : null;
-  const geo = readGeo();
-  const geoOn = !!(geo.d || geo.t || geo.m || geo.w || geo.e);
-  const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
-  const biscuits = cache.products.find(p => p.id === (fd && fd.get("product"))) || cache.products.find(p => /biscuit/i.test(p.product_name)) || cache.products[0];
-  const fFrom = (fd && fd.get("from")) || "2026-09-25", fTo = (fd && fd.get("to")) || "2026-10-31";
-  const geoLabel = [geo.d, geo.t, geo.w && ("wing " + geo.w), geo.m && ((cache.markaz.find(m => m.id === geo.m) || {}).name), geo.e && ("EMIS " + geo.e)].filter(Boolean).join(" · ");
   const ov = document.createElement("div");
+  ov.setAttribute("role", "dialog"); ov.setAttribute("aria-modal", "true");
   ov.style.cssText = "position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:12px;";
   ov.innerHTML = `<style>
     .si-card label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;margin:4px 0;color:var(--ink);}
@@ -1402,92 +1397,35 @@ async function openSettleIssues(){
     .si-card input[data-qcustom]{width:90px;padding:4px 8px;}
     .si-card textarea{padding:8px 10px;}
     .si-card .si-sides label{margin-top:6px;}
-  </style><div class="card" style="width:min(1180px,100%);max-height:95vh;overflow:auto;margin:0;">
-    <h3 style="margin-bottom:4px;">Settle issues</h3>
-    <p class="sub">For each issue tick which side is <b>wrong</b>, choose the <b>right</b> quantity and/or invoice number, or <b>pair</b> it with another invoice of the same school, and write the reason. Company, AEO and head-teacher records are not edited — the decision is saved with who/when/why and can be undone.</p>
-    <div class="form-row" style="align-items:end;">
-      <div><label>Product</label><select id="siProduct">${cache.products.map(p => `<option value="${p.id}" ${p.id === biscuits.id ? "selected" : ""}>${esc(p.product_name)}</option>`).join("")}</select></div>
-      <div><label>From</label><input type="date" id="siFrom" value="${fFrom}"></div>
-      <div><label>To</label><input type="date" id="siTo" value="${fTo}"></div>
-      <label style="max-width:300px;line-height:1.3;"><input type="checkbox" id="siPending"> <span>Also show deliveries where the company delivered but the AEO and head teacher have <b>not entered anything yet</b> (nothing to compare, usually not a mismatch)</span></label>
-      <button class="btn-secondary" type="button" id="siLoad">Load</button>
-      <button class="btn-primary" type="button" id="siSaveAll">Settle all filled-in</button>
-      <button class="btn-secondary" type="button" id="siClose">Close</button></div>
-    <p class="sub">${geoOn ? "Filtered to: <b>" + esc(geoLabel) + "</b> (same as the page filter)" : "No area filter applied - all schools"}</p><p class="sub" id="siSummary"></p><div id="siBody"></div></div>`;
+  </style><div class="card" style="width:min(900px,100%);max-height:95vh;overflow:auto;margin:0;">
+    <h3 style="margin-bottom:4px;">Settle this issue</h3>
+    <p class="sub">Tick which side is <b>wrong</b>, choose the <b>right</b> quantity and/or invoice number, or <b>pair</b> it with another invoice of the same school, and write the reason. The original company, AEO and head-teacher records are not edited.</p>
+    <div id="soBody"><p class="sub">Loading this school's invoices…</p></div>
+    <div class="actions-row"><button class="btn-secondary" type="button" id="soClose">Close</button></div></div>`;
   document.body.appendChild(ov);
   const $ = sel => ov.querySelector(sel);
-  let state = { rows: [], pair: {} };
-  const pairFor = r => (state.pair[r.school_id] || []).filter(x => !siSame(x, r));
-  $("#siClose").addEventListener("click", () => { ov.remove(); refreshComparison(); });
-  async function fetchAll(build){
-    const out = [];
-    for(let st = 0; ; st += 1000){
-      const { data, error } = await build().range(st, st + 999);
-      if(error) throw error;
-      out.push(...(data || []));
-      if(!data || data.length < 1000) break;
-    }
-    return out;
-  }
-  async function load(){
-    const body = $("#siBody"); body.innerHTML = '<p class="sub">Loading…</p>';
-    const pid = $("#siProduct").value, from = $("#siFrom").value, to = $("#siTo").value, showPending = $("#siPending").checked;
-    try{
-      // One fetch of this product's rows (the view is heavy, so avoid repeating it); the date window and the pairing lists are cut from it here.
-      const all = await fetchAll(() => sb.from("v_three_way_comparison").select("*").eq("product_id", pid)
-        .order("school_id").order("delivery_date", { ascending: true }).order("invoice_number").order("head_challan"));
-      const inWin = d => d && d >= from && d <= to;
-      const rows = all.filter(r => r.delivery_date ? inWin(r.delivery_date) : inWin(r.head_date))
-        .sort((a, b) => String(a.delivery_date || "").localeCompare(String(b.delivery_date || "")) || String(a.school_id).localeCompare(String(b.school_id)) || String(a.invoice_number || "").localeCompare(String(b.invoice_number || "")));
-      const settled = r => r.decision_id != null || isSettled(r) || r.settled_on_totals || r.three_way_status === "All three match";
-      const pending = r => !settled(r) && r.three_way_status === "No head teacher report" && Number(r.aeo_qty) === 0 && Number(r.company_qty) > 0;
-      const issues = rows.filter(r => !settled(r) && !pending(r) && (!geoOn || geoMatch(schoolById[r.school_id], geo)));
-      const pend = rows.filter(r => pending(r) && (!geoOn || geoMatch(schoolById[r.school_id], geo))), done = rows.filter(r => r.decision_id != null && (!geoOn || geoMatch(schoolById[r.school_id], geo)));
-      state.rows = showPending ? issues.concat(pend) : issues;
-      const ids = [...new Set(state.rows.map(r => r.school_id))];
-      state.pair = {};
-      const want = new Set(ids);
-      all.forEach(x => { if(want.has(x.school_id)) (state.pair[x.school_id] ||= []).push(x); });
-      $("#siSummary").innerHTML = `<b>${issues.length}</b> need settling · ${done.length} already settled by decision · ${pend.length} company deliveries not yet entered by AEO/head teacher${showPending ? " (shown below)" : " (hidden — tick the box to show)"}`;
-      body.innerHTML = state.rows.length ? state.rows.map((r, i) => siCardHtml(r, i, pairFor(r))).join("") : '<p class="sub">Nothing left to settle for these dates. 🎉</p>';
-      body.querySelectorAll(".si-card").forEach(card => { const rr = state.rows[Number(card.dataset.i)]; siRefresh(card, rr, pairFor(rr)); });
-    }catch(e){ body.innerHTML = `<p class="err">${esc(e.message || "Could not load")}</p>`; }
-  }
-  async function saveCard(card){
-    const i = Number(card.dataset.i), r = state.rows[i], msg = card.querySelector("[data-msg]");
-    const pairRows = pairFor(r);
-    const c = siCollect(card, r, pairRows);
-    if(c.error){ msg.style.color = "var(--bad-fg, #b00020)"; msg.textContent = c.error; return false; }
+  $("#soClose").addEventListener("click", () => ov.remove());
+  let pairRows = [];
+  try{
+    // All invoices of this school and product (any date) for the pairing dropdown.
+    const { data, error } = await sb.from("v_three_way_comparison").select("*").eq("school_id", r.school_id).eq("product_id", r.product_id)
+      .order("delivery_date", { ascending: true }).order("invoice_number");
+    if(error) throw error;
+    pairRows = (data || []).filter(x => !siSame(x, r));
+  }catch(e){ $("#soBody").innerHTML = `<p class="err">${esc(e.message || "Could not load")}</p>`; return; }
+  $("#soBody").innerHTML = siCardHtml(r, 0, pairRows);
+  const card = $("#soBody .si-card");
+  siRefresh(card, r, pairRows);
+  card.addEventListener("change", () => siRefresh(card, r, pairRows));
+  card.addEventListener("click", async ev => {
+    if(!ev.target.closest("[data-save]")) return;
+    const msg = card.querySelector("[data-msg]"), c = siCollect(card, r, pairRows);
+    if(c.error){ msg.style.color = "var(--bad-fg, #b00020)"; msg.textContent = c.error; return; }
     const btn = card.querySelector("[data-save]"); btn.disabled = true; msg.textContent = "Saving…";
     const { data, error } = await sb.rpc("fn_decide_three_way", c.args);
-    if(error){ btn.disabled = false; msg.style.color = "var(--bad-fg, #b00020)"; msg.textContent = "Could not settle: " + error.message; return false; }
-    card.style.opacity = ".6"; card.querySelectorAll("input,select,textarea,button").forEach(x => x.disabled = true);
-    msg.style.color = "var(--ok-fg, #2e7d32)"; msg.textContent = `✓ Settled (decision #${data})`; card.dataset.done = "1";
-    return true;
-  }
-  $("#siBody").addEventListener("change", ev => {
-    const card = ev.target.closest(".si-card"); if(card){ const rr = state.rows[Number(card.dataset.i)]; siRefresh(card, rr, pairFor(rr)); }
+    if(error){ btn.disabled = false; msg.style.color = "var(--bad-fg, #b00020)"; msg.textContent = "Could not settle: " + error.message; return; }
+    toast(`Settled (decision #${data}).`); ov.remove(); refreshComparison();
   });
-  $("#siBody").addEventListener("click", async ev => {
-    const card = ev.target.closest(".si-card"); if(!card) return;
-    if(ev.target.closest("[data-save]")){ if(await saveCard(card)) toast("Settled."); }
-    const u = ev.target.closest("[data-undo-card]");
-    if(u && confirm("Undo this decision?")){
-      const { error } = await sb.rpc("fn_undo_three_way_decision", { p_id: Number(u.dataset.undoCard) });
-      if(error) toast("Undo failed: " + error.message, "bad"); else { toast("Undone."); await load(); }
-    }
-  });
-  $("#siLoad").addEventListener("click", load);
-  $("#siPending").addEventListener("change", load);
-  $("#siSaveAll").addEventListener("click", async () => {
-    const cards = [...ov.querySelectorAll(".si-card")].filter(c => !c.dataset.done && c.querySelector("[data-reason]").value.trim());
-    if(!cards.length){ toast("Write a reason on the cards you want to settle, then click again.", "bad"); return; }
-    if(!confirm(`Settle ${cards.length} issue(s) now?`)) return;
-    let ok = 0; for(const c of cards){ if(await saveCard(c)) ok++; }
-    toast(`${ok} of ${cards.length} settled.` + (ok < cards.length ? " Fix the cards marked in red and click again." : ""), ok < cards.length ? "bad" : "ok");
-    if(ok === cards.length){ await load(); }
-  });
-  await load();
 }
 </script>
 </body>
