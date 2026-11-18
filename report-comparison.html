@@ -1384,7 +1384,14 @@ function siCollect(card, r, pairRows){
 }
 async function openSettleIssues(){
   if(!isAdminUser()) return;
-  const biscuits = cache.products.find(p => /biscuit/i.test(p.product_name)) || cache.products[0];
+  const fForm = document.getElementById("filterForm");
+  const fd = fForm ? new FormData(fForm) : null;
+  const geo = readGeo();
+  const geoOn = !!(geo.d || geo.t || geo.m || geo.w || geo.e);
+  const schoolById = Object.fromEntries(cache.schools.map(x => [x.id, x]));
+  const biscuits = cache.products.find(p => p.id === (fd && fd.get("product"))) || cache.products.find(p => /biscuit/i.test(p.product_name)) || cache.products[0];
+  const fFrom = (fd && fd.get("from")) || "2026-09-25", fTo = (fd && fd.get("to")) || "2026-10-31";
+  const geoLabel = [geo.d, geo.t, geo.w && ("wing " + geo.w), geo.m && ((cache.markaz.find(m => m.id === geo.m) || {}).name), geo.e && ("EMIS " + geo.e)].filter(Boolean).join(" · ");
   const ov = document.createElement("div");
   ov.style.cssText = "position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:12px;";
   ov.innerHTML = `<style>
@@ -1400,13 +1407,13 @@ async function openSettleIssues(){
     <p class="sub">For each issue tick which side is <b>wrong</b>, choose the <b>right</b> quantity and/or invoice number, or <b>pair</b> it with another invoice of the same school, and write the reason. Company, AEO and head-teacher records are not edited — the decision is saved with who/when/why and can be undone.</p>
     <div class="form-row" style="align-items:end;">
       <div><label>Product</label><select id="siProduct">${cache.products.map(p => `<option value="${p.id}" ${p.id === biscuits.id ? "selected" : ""}>${esc(p.product_name)}</option>`).join("")}</select></div>
-      <div><label>From</label><input type="date" id="siFrom" value="2026-09-25"></div>
-      <div><label>To</label><input type="date" id="siTo" value="2026-10-31"></div>
+      <div><label>From</label><input type="date" id="siFrom" value="${fFrom}"></div>
+      <div><label>To</label><input type="date" id="siTo" value="${fTo}"></div>
       <label style="white-space:nowrap;"><input type="checkbox" id="siPending"> Also show deliveries not yet entered by AEO / head teacher</label>
       <button class="btn-secondary" type="button" id="siLoad">Load</button>
       <button class="btn-primary" type="button" id="siSaveAll">Settle all filled-in</button>
       <button class="btn-secondary" type="button" id="siClose">Close</button></div>
-    <p class="sub" id="siSummary"></p><div id="siBody"></div></div>`;
+    <p class="sub">${geoOn ? "Filtered to: <b>" + esc(geoLabel) + "</b> (same as the page filter)" : "No area filter applied - all schools"}</p><p class="sub" id="siSummary"></p><div id="siBody"></div></div>`;
   document.body.appendChild(ov);
   const $ = sel => ov.querySelector(sel);
   let state = { rows: [], pair: {} };
@@ -1431,8 +1438,8 @@ async function openSettleIssues(){
         .order("delivery_date", { ascending: true }).order("school_id").order("invoice_number").order("head_challan"));
       const settled = r => r.decision_id != null || isSettled(r) || r.settled_on_totals || r.three_way_status === "All three match";
       const pending = r => !settled(r) && r.three_way_status === "No head teacher report" && Number(r.aeo_qty) === 0 && Number(r.company_qty) > 0;
-      const issues = rows.filter(r => !settled(r) && !pending(r));
-      const pend = rows.filter(pending), done = rows.filter(r => r.decision_id != null);
+      const issues = rows.filter(r => !settled(r) && !pending(r) && (!geoOn || geoMatch(schoolById[r.school_id], geo)));
+      const pend = rows.filter(r => pending(r) && (!geoOn || geoMatch(schoolById[r.school_id], geo))), done = rows.filter(r => r.decision_id != null && (!geoOn || geoMatch(schoolById[r.school_id], geo)));
       state.rows = showPending ? issues.concat(pend) : issues;
       const ids = [...new Set(state.rows.map(r => r.school_id))];
       state.pair = {};
