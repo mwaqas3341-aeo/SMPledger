@@ -69,6 +69,24 @@
     if(left <= 0){ endSession(); return; }
     if(left <= WARN_MS && document.body){ bar("You will be signed out automatically in " + Math.max(1, Math.ceil(left / 60000)) + " min (8-hour limit). Please save your work."); }
   }
+  // ONE DEVICE AT A TIME: logging in elsewhere revokes this session on the server; detect it within a minute.
+  var checking = false;
+  async function checkRevoked(){
+    if(ended || checking || typeof sb === "undefined" || !sb.auth) return;
+    checking = true;
+    try{
+      var r = await sb.auth.getUser();
+      var st = r && r.error ? (r.error.status || 0) : 0;
+      if(st === 401 || st === 403){
+        ended = true;
+        try{ localStorage.removeItem(LOGIN_KEY); sessionStorage.removeItem(PROMO_KEY); }catch(e){}
+        try{ await Promise.race([sb.auth.signOut({ scope: "local" }), new Promise(function(x){ setTimeout(x, 3000); })]); }catch(e){}
+        location.replace("index.html?other=1");
+      }
+    }catch(e){} finally{ checking = false; }
+  }
+  setInterval(checkRevoked, 60000);
+  window.addEventListener("focus", checkRevoked);
   check();
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", check);
   setInterval(check, 30000);
