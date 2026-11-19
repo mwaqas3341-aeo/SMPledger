@@ -133,6 +133,7 @@ const SECTIONS = [
   { id:"report", label:"Missing Consumption Report", desc:"Auto-email missing-consumption reports - to concerned persons and to each user" },
   { id:"locks", label:"Inventory & Consumption Period Lock", desc:"Lock a product's inventory and/or consumption entries through a date" },
   { id:"whatsapp", label:"WhatsApp Automation", desc:"Tehsil-wise missing-consumption messages to added recipients (max 50/day)" },
+  { id:"users", label:"User Management", desc:"Users & jurisdiction, markaz, schools, problems to fix, and the change log - managed here in SMP" },
   { id:"health", label:"Start/Stop School Meal Program", desc:"Close or start the meal program (stops inventory, consumption and WhatsApp) - plus database keep-alive status" },
 ];
 let currentSection = "schedule";
@@ -152,6 +153,7 @@ function renderPage(){
   else if(currentSection === "report") renderReportSection();
   else if(currentSection === "locks") renderLocksSection();
   else if(currentSection === "whatsapp") renderWhatsappSection();
+  else if(currentSection === "users") document.getElementById("adminSectionContent").innerHTML = `<iframe src="directory.html?embed=1" title="User Management" style="width:100%;height:84vh;border:0;border-radius:10px;background:transparent;"></iframe>`;
   else renderScheduleSection();
 }
 
