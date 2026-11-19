@@ -8,6 +8,7 @@
 <script src="assets/layout.js?v=20261119a"></script>
 <script src="assets/config.js?v=20261015a"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="assets/styles.css?v=20261103a" />
 <style>
   .dir-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
@@ -43,7 +44,7 @@
    (no new schools, no deletes, EMIS fixed) by design. */
 const sb = supabase.createClient(SMP_CONFIG.SUPABASE_URL, SMP_CONFIG.SUPABASE_ANON_KEY);
 let currentUser = null, currentProfile = null;
-let cache = { markaz: [], schools: [], users: [] };
+let cache = { markaz: [], schools: [], users: [], fallback: "on" };
 let tab = "users";
 const ROLES = [["aeo","AEO"],["tr","TR (tehsil)"],["admin","Admin"],["super_admin","Super admin"],["school_user","School user"]];
 
@@ -59,9 +60,10 @@ async function loadAll(){
   const [m, s, u] = await Promise.all([
     fetchAll(() => sb.from("markaz").select("*").order("name")),
     fetchAll(() => sb.from("schools").select("id,emis_code,school_name,markaz_id,school_type,active,wing,outsourced,enrollment,managed_in_smp").order("emis_code")),
-    fetchAll(() => sb.from("profiles").select("id,full_name,cnic,role,markaz_id,extra_markaz_ids,tehsil,wing_scope,cell_no,active,managed_in_smp,jurisdiction_source,jurisdiction_synced_at").order("full_name")),
+    fetchAll(() => sb.from("profiles").select("id,full_name,cnic,role,markaz_id,extra_markaz_ids,tehsil,wing_scope,cell_no,active,managed_in_smp,local_login,jurisdiction_source,jurisdiction_synced_at").order("full_name")),
   ]);
   cache.markaz = m; cache.schools = s; cache.users = u;
+  try{ const { data } = await sb.from("directory_settings").select("value").eq("key", "aidb_login_fallback").maybeSingle(); cache.fallback = (data && data.value) || "on"; }catch(e){}
 }
 
 function modal(inner, wide){
@@ -78,22 +80,25 @@ const markazOpts = (sel, blank) => opts(cache.markaz.map(m => [m.id, m.name + (m
 
 function render(){
   const problems = problemList().length;
-  $c().innerHTML = `<div class="card"><div class="dir-tabs">${[["users","Users & jurisdiction"],["markaz","Markaz"],["schools","Schools"],["problems","Problems" + (problems ? " (" + problems + ")" : "")],["log","Change log"]]
+  $c().innerHTML = `<div class="card"><div class="dir-tabs">${[["users","Users & jurisdiction"],["markaz","Markaz"],["schools","Schools"],["problems","Problems" + (problems ? " (" + problems + ")" : "")],["import","Excel import"],["log","Change log"]]
     .map(([k, l]) => `<button type="button" class="dir-tab ${k === tab ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}</div><div id="tabBody"></div></div>`;
   $c().querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; render(); }));
-  ({ users: renderUsers, markaz: renderMarkaz, schools: renderSchools, problems: renderProblems, log: renderLog })[tab]();
+  ({ users: renderUsers, markaz: renderMarkaz, schools: renderSchools, problems: renderProblems, import: renderImport, log: renderLog })[tab]();
 }
 
 /* ---------------- Users ---------------- */
 function renderUsers(){
   const body = document.getElementById("tabBody");
-  body.innerHTML = `<div class="dir-bar">
+  body.innerHTML = `<div class="actions-row"><button class="btn-primary" type="button" id="uNew">+ Add user</button>
+    <span class="sub" style="margin-left:10px">Login with A-I-DB password as a fallback: <b>${cache.fallback === "off" ? "OFF (only SMP passwords work)" : "ON"}</b></span>
+    <button class="btn-secondary" type="button" id="uFb" style="padding:2px 10px">${cache.fallback === "off" ? "Switch ON" : "Switch OFF"}</button></div>
+    <div class="dir-bar">
     <div><label>Search</label><input id="uQ" placeholder="name, CNIC, phone"></div>
     <div><label>Role</label><select id="uRole">${opts(ROLES, "", "All")}</select></div>
     <div><label>Tehsil</label><select id="uTehsil">${opts(uniq(cache.markaz.map(m => m.tehsil)).map(t => [t, t]), "", "All")}</select></div>
     <div><label>Status</label><select id="uAct"><option value="">All</option><option value="1">Active</option><option value="0">Inactive</option></select></div></div>
     <p class="sub" id="uCount"></p>
-    <div class="table-wrap"><table class="dir-table"><thead><tr><th>Name</th><th>CNIC</th><th>Role</th><th>Home markaz</th><th>Extra markaz</th><th>Tehsil / wing</th><th>Phone</th><th>Source</th><th></th></tr></thead><tbody id="uBody"></tbody></table></div>`;
+    <div class="table-wrap"><table class="dir-table"><thead><tr><th>Name</th><th>CNIC</th><th>Role</th><th>Home markaz</th><th>Extra markaz</th><th>Tehsil / wing</th><th>Phone</th><th>Login</th><th></th></tr></thead><tbody id="uBody"></tbody></table></div>`;
   const draw = () => {
     const q = document.getElementById("uQ").value.trim().toLowerCase(), r = document.getElementById("uRole").value, t = document.getElementById("uTehsil").value, a = document.getElementById("uAct").value;
     const rows = cache.users.filter(u => (!q || [u.full_name, u.cnic, u.cell_no].some(x => (x || "").toLowerCase().includes(q))) && (!r || u.role === r)
@@ -104,11 +109,20 @@ function renderUsers(){
       <td>${u.markaz_id ? esc(markazName(u.markaz_id)) : (u.role === "aeo" ? '<span class="dir-warn">not set</span>' : "—")}</td>
       <td>${esc((u.extra_markaz_ids || []).map(markazName).join(", ")) || "—"}</td>
       <td>${esc([u.tehsil, u.wing_scope].filter(Boolean).join(" · ")) || (u.role === "tr" ? '<span class="dir-warn">tehsil not set</span>' : "—")}</td>
-      <td>${esc(u.cell_no || "—")}</td><td>${u.managed_in_smp ? "SMP" : esc(u.jurisdiction_source || "—")}</td>
+      <td>${esc(u.cell_no || "—")}</td><td>${u.local_login ? "SMP password" : "A-I-DB"}</td>
       <td><button class="btn-secondary" type="button" data-u="${u.id}" style="padding:2px 10px;">Edit</button></td></tr>`).join("") || `<tr><td colspan="9" class="sub">No users.</td></tr>`;
   };
   ["uQ","uRole","uTehsil","uAct"].forEach(id => document.getElementById(id).addEventListener("input", draw));
   body.addEventListener("click", e => { const b = e.target.closest("[data-u]"); if(b) editUser(cache.users.find(u => u.id === b.dataset.u)); });
+  document.getElementById("uNew").addEventListener("click", addUser);
+  document.getElementById("uFb").addEventListener("click", async () => {
+    const turnOff = cache.fallback !== "off";
+    const withPw = cache.users.filter(u => u.local_login && u.active).length, total = cache.users.filter(u => u.active).length;
+    if(turnOff && !confirm(`Only ${withPw} of ${total} active users have an SMP password. Everyone else will be unable to log in once this is OFF. Switch OFF anyway?`)) return;
+    const { error } = await sb.rpc("fn_dir_set_aidb_fallback", { p_on: !turnOff });
+    if(error){ toast(error.message, "bad"); return; }
+    toast("Setting saved."); await reload();
+  });
   draw();
 }
 function editUser(u){
@@ -121,6 +135,8 @@ function editUser(u){
       <div id="wTeh"><label>Tehsil (TR)</label><select id="eTeh">${opts(uniq(cache.markaz.map(m => m.tehsil)).map(t => [t, t]), u.tehsil, "— none —")}</select></div>
       <div id="wWing"><label>Wing limit (TR)</label><select id="eWing">${opts([["M-EE","M-EE"],["W-EE","W-EE"]], u.wing_scope, "All wings")}</select></div></div>
     <div id="wExtra"><label>Extra markaz this person also looks after</label><input id="eExQ" placeholder="filter the list…" style="margin-bottom:4px"><div class="chk" id="eEx"></div></div>
+    <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px"><label>SMP password (${u.local_login ? "set" : "not set - logs in with the A-I-DB password"})</label>
+      <div style="display:flex;gap:8px"><input id="ePw" type="password" autocomplete="new-password" placeholder="new password, 8+ characters"><button class="btn-secondary" type="button" id="ePwSave">${u.local_login ? "Reset password" : "Set password"}</button></div></div>
     <p class="err" id="eErr"></p>
     <div class="actions-row"><button class="btn-primary" type="button" id="eSave">Save</button><button class="btn-secondary" type="button" id="eClose">Cancel</button></div>`);
   const $ = s => ov.querySelector(s);
@@ -132,6 +148,13 @@ function editUser(u){
   const roleUI = () => { const r = $("#eRole").value; $("#wHome").style.display = (r === "aeo" || r === "school_user") ? "" : "none"; $("#wExtra").style.display = r === "aeo" ? "" : "none"; $("#wTeh").style.display = $("#wWing").style.display = r === "tr" ? "" : "none"; };
   $("#eRole").addEventListener("change", roleUI); roleUI();
   $("#eClose").addEventListener("click", () => ov.remove());
+  $("#ePwSave").addEventListener("click", async () => {
+    const pw = $("#ePw").value;
+    if(pw.length < 8){ $("#eErr").textContent = "The password must be at least 8 characters."; return; }
+    const { data, error } = await sb.functions.invoke("admin-users", { body: { action: "set_password", user_id: u.id, password: pw } });
+    if(error || (data && data.error)){ $("#eErr").textContent = (data && data.error) || error.message; return; }
+    ov.remove(); toast("Password saved. This person now logs in with it."); await reload();
+  });
   $("#eSave").addEventListener("click", async () => {
     const role = $("#eRole").value;
     if(role === "aeo" && !$("#eHome").value && !confirm("This AEO has no home markaz and will see nothing. Save anyway?")) return;
@@ -174,14 +197,14 @@ function editMarkaz(m){
 let sel = new Set();
 function renderSchools(){
   const body = document.getElementById("tabBody");
-  body.innerHTML = `<div class="dir-bar">
+  body.innerHTML = `<div class="actions-row"><button class="btn-primary" type="button" id="sNew">+ Add school</button></div><div class="dir-bar">
     <div><label>Search EMIS / name</label><input id="sQ"></div>
     <div><label>Tehsil</label><select id="sTeh">${opts(uniq(cache.markaz.map(m => m.tehsil)).map(t => [t, t]), "", "All")}</select></div>
     <div><label>Markaz</label><select id="sMk">${markazOpts("", "All")}</select></div>
     <div><label>Wing</label><select id="sWing">${opts([["M-EE","M-EE"],["W-EE","W-EE"]], "", "All")}</select></div>
     <div><label>Status</label><select id="sAct"><option value="">All</option><option value="1">Active</option><option value="0">Inactive / outsourced</option></select></div></div>
     <div class="dir-bar"><span class="sub" id="sCount"></span><div><label>Move ticked schools to</label><select id="sMoveTo">${markazOpts("", "— choose markaz —")}</select></div><button class="btn-secondary" type="button" id="sMove">Move ticked</button></div>
-    <p class="sub">The school list is final by design: new schools cannot be added or deleted and EMIS codes cannot change.</p>
+    <p class="sub">Schools cannot be deleted and EMIS codes cannot change. New schools are added with the button above.</p>
     <div class="table-wrap" style="max-height:62vh;overflow:auto"><table class="dir-table"><thead><tr><th><input type="checkbox" id="sAll" style="width:auto"></th><th>EMIS</th><th>School</th><th>Markaz</th><th>Tehsil</th><th>Wing</th><th>Type</th><th>Enrol.</th><th>Status</th><th></th></tr></thead><tbody id="sBody"></tbody></table></div>`;
   let shown = [];
   const draw = () => {
@@ -198,6 +221,7 @@ function renderSchools(){
   document.getElementById("sAll").addEventListener("change", e => { shown.slice(0, 400).forEach(s => e.target.checked ? sel.add(s.id) : sel.delete(s.id)); draw(); });
   body.addEventListener("change", e => { const p = e.target.closest("[data-pick]"); if(p){ p.checked ? sel.add(p.dataset.pick) : sel.delete(p.dataset.pick); } });
   body.addEventListener("click", e => { const b = e.target.closest("[data-s]"); if(b) editSchool(cache.schools.find(s => s.id === b.dataset.s)); });
+  document.getElementById("sNew").addEventListener("click", addSchool);
   document.getElementById("sMove").addEventListener("click", async () => {
     const to = document.getElementById("sMoveTo").value;
     if(!to || !sel.size){ toast("Tick schools and choose the markaz to move them to.", "bad"); return; }
@@ -223,6 +247,86 @@ function editSchool(s){
     if(error){ ov.querySelector("#cErr").textContent = error.message; return; }
     ov.remove(); toast("School saved."); await reload();
   });
+}
+
+function addUser(){
+  const ov = modal(`<h3>Add user</h3><p class="sub">Creates an SMP account that logs in with the CNIC and the password you set here.</p>
+    <div class="row2"><div><label>CNIC</label><input id="nCnic"></div><div><label>Full name</label><input id="nName"></div>
+      <div><label>Cell number</label><input id="nCell"></div><div><label>Role</label><select id="nRole">${opts(ROLES, "aeo")}</select></div>
+      <div id="nwHome"><label>Home markaz</label><select id="nHome">${markazOpts("", "— none —")}</select></div>
+      <div id="nwTeh"><label>Tehsil (TR)</label><select id="nTeh">${opts(uniq(cache.markaz.map(m => m.tehsil)).map(t => [t, t]), "", "— none —")}</select></div>
+      <div id="nwWing"><label>Wing limit (TR)</label><select id="nWing">${opts([["M-EE","M-EE"],["W-EE","W-EE"]], "", "All wings")}</select></div>
+      <div><label>Password (8+ characters)</label><input id="nPw" type="password" autocomplete="new-password"></div></div>
+    <p class="err" id="nErr"></p><div class="actions-row"><button class="btn-primary" type="button" id="nSave">Create user</button><button class="btn-secondary" type="button" id="nClose">Cancel</button></div>`);
+  const $ = s => ov.querySelector(s);
+  const ui = () => { const r = $("#nRole").value; $("#nwHome").style.display = (r === "aeo" || r === "school_user") ? "" : "none"; $("#nwTeh").style.display = $("#nwWing").style.display = r === "tr" ? "" : "none"; };
+  $("#nRole").addEventListener("change", ui); ui();
+  $("#nClose").addEventListener("click", () => ov.remove());
+  $("#nSave").addEventListener("click", async () => {
+    const role = $("#nRole").value;
+    $("#nSave").disabled = true;
+    const { data, error } = await sb.functions.invoke("admin-users", { body: { action: "create_user", cnic: $("#nCnic").value, full_name: $("#nName").value, cell_no: $("#nCell").value, role,
+      markaz_id: $("#nHome").value || null, tehsil: role === "tr" ? $("#nTeh").value || null : null, wing_scope: role === "tr" ? $("#nWing").value || null : null, password: $("#nPw").value } });
+    if(error || (data && data.error)){ $("#nErr").textContent = (data && data.error) || error.message; $("#nSave").disabled = false; return; }
+    ov.remove(); toast("User created. Add extra markaz by editing the user."); await reload();
+  });
+}
+function addSchool(){
+  const ov = modal(`<h3>Add school</h3><div class="row2"><div><label>EMIS code</label><input id="aE"></div><div><label>School name</label><input id="aN"></div>
+    <div><label>Markaz</label><select id="aM">${markazOpts("", "— choose —")}</select></div><div><label>Wing</label><select id="aW">${opts([["M-EE","M-EE"],["W-EE","W-EE"]], "", "— none —")}</select></div>
+    <div><label>Type</label><input id="aT"></div><div><label>Enrolment</label><input id="aEn" type="number" min="0"></div></div>
+    <p class="err" id="aErr"></p><div class="actions-row"><button class="btn-primary" type="button" id="aSave">Add school</button><button class="btn-secondary" type="button" id="aClose">Cancel</button></div>`, 620);
+  ov.querySelector("#aClose").addEventListener("click", () => ov.remove());
+  ov.querySelector("#aSave").addEventListener("click", async () => {
+    const en = ov.querySelector("#aEn").value;
+    const { error } = await sb.rpc("fn_dir_add_school", { p_emis: ov.querySelector("#aE").value, p_name: ov.querySelector("#aN").value, p_markaz_id: ov.querySelector("#aM").value || null, p_wing: ov.querySelector("#aW").value, p_type: ov.querySelector("#aT").value, p_enrollment: en === "" ? null : Number(en) });
+    if(error){ ov.querySelector("#aErr").textContent = error.message; return; }
+    ov.remove(); toast("School added."); await reload();
+  });
+}
+
+/* ---------------- Excel import ---------------- */
+const IMP = {
+  schools: { cols: ["emis","name","markaz","wing","type","enrollment","active"], alias: { emis:["emis","emis code","emis_code"], name:["school","school name","school_name","name"], markaz:["markaz","markaz name"], wing:["wing"], type:["type","school type","school_type"], enrollment:["enrollment","enrolment"], active:["active","status"] } },
+  users: { cols: ["cnic","full_name","role","markaz","extra","tehsil","wing","cell","active"], alias: { cnic:["cnic"], full_name:["name","full name","full_name"], role:["role"], markaz:["markaz","home markaz"], extra:["extra markaz","extra","additional markaz"], tehsil:["tehsil"], wing:["wing","wing scope"], cell:["cell","cell no","phone","cell_no"], active:["active","status"] } },
+};
+let impRows = [];
+function renderImport(){
+  document.getElementById("tabBody").innerHTML = `<p class="sub">Upload an Excel (.xlsx) or CSV file. Column names are matched by heading (e.g. EMIS, School, Markaz, Wing, Active). Blank cells leave the current value unchanged. You see a preview first; nothing is saved until you press Apply.</p>
+    <div class="dir-bar"><div><label>What are you importing?</label><select id="iType"><option value="schools">Schools (EMIS)</option><option value="users">Users (CNIC)</option></select></div>
+      <div><label>File</label><input id="iFile" type="file" accept=".xlsx,.xls,.csv"></div>
+      <div id="iAddW"><label><input type="checkbox" id="iAdd" style="width:auto"> Add EMIS codes that don't exist yet</label></div>
+      <button class="btn-secondary" type="button" id="iTpl">Download template</button></div>
+    <div id="iOut"></div>`;
+  const out = document.getElementById("iOut");
+  const typ = () => document.getElementById("iType").value;
+  document.getElementById("iType").addEventListener("change", () => { impRows = []; out.innerHTML = ""; document.getElementById("iAddW").style.display = typ() === "schools" ? "" : "none"; });
+  document.getElementById("iTpl").addEventListener("click", () => {
+    const c = IMP[typ()].cols; const blob = new Blob([c.join(",") + "\n"], { type: "text/csv" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = typ() + "-template.csv"; a.click();
+  });
+  document.getElementById("iFile").addEventListener("change", async e => {
+    const f = e.target.files[0]; if(!f) return;
+    try{
+      const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+      const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+      const al = IMP[typ()].alias, norm = k => String(k).trim().toLowerCase();
+      impRows = raw.map(r => { const o = {}; for(const [col, names] of Object.entries(al)){ const key = Object.keys(r).find(k => names.includes(norm(k))); if(key !== undefined){ let v = String(r[key]).trim(); if(col === "active" && v){ const l = v.toLowerCase(); v = ["yes","true","1","active","y"].includes(l) ? "true" : ["no","false","0","inactive","n"].includes(l) ? "false" : ""; } o[col] = v; } } return o; })
+        .filter(o => (o.emis || o.cnic));
+      if(!impRows.length){ out.innerHTML = `<p class="err">No usable rows found. Check the column headings against the template.</p>`; return; }
+      await runImport(false);
+    }catch(err){ out.innerHTML = `<p class="err">${esc(err.message)}</p>`; }
+  });
+  async function runImport(apply){
+    const t = typ(); const add = document.getElementById("iAdd").checked;
+    const { data, error } = t === "schools" ? await sb.rpc("fn_dir_import_schools", { p_rows: impRows, p_apply: apply, p_allow_add: add }) : await sb.rpc("fn_dir_import_users", { p_rows: impRows, p_apply: apply });
+    if(error){ out.innerHTML = `<p class="err">${esc(error.message)}</p>`; return; }
+    const good = data.filter(r => r.ok).length, bad = data.length - good;
+    if(apply){ toast(`${good} row(s) applied${bad ? ", " + bad + " skipped" : ""}.`); impRows = []; await reload(); return; }
+    out.innerHTML = `<p class="sub"><b>${good}</b> row(s) ready, <b>${bad}</b> with a problem (they will be skipped).</p>
+      <div class="actions-row"><button class="btn-primary" type="button" id="iApply" ${good ? "" : "disabled"}>Apply ${good} row(s)</button></div>
+      <div class="table-wrap" style="max-height:50vh;overflow:auto"><table class="dir-table"><thead><tr><th>Row</th><th>${t === "schools" ? "EMIS" : "CNIC"}</th><th>Result</th></tr></thead><tbody>${data.map((r, i) => `<tr><td>${i + 2}</td><td>${esc(r.emis || r.cnic || "")}</td><td>${r.ok ? esc(r.action === "add" ? "will be added" : "will be updated") : '<span class="dir-warn">' + esc(r.message) + "</span>"}</td></tr>`).join("")}</tbody></table></div>`;
+    document.getElementById("iApply").addEventListener("click", async () => { if(confirm(`Apply ${good} row(s)? This changes live data (it is recorded in the change log).`)) await runImport(true); });
+  }
 }
 
 /* ---------------- Problems ---------------- */
