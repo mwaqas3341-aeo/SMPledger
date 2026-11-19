@@ -345,6 +345,9 @@
     if (new URLSearchParams(location.search).get("expired") === "1") {
       showError("Your session ended automatically after 8 hours. Please sign in again.");
     }
+    if (new URLSearchParams(location.search).get("other") === "1") {
+      showError("You were signed out because this account was signed in on another device.");
+    }
     const { data: { session } } = await sb.auth.getSession();
     if (session) {
       let at = 0;
