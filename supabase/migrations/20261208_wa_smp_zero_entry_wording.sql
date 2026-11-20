@@ -1,0 +1,9 @@
+-- Note file (the live function is authoritative). fn_wa_smp_build now tells apart:
+--   * not reported on SMP at all            -> "Not reported on SMP app by school head teacher"
+--   * a line exists on SMP but consumption is 0 (while the AEO recorded a quantity)
+--        -> Excel status "Entered on SMP by head teacher as 0 - needs correction",
+--           and in the WhatsApp text the date carries a * with the footnote
+--           "* entered on SMP by the head teacher as 0 - please correct it".
+-- Implemented by patching the stored function: added a `zeroentry` column to _smp_miss
+-- (exists portal_consumption row for that school/product/date), used in the status text,
+-- the date list and the footnote.
