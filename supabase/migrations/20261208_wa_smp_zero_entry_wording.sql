@@ -1,9 +1,8 @@
--- Note file (the live function is authoritative). fn_wa_smp_build now tells apart:
---   * not reported on SMP at all            -> "Not reported on SMP app by school head teacher"
---   * a line exists on SMP but consumption is 0 (while the AEO recorded a quantity)
---        -> Excel status "Entered on SMP by head teacher as 0 - needs correction",
---           and in the WhatsApp text the date carries a * with the footnote
---           "* entered on SMP by the head teacher as 0 - please correct it".
--- Implemented by patching the stored function: added a `zeroentry` column to _smp_miss
--- (exists portal_consumption row for that school/product/date), used in the status text,
--- the date list and the footnote.
+-- Note file (the live function fn_wa_smp_build is authoritative).
+-- Missing-consumption report: tells apart
+--   * not reported on SMP at all   -> Excel remark "Not reported on SMP app by school head teacher"
+--   * a line exists on SMP but consumption is 0 while the AEO recorded a quantity
+--        -> Excel remark "Head teacher entered 0 on SMP; AEO reported <qty>", and in the WhatsApp text the
+--           date reads e.g. "12 Nov (head teacher entered 0 on SMP; AEO reported 219)".
+-- Excel column "Status" is now "Remarks". Also fixed: the "(n)" after each product counted month groups
+-- instead of entries (e.g. "Milk (1): 11, 16 Nov"); it now sums the entries.
