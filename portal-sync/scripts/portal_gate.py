@@ -1,4 +1,4 @@
-"""Ask Supabase whether today's sync should start now (three runs a day: the first at a random time 04:00-07:00 Pakistan time, then +8 h and +16 h).
+"""Ask Supabase whether a sync should start now (one every 5 hours, around the clock).
 
 Prints "run=true" or "run=false" (for GITHUB_OUTPUT). Any error means "run=false": the schedule asks again 15 minutes later.
 """
