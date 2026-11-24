@@ -727,7 +727,7 @@ async function renderWaCollectView(){
   document.getElementById("waCollectBox").innerHTML = `<div class="card"><p style="color:var(--ink-soft)">Loading…</p></div>`;
   const [tehRes, profRes, grpRes, mw] = await Promise.all([
     sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
-    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr","admin"]).order("full_name"),
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr","admin","super_admin"]).order("full_name"),
     sb.from("wa_groups").select("jid,subject").order("subject"),
     waLoadMarkazWings()
   ]);
@@ -749,7 +749,7 @@ async function renderWaSendView(){
     sb.from("wa_queue").select("id,status,attempt_count,period_start,period_end,last_error,sent_at,created_at,provider_message_id,priority,wa_recipients(recipient_name,tehsil)").order("created_at", { ascending:false }).limit(100),
     sb.from("wa_logs").select("id", { count:"exact", head:true }).eq("event","claim").eq("dry_run", false).gte("created_at", dayStart),
     sb.from("markaz").select("id,name,tehsil,district").eq("active", true).order("name"),
-    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr","admin"]).order("full_name"),
+    sb.from("profiles").select("id,full_name,role,markaz_id,tehsil,cell_no,wing_scope,extra_markaz_ids").eq("active", true).in("role", ["aeo","tr","admin","super_admin"]).order("full_name"),
     sb.from("wa_groups").select("jid,subject").order("subject")
   ]);
   const waGroups = grpRes.data || [];
@@ -1372,7 +1372,7 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     el.innerHTML = `<option value="">${esc(ph)}</option>` + list.map(([v, l]) => `<option value="${esc(v)}"${v === val ? " selected" : ""}>${esc(l)}</option>`).join("");
     el.disabled = !enabled;
   };
-  const aeosFor = mid => waUsers.filter(u => (u.role === "aeo" || u.role === "admin") && !taken.has(u.id) && (u.markaz_id === mid || (u.extra_markaz_ids || []).includes(mid)));
+  const aeosFor = mid => waUsers.filter(u => (u.role === "aeo" || u.role === "admin" || u.role === "super_admin") && !taken.has(u.id) && (u.markaz_id === mid || (u.extra_markaz_ids || []).includes(mid)));
   function drawCasc(){
     const inD = markazList.filter(m => m.district === cs.d);
     const inW = inD.filter(m => wingsOf(m).includes(cs.w));
