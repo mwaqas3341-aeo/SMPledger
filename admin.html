@@ -1164,7 +1164,7 @@ async function renderWaCollectCard(waGroups, waUsers, markazById){
       <label>Daily message time<input type="time" id="wcPostTime" value="${esc(eg.send_time ? String(eg.send_time).slice(0,5) : "")}"></label>
       <label>Missing-EMIS list time (optional)<input type="time" id="wcMissTime" value="${esc(eg.missing_time ? String(eg.missing_time).slice(0,5) : "")}"></label>
       <label>SMP missing-consumption Excel time (optional)<input type="time" id="wcSmpTime" value="${esc(eg.smp_file_time ? String(eg.smp_file_time).slice(0,5) : "")}"></label>
-      <label>SMP Excel reports<select id="wcSmpDay"><option value="previous" ${eg.smp_file_day !== "same" ? "selected" : ""}>Previous day's missing consumption</option><option value="same" ${eg.smp_file_day === "same" ? "selected" : ""}>Same day's missing consumption (time must be 3:00 PM or later)</option></select></label>
+      <label>SMP Excel reports<select id="wcSmpDay"><option value="previous" ${eg.smp_file_day !== "same" ? "selected" : ""}>Previous day's missing consumption</option><option value="same" ${eg.smp_file_day === "same" ? "selected" : ""}>Same day's missing consumption (any time; the schools listed are re-checked on the SMP dashboard before sending)</option></select></label>
       <div style="align-self:end;"><button class="btn-primary" type="button" id="wcGroupSave">${wcEdit ? (selJid && selJid !== wcEdit ? "Move to selected group" : "Save changes") : "Add group"}</button> ${wcEdit ? `<button class="btn-secondary" type="button" id="wcGroupCancel">Cancel</button>` : ""}</div>
     </div>
     <p class="sub" style="margin-top:6px;"><b>SMP missing-consumption Excel:</b> set a time and this group automatically receives, once a day, a message and an Excel file listing the schools of its jurisdiction whose head teacher did <b>not</b> report consumption on the SMP app: choose either the <b>previous day's</b> consumption or the <b>same day's</b> consumption so far (3:00 PM or later). The message states when the SMP web-portal data was fetched. It waits for today's SMP data fetch (up to 3 hours after this time), states when the data was fetched, and is sent only within the daily WhatsApp limit. Leave empty to turn it off.</p>
@@ -1334,7 +1334,6 @@ Please reply with EMIS Code and Packs Consumed.</pre></div>
     if(!row.tehsil){ toast("Select the tehsil", "bad"); return; }
     if(row.scope_type === "markaz" && !row.markaz_ids.length){ toast("Select at least one markaz", "bad"); return; }
     if(row.scope_type === "tehsil") row.markaz_ids = [];
-    if(row.smp_file_day === "same" && row.smp_file_time && row.smp_file_time < "15:00"){ toast("The same-day SMP report must be sent at 3:00 PM or later", "bad"); return; }
     if(row.smp_file_day === "same" && !row.smp_file_time){ toast("Set the SMP Excel time, or choose the previous-day report", "bad"); return; }
     if(row.missing_time && row.send_time && row.missing_time <= row.send_time){ toast("The missing list must be later than the daily message", "bad"); return; }
     row.group_jid = jid; row.label = waGroups.find(g => g.jid === jid)?.subject || null;
